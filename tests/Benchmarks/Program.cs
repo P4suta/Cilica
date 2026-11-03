@@ -22,7 +22,7 @@ var config = compilerBenchmarks ? DefaultConfig.Instance.AddJob(Job.ShortRun.Wit
     .AddJob(defaultJob.WithToolchain(new OptToolchain(toolchain)));
 
 var benchmarks = compilerBenchmarks ? BenchmarkSwitcher.FromTypes([typeof(DistIL.Benchmarks.CompilerPasses)])
-    : BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly);
+    : BenchmarkSwitcher.FromTypes([typeof(LinqExpansion), typeof(AutoVectorization), typeof(ListArrayBuilding)]);
 benchmarks.Run(args, config);
 
 class OptToolchain : Toolchain
@@ -46,14 +46,16 @@ class OptExecutor : IExecutor
         string binaryDir = pars.BuildResult.ArtifactsPaths.BinariesDirectoryPath;
         string benchAsmExe = Path.GetFileName(pars.BenchmarkCase.Descriptor.Type.Assembly.Location);
 
-        if (pars.BuildResult.IsBuildSuccess && _alreadyOptimizedPaths.Add(binaryDir)) {
+        if (pars.BuildResult.IsBuildSuccess && !_alreadyOptimizedPaths.Contains(binaryDir)) {
             using var proc = Process.Start(new ProcessStartInfo() {
                 FileName = "dotnet",
                 ArgumentList = {
                     Path.Combine(AppContext.BaseDirectory, "DistIL.Cli.dll"),
-                    "-i", Path.Combine(binaryDir, benchAsmExe)
+                    "-i", Path.Combine(binaryDir, benchAsmExe),
+                    "--strict", "--verify-each"
                 },
-                RedirectStandardOutput = true
+                RedirectStandardOutput = true,
+                CreateNoWindow = true
             })!;
             var stdout = proc.StandardOutput;
 
@@ -61,6 +63,12 @@ class OptExecutor : IExecutor
                 pars.Logger.WriteLine(LogKind.Info, ln);
             }
             proc.WaitForExit();
+
+            if (proc.ExitCode != 0) {
+                throw new InvalidOperationException($"Benchmark optimization failed with exit code {proc.ExitCode}.");
+            }
+
+            _alreadyOptimizedPaths.Add(binaryDir);
         }
         return Base.Execute(pars);
     }
