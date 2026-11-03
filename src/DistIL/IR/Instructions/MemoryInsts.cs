@@ -23,6 +23,7 @@ public abstract class MemoryInst : Instruction
 
     public bool IsUnaligned => (Flags & PointerFlags.Unaligned) != 0;
     public bool IsVolatile => (Flags & PointerFlags.Volatile) != 0;
+    public override bool IsMemoryBarrier => IsVolatile;
 
     protected MemoryInst(PointerFlags flags, params Value[] operands)
         : base(operands)

@@ -83,9 +83,9 @@ public class ValueNumbering : IMethodPass
             if (!(def is MemoryInst or CallInst)) return true;
 
             if (def is CallInst call) {
-                var effect = FuncInfo.GetEffects(call.Method);
+                var effect = FuncInfo.GetEffects(call);
 
-                if (effect.MayWriteMem) return false;
+                if (effect.MayWriteMem || effect.HasMemoryBarrier) return false;
                 if (!effect.MayReadMem) return true;
                 // if effect == MayRead, check for clobbers
             }
@@ -120,6 +120,7 @@ public class ValueNumbering : IMethodPass
         // Checks if `inst` may clobber the result value of `def`.
         private bool MayClobberDef(Instruction def, Instruction inst)
         {
+            if (inst.IsMemoryBarrier) return true;
             if (inst is StoreInst store) {
                 if (def is MemoryInst access) {
                     return AliasAnalysis.MayAlias(store.Address, access.Address);
@@ -127,7 +128,8 @@ public class ValueNumbering : IMethodPass
                 return true;
             }
             if (inst is CallInst call) {
-                return FuncInfo.GetEffects(call.Method).MayWriteMem;
+                var effects = FuncInfo.GetEffects(call);
+                return effects.MayWriteMem || effects.HasMemoryBarrier;
             }
             return inst.MayWriteToMemory;
         }
@@ -229,7 +231,7 @@ public class ValueNumbering : IMethodPass
         //       For now, reference comparation will work in most cases,
         //       since we don't always create new instances.
         Reg<CallInst>(
-            comp: (a, b) => a.Method == b.Method && a.Args.SequenceEqual(b.Args),
+            comp: (a, b) => a.Method == b.Method && a.IsVirtual == b.IsVirtual && a.Constraint == b.Constraint && a.Args.SequenceEqual(b.Args),
             hash: (inst) => HashCode.Combine(inst.Method, inst.NumArgs > 0 ? inst.Args[0] : null)
         );
 

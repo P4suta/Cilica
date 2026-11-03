@@ -78,6 +78,7 @@ public abstract class CilIntrinsic : IntrinsicInst
     {
         public override ILCode Opcode => StaticArgs.Length > 0 ? ILCode.Cpobj : ILCode.Cpblk;
         public PointerFlags Flags { get; set; }
+        public override bool IsMemoryBarrier => (Flags & PointerFlags.Volatile) != 0;
 
         public override bool MayThrow => true;
         public override bool MayWriteToMemory => true;
@@ -98,6 +99,7 @@ public abstract class CilIntrinsic : IntrinsicInst
     {
         public override ILCode Opcode => StaticArgs.Length > 0 ? ILCode.Initobj : ILCode.Initblk;
         public PointerFlags Flags { get; set; }
+        public override bool IsMemoryBarrier => (Flags & PointerFlags.Volatile) != 0;
 
         public override bool MayThrow => true;
         public override bool MayWriteToMemory => true;

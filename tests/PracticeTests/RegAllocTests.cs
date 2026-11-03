@@ -5,6 +5,17 @@ using DistIL.Attributes;
 [Optimize]
 public class RegAllocTests
 {
+    [Theory]
+    [InlineData(0, 1020)]
+    [InlineData(1, 2000)]
+    [InlineData(2, 0)]
+    public void ParallelCopiesPreserveRegisterSourcesBeforeConstants(int n, int expected)
+    {
+        int a = 10, b = 20;
+        for (int i = 0; i < n; i++) { a = b; b = 0; }
+        Assert.Equal(expected, a * 100 + b);
+    }
+
     [Fact]
     public void LiveReg_Loop_Finally()
     {

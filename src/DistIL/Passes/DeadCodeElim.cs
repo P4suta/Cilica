@@ -100,7 +100,7 @@ public class DeadCodeElim : IMethodPass
     {
         if (inst is not CallInst call || (call.IsVirtual && !call.InBounds)) return false;
 
-        var effects = funcInfo.GetEffects(call.Method);
+        var effects = funcInfo.GetEffects(call);
 
         return effects.IsPure;
     }
@@ -130,7 +130,8 @@ public class DeadCodeElim : IMethodPass
 
         foreach (var slot in method.LocalVars()) {
             // Remove if unused, or if non-pinned and all uses are from stores
-            if (slot.NumUses == 0 || (!slot.IsPinned && slot.Users().All(u => u is StoreInst or CilIntrinsic.MemSet))) {
+            if (slot.NumUses == 0 || (!slot.IsPinned && slot.Uses().All(u =>
+                u.OperIndex == 0 && u.Parent is StoreInst { IsVolatile: false } or CilIntrinsic.MemSet { Flags: PointerFlags.None }))) {
                 foreach (var user in slot.Users()) {
                     user.Remove();
                 }

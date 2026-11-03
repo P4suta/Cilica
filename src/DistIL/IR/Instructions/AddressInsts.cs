@@ -67,7 +67,10 @@ public class FieldAddrInst : AddressInst
     [MemberNotNullWhen(true, nameof(Obj))]
     public bool IsInstance => !IsStatic;
 
-    public override bool MayThrow => IsInstance && !InBounds;
+    private bool MayInitializeType => IsStatic && Field.DeclaringType.RequiresTypeInitialization(fieldAccess: true);
+    public override bool MayThrow => MayInitializeType || (IsInstance && !InBounds);
+    public override bool MayWriteToMemory => MayInitializeType;
+    public override bool MayReadFromMemory => MayInitializeType;
 
     public override string InstName => "fldaddr" + (InBounds ? ".inbounds" : "");
 

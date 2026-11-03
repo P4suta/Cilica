@@ -16,11 +16,27 @@ public class GlobalFunctionEffects : IGlobalAnalysis
             return FunctionEffects.Unknown;
         }
 
-        ref var entry = ref _cache.GetOrAddRef(def.Definition, out bool exists);
-        if (!exists) {
-            entry = ComputeEffects(def.Definition);
-        }
+        if (_cache.TryGetValue(def.Definition, out var entry)) return entry;
+
+        // Recursive queries must see a conservative summary until computation finishes.
+        _cache[def.Definition] = FunctionEffects.Unknown;
+        entry = ComputeEffects(def.Definition);
+        _cache[def.Definition] = entry;
         return entry;
+    }
+
+    public FunctionEffects GetEffects(CallInst call)
+    {
+        var method = call.Method;
+        if (call.IsVirtual && method.Attribs.HasFlag(System.Reflection.MethodAttributes.Virtual) &&
+            !method.Attribs.HasFlag(System.Reflection.MethodAttributes.Final)) {
+            return FunctionEffects.Unknown;
+        }
+        var effects = GetEffects(method);
+        if (call.IsVirtual && !call.InBounds) {
+            effects = new FunctionEffects(effects.MemEffects, effects.Traits | FunctionTraits.MayThrow);
+        }
+        return effects;
     }
 
     public bool SetDirty(MethodDef method) => _cache.Remove(method);
@@ -28,6 +44,9 @@ public class GlobalFunctionEffects : IGlobalAnalysis
 
     private FunctionEffects ComputeEffects(MethodDef method)
     {
+        if (method.IsStatic && method.DeclaringType.RequiresTypeInitialization()) {
+            return FunctionEffects.Unknown;
+        }
         if (method.DeclaringType.IsCorelibType() && GetEffectsFromCorelibMethod(method) is { } effects) {
             return effects;
         }
@@ -48,12 +67,11 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         foreach (var block in body) {
             foreach (var inst in block.NonPhis()) {
                 switch (inst) {
-                    case CallInst { Method: MethodDefOrSpec target } call: {
-                        if (target.Definition != body.Definition) {
-                            var callEffects = GetEffects(target.Definition);
-                            memEffects |= callEffects.MemEffects;
-                            traits |= callEffects.Traits & FunctionTraits.CallTransferMask;
-                        } else {
+                    case CallInst call: {
+                        var callEffects = GetEffects(call);
+                        memEffects |= callEffects.MemEffects;
+                        traits |= callEffects.Traits & FunctionTraits.CallTransferMask;
+                        if (call.Method is MethodDefOrSpec target && target.Definition == body.Definition) {
                             traits |= FunctionTraits.Recursive;
                         }
                         break;
@@ -62,6 +80,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
                         if (inst.MayReadFromMemory) memEffects |= MemoryEffects.Read;
                         if (inst.MayWriteToMemory) memEffects |= MemoryEffects.Write;
                         if (inst.MayThrow) traits |= FunctionTraits.MayThrow;
+                        if (inst.IsMemoryBarrier) traits |= FunctionTraits.MemoryBarrier;
                         break;
                     }
                 }
@@ -125,7 +144,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         var type = method.DeclaringType;
 
         if (type.Namespace == "System.Collections.Generic" && type.Name is "Dictionary`2" or "List`1" or "HashSet`1") {
-            bool isAccessor = method.Name is "get_Item" or "get_Count" or "ContainsKey";
+            bool isAccessor = method.Name == "get_Count" || (type.Name == "List`1" && method.Name == "get_Item");
 
             return new FunctionEffects(
                 isAccessor ? MemoryEffects.Read : MemoryEffects.ReadWrite,
@@ -189,6 +208,7 @@ public readonly struct FunctionEffects
     public bool IsPure => Traits == FunctionTraits.None && MemEffects == MemoryEffects.None;
 
     public bool MayThrow => (Traits & FunctionTraits.MayThrow) != 0;
+    public bool HasMemoryBarrier => (Traits & FunctionTraits.MemoryBarrier) != 0;
     public bool MayReadMem => (MemEffects & MemoryEffects.Read) != 0;
     public bool MayWriteMem => (MemEffects & MemoryEffects.Write) != 0;
     public bool MayOnlyThrowOrReadMem => (Traits & ~FunctionTraits.MayThrow) == 0 && (MemEffects & ~MemoryEffects.Read) == 0;
@@ -206,11 +226,12 @@ public enum FunctionTraits
 {
     None = 0,
     Unknown         = ~0,
-    CallTransferMask = MayThrow,
+    CallTransferMask = MayThrow | MemoryBarrier,
 
     MayThrow        = 1 << 0,
     Recursive       = 1 << 1,
     DoesNotReturn   = 1 << 3, // e.g. ThrowHelper
+    MemoryBarrier   = 1 << 4,
 
 }
 public enum MemoryEffects : byte

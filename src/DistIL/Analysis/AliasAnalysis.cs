@@ -41,7 +41,7 @@ public class AliasAnalysis : IMethodAnalysis
             }
             case (FieldAddrInst f1, ArrayAddrInst a1): {
                 return f1.IsInstance && f1.Field.DeclaringType.IsValueType && 
-                       a1.ElemType.IsValueType && MayAlias(f1.Obj, a1.Array);
+                       a1.ElemType.IsValueType && MayAlias(f1.Obj, a1);
             }
             case (LocalSlot l1, FieldAddrInst f1): {
                 return f1.IsInstance && f1.Field.DeclaringType.IsValueType && MayAlias(l1, f1.Obj);
@@ -76,11 +76,11 @@ public class AliasAnalysis : IMethodAnalysis
 
                 // U[] and S[] may alias (e.g. int[] and uint[])
                 if (e1.Kind.IsInt() || e2.Kind.IsInt()) {
-                    return e1.Kind.GetSigned() == e2.Kind.GetSigned();
+                    return e1.Kind.GetStorageType() == e2.Kind.GetStorageType();
                 }
                 // A[] and B[] may alias if both are classes and one inherits from the other.
                 // otherwise, T[] may alias with T[]
-                return MayObjTypesAlias(e1, e2) ?? (t1 == e2);
+                return MayObjTypesAlias(e1, e2) ?? (e1 == e2);
             }
             return MayObjTypesAlias(t1, t2) ?? true;
         }
@@ -95,7 +95,15 @@ public class AliasAnalysis : IMethodAnalysis
 
         if (isObj1 || isObj2) {
             if (isObj1 && isObj2) {
-                return t1.Inherits(t2) || t2.Inherits(t1);
+                if (t1 is GenericParamType || t2 is GenericParamType) return true;
+                if (t1.Inherits(t2) || t2.Inherits(t1)) return true;
+                // An unsealed class can have subclasses implementing an interface;
+                // unrelated interfaces can share the same concrete implementation.
+                if (t1.IsInterface || t2.IsInterface) {
+                    var other = t1.IsInterface ? t2 : t1;
+                    return other is not TypeDefOrSpec def || !def.Attribs.HasFlag(System.Reflection.TypeAttributes.Sealed);
+                }
+                return false;
             }
             return false;
         }

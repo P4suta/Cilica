@@ -4,6 +4,13 @@ using System.Reflection;
 
 public static class TypeUtils
 {
+    /// <summary> Whether accessing this type can execute a type initializer. </summary>
+    /// <param name="fieldAccess">Field accesses trigger initialization even for BeforeFieldInit types.</param>
+    public static bool RequiresTypeInitialization(this TypeDesc type, bool fieldAccess = false)
+        => type is TypeDefOrSpec def &&
+           (fieldAccess || !def.Attribs.HasFlag(TypeAttributes.BeforeFieldInit)) &&
+           def.Methods.Any(m => m.Name == ".cctor");
+
     /// <summary> Checks if this type is defined in <c>System.Private.CoreLib</c>. </summary>
     public static bool IsCorelibType(this TypeDesc desc)
     {

@@ -21,7 +21,9 @@ public abstract class Instruction : TrackedValue
     public abstract string InstName { get; }
 
     /// <summary> Whether this instructions modifies global state, affects control flow, or throws exceptions. </summary>
-    public virtual bool HasSideEffects => MayThrow || MayWriteToMemory || IsBranch;
+    public virtual bool HasSideEffects => MayThrow || MayWriteToMemory || IsMemoryBarrier || IsBranch;
+    /// <summary> Whether this instruction constrains the ordering of visible memory accesses. </summary>
+    public virtual bool IsMemoryBarrier => false;
     public virtual bool MayThrow => false;
     /// <summary> Whether this instruction is a branch, return, or affects control flow. </summary>
     public virtual bool IsBranch => false;

@@ -80,30 +80,14 @@ public class ForestAnalysis : IMethodAnalysis
         return false;
     }
 
-    // Checks if the two instructions have the same hazards and can be executed in either order.
-    // This is true if e.g. they may throw the same exception; calls and memory stores are never interchangeable.
-    // Assumes that `a` is defined before `b`.
+    // A non-throwing load can commute with a disjoint store when neither access
+    // imposes memory ordering. Other observable effects retain their execution order.
     private bool AreInterchangeableHazards(Instruction a, Instruction b, AliasAnalysis aa)
     {
-        // TODO: extend this to query GlobalFunctionEffects for more accurate call info
-
-        // Unrelated memory loads can be safely interchanged
-        if (b.MayWriteToMemory) {
-            if (a is LoadInst ld && b is StoreInst st) {
-                return !aa.MayAlias(ld.Address, st.Address);
-            }
-            return !a.MayReadFromMemory;
+        if (a.MayThrow || b.MayThrow || a.IsMemoryBarrier || b.IsMemoryBarrier) {
+            return false;
         }
-        if (IsAccess(a) && IsAccess(b)) {
-            return true;
-        }
-        return false;
-
-        // May throw one of: NullRef | IndexOutOfBounds | AccessViolation
-        // We'll assume it's fine to interchange any of these instructions.
-        // TODO: We may want to re-consider this in the future.
-        static bool IsAccess(Instruction inst)
-            => inst is ArrayAddrInst or FieldAddrInst or LoadInst;
+        return a is LoadInst load && b is StoreInst store && !aa.MayAlias(load.Address, store.Address);
     }
 
     /// <summary> Checks if the specified instruction is a the root of a tree/statement (i.e. must be emitted and/or assigned into a temp variable). </summary>

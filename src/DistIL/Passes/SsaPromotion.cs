@@ -72,6 +72,9 @@ public class SsaPromotion : IMethodPass
         definingBlocks.Clear();
 
         foreach (var (user, operIdx) in slot.Uses()) {
+            if (user is not MemoryInst { IsVolatile: false } access || access.ElemType != slot.Type) {
+                return false;
+            }
             if (user is StoreInst && operIdx == 0) {
                 definingBlocks.Push(user.Block);
             } else if (user is LoadInst) {

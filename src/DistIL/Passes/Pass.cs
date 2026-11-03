@@ -27,6 +27,7 @@ public readonly struct MethodPassResult
             ctx.Invalidate<ProtectedRegionAnalysis>();
         }
         if (Changes.HasFlag(MethodInvalidations.DataFlow)) {
+            ctx.Compilation.GetAnalysis<GlobalFunctionEffects>().SetAllDirty();
             ctx.Invalidate<VarLivenessAnalysis>();
             ctx.Invalidate<LivenessAnalysis>();
             ctx.Invalidate<InterferenceGraph>();

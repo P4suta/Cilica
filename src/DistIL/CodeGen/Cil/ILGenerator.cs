@@ -200,9 +200,6 @@ public partial class ILGenerator : InstVisitor
                 var srcReg = _regAlloc.GetRegister(valueI);
                 _pcopyEmitter ??= new();
                 _pcopyEmitter.Add(destReg, srcReg);
-            } else {
-                Push(value);
-                _asm.EmitStore(destReg);
             }
         }
 
@@ -211,6 +208,13 @@ public partial class ILGenerator : InstVisitor
                 _asm.EmitLoad(src);
                 _asm.EmitStore(dest);
             });
+        }
+        // Values without SSA registers cannot depend on any destination register.
+        // Assign them after all register sources have been consumed.
+        foreach (var (phi, value) in copies) {
+            if (value is Instruction) continue;
+            Push(value);
+            _asm.EmitStore(_regAlloc.GetRegister(phi));
         }
     }
 
