@@ -8,6 +8,73 @@ using System.Runtime.CompilerServices;
 public class ExpandLinqTests
 {
     [Fact]
+    public void MutableListFiltersPreserveVersionChecks()
+    {
+        var source = new List<int> { 1, 2, 3 };
+        bool threw = false;
+
+        try {
+            _ = source.Where(x => {
+                if (x == 1) {
+                    source.Add(4);
+                }
+
+                return true;
+            }).Aggregate(0, (sum, x) => sum + x);
+        } catch (InvalidOperationException) {
+            threw = true;
+        }
+
+        Assert.True(threw);
+        Assert.Equal(4, source.Count);
+        // CHECK: Enumerable::Where
+        // CHECK-NOT: Enumerable::Aggregate
+    }
+
+    [Fact]
+    public void MutableListProjectionUsesLibraryMaterialization()
+    {
+        var baseline = new List<int> { 1, 2, 3 };
+        var expected = ReferenceProjection(baseline);
+        var source = new List<int> { 1, 2, 3 };
+        var actual = source.Select(x => Mutate(source, x)).ToArray();
+
+        Assert.Equal(expected, actual);
+        Assert.Equal(baseline, source);
+        // CHECK: Enumerable::Select
+        // CHECK: Enumerable::ToArray
+    }
+
+    [Fact]
+    public void InterfaceTypedListsPreserveLibraryDispatch()
+    {
+        IEnumerable<int> source = Utils.DoNotOptimize<IEnumerable<int>>(new AlternateList { 1, 2, 3 });
+
+        Assert.Equal(6, source.Where(x => true).Aggregate(0, (sum, x) => sum + x));
+        Assert.Equal(42, source.Aggregate(0, (sum, x) => sum + x));
+        // CHECK: Enumerable::Where
+    }
+
+    [DoNotOptimize, MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] ReferenceProjection(List<int> source) => source.Select(x => Mutate(source, x)).ToArray();
+
+    [DoNotOptimize, MethodImpl(MethodImplOptions.NoInlining)]
+    static int Mutate(List<int> source, int value)
+    {
+        if (value == 1) {
+            source.Add(4);
+        }
+
+        return value;
+    }
+
+    [DoNotOptimize]
+    sealed class AlternateList : List<int>, IEnumerable<int>
+    {
+        IEnumerator<int> IEnumerable<int>.GetEnumerator() => ((IEnumerable<int>)new[] { 42 }).GetEnumerator();
+    }
+
+    [Fact]
     public void CastUnboxesValueTypes()
     {
         object[] source = [1, 2, 3];
@@ -259,7 +326,8 @@ public class ExpandLinqTests
         Assert.Equal([0, 2, 4, 6, 8, 10, 12, 14, 16, 18, 20, 22, 24], result);
 
         // CHECK-NOT: call Enumerable
-        // CHECK-NOT: Add(
+        // CHECK: newobj List`1[int]::.ctor(int: 13)
+        // CHECK: Add(
     }
 
     [Fact]

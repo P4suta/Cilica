@@ -3,10 +3,45 @@ namespace DistIL.Tests.Analysis;
 using DistIL.Analysis;
 using DistIL.AsmIO;
 using DistIL.IR;
+using DistIL.IR.Utils;
 using DistIL.Util;
 
-public class LoopAnalysisTests
+[Collection("ModuleResolver")]
+public class LoopAnalysisTests(ModuleResolverFixture fixture)
 {
+    [Theory]
+    [InlineData(true, false, true)]
+    [InlineData(false, false, false)]
+    [InlineData(true, true, false)]
+    public void EnumeratorTripCountsRequireStableStorageAndExclusiveAdvancement(bool array, bool extraAdvance, bool expected)
+    {
+        var sourceType = array ? (TypeDesc)PrimType.Int32.CreateArray() : fixture.Resolver.Import(typeof(IReadOnlyCollection<int>));
+        var method = Utils.CreateTestMethod(fixture.Resolver, PrimType.Void, sourceType);
+        var entry = method.CreateBlock();
+        var header = method.CreateBlock();
+        var body = method.CreateBlock();
+        var exit = method.CreateBlock();
+        var start = new IRBuilder(entry);
+        var iterator = start.CreateCallVirt(fixture.Resolver.Import(typeof(IEnumerable<int>)).FindMethod("GetEnumerator"), method.Args[0]);
+        start.SetBranch(header);
+        var head = new IRBuilder(header);
+        head.SetBranch(head.CreateCallVirt("MoveNext", iterator), body, exit);
+        var items = new IRBuilder(body);
+        items.CreateCallVirt("get_Current", iterator);
+
+        if (extraAdvance) {
+            items.CreateCallVirt("MoveNext", iterator);
+        }
+
+        items.SetBranch(header);
+        exit.SetBranch(new ReturnInst());
+        var dom = new DominatorTree(method);
+        var loop = Assert.Single(new LoopAnalysis(method, dom).Loops);
+        var shape = ShapedLoopInfo.Parse(loop);
+
+        Assert.Equal(expected, shape?.HasKnownTripCount(dom, entry.Last) == true);
+    }
+
     [Fact]
     public void NestedLoopsHaveParentsAndDistinctInnermostLoops()
     {

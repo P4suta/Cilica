@@ -2,7 +2,7 @@ namespace DistIL.Passes.Linq;
 
 using DistIL.IR.Utils;
 
-/// <summary> Source based on a continuous memory location: Array, List&lt;T>, or string. </summary>
+/// <summary> Source with immutable length backed by an array or string. </summary>
 internal class MemorySource : LinqSourceNode
 {
     public MemorySource(UseRef source, LinqStageNode drain)

@@ -23,12 +23,15 @@ internal sealed class EnumeratorLoop
         _getEnumerator = enumerableType.FindMethod("GetEnumerator", searchBaseAndItfs: true);
 
         if (source is CilIntrinsic.Box box && enumerableType.IsGeneric) {
-            var custom = box.SourceType.Methods.FirstOrDefault(m => m is { Name: "GetEnumerator", IsPublic: true, IsInstance: true, ParamSig.Count: 1 });
+            _unboxType = box.SourceType;
+            var custom = box.SourceType.IsCorelibType(typeof(ArraySegment<>))
+                ? box.SourceType.Methods.FirstOrDefault(m => m is { Name: "GetEnumerator", IsPublic: true, IsInstance: true, ParamSig.Count: 1 }) : null;
+
             if (custom != null && IsEnumerator(custom.ReturnType, enumerableType.GenericParams[0])) {
                 _getEnumerator = custom;
-                _unboxType = box.SourceType;
             }
         }
+
         var method = loop.Header.Method;
         _enumerator = method.CreateVar(_getEnumerator.ReturnType, "lq_enumerator", hardExposed: true);
         _initialized = method.CreateVar(PrimType.Bool, "lq_initialized", hardExposed: true);
@@ -41,9 +44,13 @@ internal sealed class EnumeratorLoop
         // Acquisition is lazy so a loop guard can stop before touching the source.
         builder.ForkIf(builder.CreateEq(builder.CreateLoad(_initialized), ConstInt.CreateI(0)), (init, _) => {
             var receiver = _unboxType == null ? _source : init.CreateUnboxRef(_unboxType, _source);
-            init.CreateStore(_enumerator, init.CreateCallVirt(_getEnumerator, receiver));
+            var acquisition = _unboxType != null && _getEnumerator.DeclaringType.IsInterface
+                ? init.Emit(new CallInst(_getEnumerator, [receiver], isVirtual: true, constraint: _unboxType))
+                : init.CreateCallVirt(_getEnumerator, receiver);
+            init.CreateStore(_enumerator, acquisition);
             init.CreateStore(_initialized, ConstInt.CreateI(1));
         });
+
         return builder.CreateCallVirt("MoveNext", Receiver(builder));
     }
 

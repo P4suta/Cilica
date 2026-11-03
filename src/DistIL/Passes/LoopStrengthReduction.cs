@@ -209,12 +209,9 @@ public class LoopStrengthReduction : IMethodPass
     
     /// <summary>
     /// Builds a sequence accessing the underlying ref and count from <paramref name="source"/>, assuming its type is one of:
-    /// <see cref="ArrayType"/>, <see cref="string"/>, or <see cref="List{T}"/>.
+    /// <see cref="ArrayType"/>, <see cref="string"/>, or a byref to a runtime span.
     /// </summary>
     /// <remarks>
-    /// Users should ensure exact types before calling this method, as it matches by name and thus could incorrectly 
-    /// match some unrelated type named "List`1".
-    /// 
     /// The returned count type may be either int or nint.
     /// </remarks>
     public static (Value BasePtr, Value Count) CreateGetDataPtrRange(IRBuilder builder, Value source, bool getCount = true)
@@ -228,16 +225,13 @@ public class LoopStrengthReduction : IMethodPass
                 builder.CreateCallVirt("GetPinnableReference", source),
                 getCount ? builder.CreateCallVirt("get_Length", source) : null
             ),
-            TypeSpec { Name: "List`1" } => (
-                CreateGetArrayDataRef(builder, builder.CreateFieldLoad("_items", source)),
-                getCount ? builder.CreateFieldLoad("_size", source) : null
+            PointerType { ElemType: { Name: "Span`1" or "ReadOnlySpan`1" } type } when type.IsCorelibType() => (
+                builder.CreateCallVirt("GetPinnableReference", source),
+                getCount ? builder.CreateCallVirt("get_Length", source) : null
             ),
-            // TODO: check if it's ok to access span fields directly
-            PointerType { ElemType: { Name: "Span`1" or "ReadOnlySpan`1"} } => (
-                builder.CreateFieldLoad("_reference", source),
-                getCount ? builder.CreateFieldLoad("_length", source) : null
-            )
+            _ => throw new NotSupportedException("The source does not expose a supported contiguous storage contract")
         };
+
         return (basePtr, count!);
 
         static CallInst CreateGetArrayDataRef(IRBuilder builder, Value source)

@@ -30,7 +30,7 @@ internal abstract class ConcretizationSink : LinqSink
         => builder.CreateCallVirt("Add", container, currItem);
     protected virtual Value WrapContainer(IRBuilder builder, Value container) => container;
 
-    // Allocatess a new List/HashSet/Dictionary as dictated by `type`
+    // Allocates a collection with a proven initial capacity when available.
     protected Value AllocKnownCollection(IRBuilder builder, EstimatedSourceLen estimLen, TypeDesc type)
     {
         Debug.Assert(type.Name is "List`1" or "HashSet`1" or "Dictionary`2");
@@ -64,9 +64,10 @@ internal class ListOrArraySink : ConcretizationSink
         var elemType = SubjectCall.ResultType;
         elemType = (elemType as ArrayType)?.ElemType ?? elemType.GenericParams[0];
 
-        if (estimLen.IsExact) {
+        if (estimLen.IsExact && SubjectCall.Method.Name == "ToArray") {
             return builder.CreateNewArray(elemType, estimLen.Length);
         }
+
         var listGenType = (TypeDef)builder.Resolver.Import(typeof(List<>));
         return base.AllocKnownCollection(builder, estimLen, listGenType.GetSpec([elemType]));
     }
@@ -88,12 +89,6 @@ internal class ListOrArraySink : ConcretizationSink
         }
         if (SubjectCall.Method.Name == "ToArray") {
             return builder.CreateCallVirt("ToArray", container);
-        }
-        if (SubjectCall.Method.Name == "ToList") {
-            var list = AllocKnownCollection(builder, default, SubjectCall.ResultType);
-            builder.CreateFieldStore("_items", list, container);
-            builder.CreateFieldStore("_size", list, _index!);
-            return list;
         }
         throw new UnreachableException();
     }

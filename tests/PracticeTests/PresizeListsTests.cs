@@ -7,6 +7,50 @@ using DistIL.Attributes;
 [Optimize, CheckCodeGenAfterRun]
 public class PresizeListsTests
 {
+    [Fact]
+    public void EnumerationDoesNotReadUserCountGetters()
+    {
+        IReadOnlyCollection<int> source = new ThrowingCountCollection();
+        var list = new List<int>();
+
+        foreach (int value in source) {
+            list.Add(value);
+        }
+
+        Assert.Equal(new[] { 1, 2, 3 }, list.ToArray());
+        // CHECK-NOT: get_Count
+        // CHECK: Add(
+        // CHECK: ToArray(
+    }
+
+    [Fact]
+    public void ObservableCapacityRetainsIncrementalGrowth()
+    {
+        var list = new List<int>();
+        var capacities = new List<int>();
+
+        for (int i = 0; i < 6; i++) {
+            capacities.Add(list.Capacity);
+            list.Add(i);
+        }
+
+        Assert.Equal(new[] { 0, 4, 4, 4, 4, 8 }, capacities);
+        Assert.Equal(8, list.Capacity);
+        // CHECK: List`1[int]::.ctor()
+        // CHECK: get_Capacity(
+        // CHECK: Add(
+    }
+
+    [DoNotOptimize]
+    sealed class ThrowingCountCollection : IReadOnlyCollection<int>
+    {
+        public int Count => throw new InvalidOperationException();
+
+        public IEnumerator<int> GetEnumerator() => ((IEnumerable<int>)new[] { 1, 2, 3 }).GetEnumerator();
+
+        System.Collections.IEnumerator System.Collections.IEnumerable.GetEnumerator() => GetEnumerator();
+    }
+
     [Theory]
     [InlineData(-1)]
     [InlineData(0)]
@@ -17,8 +61,12 @@ public class PresizeListsTests
         for (int i = 0; i < count; i++) { list.Add(i); list.Add(i + 100); }
         var actual = list.ToArray();
         Assert.Equal(count > 0 ? new[] { 0, 100, 1, 101, 2, 102 } : Array.Empty<int>(), actual);
-        // CHECK: CIL::NewArray
-        // CHECK-NOT: Add(
+        // CHECK: mul
+        // CHECK-SAME: 2L
+        // CHECK: select
+        // CHECK: Add(
+        // CHECK: Add(
+        // CHECK: ToArray(
     }
 
     [Theory]
@@ -103,10 +151,8 @@ public class PresizeListsTests
         Assert.Equal("0: lorem", array[0]);
         Assert.Equal("4: amet", array[4]);
 
-        // CHECK: get_Count
-        // CHECK: CIL::NewArray
-        // CHECK-NOT: Add(
-        // CHECK-NOT: ToArray(
+        // CHECK: Add(
+        // CHECK: ToArray(
     }
 
     [Fact]
@@ -151,8 +197,7 @@ public class PresizeListsTests
 
         // CHECK: Add(this: {{\w+}}, string: "First")
         // CHECK: get_Count(
-        // CHECK: EnsureCapacity(
-        // CHECK: Add(
+        // CHECK-NOT: EnsureCapacity(
     }
 
     [Fact]

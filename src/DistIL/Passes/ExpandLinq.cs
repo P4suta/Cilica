@@ -37,6 +37,11 @@ public class ExpandLinq : IMethodPass
             return null;
         }
         var source = CreateStage(call.GetOperandRef(0), sink);
+
+        if (source is EnumeratorSource && !RuntimeLibrary.HasKnownSequenceDispatch(source.PhysicalSource.Operand)) {
+            return null;
+        }
+
         return IsProfitableToExpand(source, sink) ? source : null;
     }
 
@@ -96,6 +101,11 @@ public class ExpandLinq : IMethodPass
         var source = sourceRef.Operand;
 
         if (source is CallInst call && call.Method.DeclaringType == t_Enumerable) {
+            // Indexed collection operators own their mutation and enumeration semantics.
+            if (call.NumArgs > 0 && call.Method.Name != "Range" && !RuntimeLibrary.HasKnownSequenceDispatch(call.Args[0])) {
+                return new EnumeratorSource(sourceRef, drain);
+            }
+
             if (call.Method.Name == "Range") {
                 return new IntRangeSource(call, drain);
             }
@@ -116,11 +126,13 @@ public class ExpandLinq : IMethodPass
                 return CreateStage(call.GetOperandRef(0), node);
             }
         }
+
         var type = source.ResultType;
 
-        if (type is ArrayType || type.IsCorelibType(typeof(List<>)) || type.Kind == TypeKind.String) {
+        if (type is ArrayType || type.Kind == TypeKind.String) {
             return new MemorySource(sourceRef, drain);
         }
+
         return new EnumeratorSource(sourceRef, drain);
     }
 }

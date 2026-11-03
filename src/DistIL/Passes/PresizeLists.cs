@@ -27,8 +27,9 @@ public class PresizeLists : IMethodPass
                     // List must have been defined outside loop
                     if (call.Args is not [TrackedValue list, ..] || !loop.IsInvariant(list)) continue;
 
-                    // List must not have been initialized with capacity
-                    if (list is NewObjInst { Args: [{ ResultType.Kind: TypeKind.Int32 }] }) continue;
+                    if (list is not NewObjInst { NumArgs: 0 } || !IsConfined(list)) {
+                        continue;
+                    }
 
                     ref var info = ref candidateLists.GetOrAddRef(list);
 
@@ -48,29 +49,46 @@ public class PresizeLists : IMethodPass
             foreach (var (list, info) in candidateLists) {
                 if (info.AddCallCount == 0) continue; // nothing we can do
 
-                var builder = new IRBuilder(loop.PreHeader);
-                var numAddedItems = builder.CreateMul(loop.GetTripCount(builder)!, ConstInt.CreateI(info.AddCallCount));
-                var newList = list;
+                var listAlloc = (NewObjInst)list;
 
-                if (list is NewObjInst { NumArgs: 0 } listAlloc && CanSinkAlloc(listAlloc, numAddedItems as Instruction ?? loop.PreHeader.Last, domTree, regions)) {
-
-                    var ctorWithCap = list.ResultType.FindMethod(".ctor", new MethodSig(PrimType.Void, [PrimType.Int32]));
-                    newList = builder.CreateNewObj(ctorWithCap, [numAddedItems]);
-                    listAlloc.ReplaceWith(newList);
-                } else {
-                    var minCap = builder.CreateAdd(numAddedItems, builder.CreateFieldLoad("_size", list));
-                    builder.CreateCallVirt("EnsureCapacity", [list, minCap]);
+                if (!CanSinkAlloc(listAlloc, loop.PreHeader.Last, domTree, regions)) {
+                    continue;
                 }
 
-                if (!info.HasConditionalAdd) {
+                var builder = new IRBuilder(loop.PreHeader);
+                var tripCount = loop.GetTripCount(builder)!;
+                bool fitsCapacity = info.AddCallCount == 1 || tripCount is ConstInt constant &&
+                    constant.Value <= int.MaxValue / info.AddCallCount;
+                Value numAddedItems;
+
+                if (fitsCapacity) {
+                    numAddedItems = builder.CreateMul(tripCount, ConstInt.CreateI(info.AddCallCount));
+                } else {
+                    var wide = builder.CreateMul(builder.CreateConvert(tripCount, PrimType.Int64), ConstInt.CreateL(info.AddCallCount));
+                    numAddedItems = builder.CreateSelect(builder.CreateSle(wide, ConstInt.CreateL(int.MaxValue)),
+                        builder.CreateConvert(wide, PrimType.Int32), ConstInt.CreateI(0));
+                }
+
+                var ctorWithCap = list.ResultType.FindMethod(".ctor", new MethodSig(PrimType.Void, [PrimType.Int32]));
+                var newList = builder.CreateNewObj(ctorWithCap, numAddedItems);
+                listAlloc.ReplaceWith(newList);
+
+                if (!info.HasConditionalAdd && fitsCapacity) {
                     TryReplaceArrayBuilder(loop, builder, newList, domTree);
                 }
+
                 numChanges++;
             }
+
             candidateLists.Clear();
         }
+
         return numChanges > 0 ? MethodInvalidations.DataFlow : MethodInvalidations.None;
     }
+
+    private static bool IsConfined(TrackedValue list)
+        => list.Uses().All(use => use.OperIndex == 0 && use.Parent is CallInst call && IsListMethod(call.Method) &&
+            call.Method.Name is "Add" or "ToArray" or "get_Count" or "get_Item");
 
     // A confined list construction can write directly to its result array.
     // Observable lists retain Add's versioning and incremental mutation semantics.
@@ -110,15 +128,7 @@ public class PresizeLists : IMethodPass
         listAlloc.Remove();
         Debug.Assert(listAlloc.NumUses == addCalls.Count);
 
-        // Emitting a pointer increment for IEnumerables is a bit questionable because bad collections could
-        // theoretically report a wrong count, and the perf delta is quite small (the cost of a bounds check).
-        // |        ArrayIdx |    4 |     6.209 ns |   115 B |
-        // |     ArrayPtrInc |    4 |     5.760 ns |    78 B |
-        // |        ArrayIdx | 4096 | 4,095.651 ns |   115 B |
-        // |     ArrayPtrInc | 4096 | 4,081.241 ns |    78 B |
-
-        // With a little more effort we can avoid creating a non-SSA variable and
-        // potentially enable vectorization by specializing over canonical for..i loops.
+        // Canonical counting loops use their induction variable as the destination index.
         if (addCalls.Count == 1 && loop is CountingLoopInfo { IsCanonical: true } forLoop) {
             var basePtr = LoopStrengthReduction.CreateGetDataPtrRange(builder, array, getCount: false).BasePtr;
 

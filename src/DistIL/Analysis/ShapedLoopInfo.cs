@@ -112,7 +112,9 @@ public class CountingLoopInfo : ShapedLoopInfo
     {
         // SCEVs could help in computing trip count for more complicated loops,
         // but probably not worth much for us
-        if (!IsCanonical) return false;
+        if (!IsCanonical || Counter.ResultType.StackType != StackType.Int || End.ResultType.StackType != StackType.Int) {
+            return false;
+        }
 
         var sourceOrBound = GetSourceArray() ?? End;
         if (!Loop.IsInvariant(sourceOrBound)) return false;
@@ -122,6 +124,7 @@ public class CountingLoopInfo : ShapedLoopInfo
         }
         return true;
     }
+
     public override Value? GetTripCount(IRBuilder? builder)
     {
         var array = GetSourceArray();
@@ -173,24 +176,21 @@ public class EnumeratingLoopInfo : ShapedLoopInfo
         if (domTree == null || position == null) return false;
         if (Enumerator is not CallInst { Method.Name: "GetEnumerator", Args: [var source] }) return false;
 
-        var resolver = position.Block.Method.Definition.Module.Resolver;
-        var t_Collection = resolver.Import(typeof(ICollection<>)).GetSpec([CurrentItem.ResultType]);
-        var t_ROCollection = resolver.Import(typeof(IReadOnlyCollection<>)).GetSpec([CurrentItem.ResultType]);
-
-        // IROCollection<T> doesn't inherit from ICollection<T> as it should, for backwards compat or whatever,
-        // so we must check for both.
-        if (!source.ResultType.Inherits(t_Collection) && !source.ResultType.Inherits(t_ROCollection)) return false;
+        if (!RuntimeLibrary.HasKnownCollectionCount(source)) {
+            return false;
+        }
 
         if (source is Instruction sourceI && !domTree.Dominates(sourceI, position)) return false;
 
         return true;
     }
+
     public override Value? GetTripCount(IRBuilder? builder)
     {
         if (builder == null) return null;
         if (Enumerator is not CallInst { Method.Name: "GetEnumerator", Args: [var source] }) return null;
 
-        return builder.CreateCallVirt("get_Count", source);
+        return RuntimeLibrary.HasKnownCollectionCount(source) ? RuntimeLibrary.EmitCollectionCount(builder, source) : null;
     }
 
     protected override bool Parse()
@@ -203,8 +203,8 @@ public class EnumeratingLoopInfo : ShapedLoopInfo
         if (CurrentItem is not { Method.Name: "get_Current", NumArgs: 1, HasResult: true }) return false;
         if (CurrentItem.Args[0] != Enumerator) return false;
 
-        // TODO: consider checking that Enumerator is only used twice inside the loop
-
-        return true;
+        return Enumerator is TrackedValue enumerator && enumerator.Uses().All(use => use.OperIndex == 0 &&
+            (use.Parent == ExitCondition || use.Parent == CurrentItem ||
+             !Contains(use.Parent.Block) && use.Parent is CallInst { Method.Name: "Dispose", NumArgs: 1 } or CompareInst));
     }
 }

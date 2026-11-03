@@ -1,11 +1,66 @@
 namespace DistIL;
 
 using DistIL.Analysis;
+using DistIL.IR.Utils;
 
 /// <summary> Semantic contracts for recognized methods in the resolved runtime library. </summary>
 public sealed class RuntimeLibrary(ModuleResolver resolver)
 {
     public ModuleResolver Resolver { get; } = resolver;
+
+    /// <summary> Whether the sequence uses mutable indexed storage with library-specific iteration rules. </summary>
+    public static bool IsMutableIndexedSequence(TypeDesc type)
+    {
+        for (var parent = type; parent != null; parent = parent.BaseType) {
+            if (parent.IsCorelibType(typeof(List<>))) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /// <summary> Whether source dispatch is known to use ordinary enumeration or fixed-length storage. </summary>
+    public static bool HasKnownSequenceDispatch(Value source)
+    {
+        var type = source is CilIntrinsic.Box box ? box.SourceType : source.ResultType;
+
+        if (type is ArrayType || type.Kind == TypeKind.String || type.IsCorelibType(typeof(ArraySegment<>))) {
+            return true;
+        }
+
+        if (IsMutableIndexedSequence(type)) {
+            return false;
+        }
+
+        if (source is CallInst { Method: MethodDefOrSpec method } call) {
+            if (method.DeclaringType.Namespace == "System.Linq" && method.DeclaringType.Name == "Enumerable" &&
+                method.Module == method.Module.Resolver.Resolve("System.Linq")) {
+                return method.Name == "AsEnumerable" ? HasKnownSequenceDispatch(call.Args[0])
+                    : method.Name is "Range" or "Where" or "Select" or "SelectMany" or "Skip" or "Take" or "Cast" or "OfType";
+            }
+
+            if (method.Definition.HasCustomAttrib("System.Runtime.CompilerServices", "IteratorStateMachineAttribute")) {
+                return true;
+            }
+        }
+
+        return source is NewObjInst or CilIntrinsic.Box ||
+            type is TypeDefOrSpec definition && definition.Attribs.HasFlag(System.Reflection.TypeAttributes.Sealed);
+    }
+
+    /// <summary> Whether cardinality can be read without invoking a user implementation. </summary>
+    public static bool HasKnownCollectionCount(Value source)
+        => source.ResultType is ArrayType || source.ResultType.Kind == TypeKind.String ||
+           source is NewObjInst allocation && allocation.Constructor.DeclaringType.IsCorelibType(typeof(List<>));
+
+    public static Value EmitCollectionCount(IRBuilder builder, Value source)
+    {
+        Ensure.That(HasKnownCollectionCount(source));
+
+        return source.ResultType is ArrayType ? builder.CreateConvert(builder.CreateArrayLen(source), PrimType.Int32)
+            : builder.CreateCallVirt(source.ResultType.Kind == TypeKind.String ? "get_Length" : "get_Count", source);
+    }
 
     public FunctionEffects? GetKnownEffects(MethodDef method)
     {
