@@ -3,7 +3,7 @@ namespace DistIL.CodeGen.Cil;
 using DistIL.Analysis;
 using DistIL.IR.Utils;
 
-/// <summary> Owns legalization, edge preparation, scheduling, and local allocation for one CIL body. </summary>
+/// <summary> Owns instruction selection, legalization, edge preparation, scheduling, and local allocation for one CIL body. </summary>
 internal sealed class CilPreparation
 {
     public MethodBody Method { get; }
@@ -20,6 +20,7 @@ internal sealed class CilPreparation
         Method = IRCloner.CloneBody(source);
         Legalize(Method);
         PreparePhiEdges(Method);
+        PrepareIndexedAccesses(Method);
         Forest = PrepareExpressions(Method);
         IRVerifier.Verify(Method);
         var interference = new InterferenceGraph(Method, new LivenessAnalysis(Method), Forest);
@@ -92,6 +93,75 @@ internal sealed class CilPreparation
                 }
             }
         }
+    }
+
+    private static void PrepareIndexedAccesses(MethodBody method)
+    {
+        if (!method.Instructions().Any(inst => inst is PtrOffsetInst { Index: PhiInst { ResultType.Kind: TypeKind.Int32 } })) {
+            return;
+        }
+
+        var dominators = new DominatorTree(method);
+        var loops = new LoopAnalysis(method, dominators);
+
+        foreach (var shape in loops.GetShapedLoops()) {
+            if (shape is not CountingLoopInfo {
+                IsCanonical: true,
+                Counter.ResultType.Kind: TypeKind.Int32,
+                End.ResultType.Kind: TypeKind.Int32,
+                ExitCondition.Op: CompareOp.Slt
+            } loop) {
+                continue;
+            }
+
+            // A signed int32 bound stops unit-step induction before its counter can wrap.
+            foreach (var offset in loop.Counter.Users().AsEnumerable().OfType<PtrOffsetInst>().ToArray()) {
+                if (offset.Index != loop.Counter || !loop.Contains(offset.Block)) {
+                    continue;
+                }
+
+                if (TrySelectArrayAddress(loop, offset, dominators)) {
+                    continue;
+                }
+
+                var builder = new IRBuilder(offset, InsertionDir.Before).SetNextDebugLocation(offset.DebugLocation);
+                offset.Index = builder.CreateConvert(loop.Counter, PrimType.UIntPtr);
+            }
+        }
+    }
+
+    private static bool TrySelectArrayAddress(CountingLoopInfo loop, PtrOffsetInst offset, DominatorTree dominators)
+    {
+        var array = loop.GetSourceArray();
+
+        if (array == null || offset.BasePtr is not CallInst { Method.Name: "GetArrayDataReference", Args: [var source] } data ||
+            source != array || !data.Method.DeclaringType.IsCorelibType(typeof(System.Runtime.InteropServices.MemoryMarshal)) ||
+            offset.ElemType != array.ResultType.ElemType || offset.Stride != offset.ElemType.Kind.Size() ||
+            !dominators.Dominates(((BranchInst)loop.Header.Last).Then, offset.Block) || offset.NumUses == 0) {
+            return false;
+        }
+
+        bool readOnly = true;
+
+        foreach (var use in offset.Uses()) {
+            if (use.OperIndex != 0 || use.Parent is not MemoryInst { Flags: 0 } access || access.ElemType != offset.ElemType) {
+                return false;
+            }
+
+            readOnly &= access is LoadInst;
+        }
+
+        var address = new ArrayAddrInst(array, offset.Index, inBounds: true, readOnly: readOnly) {
+            DebugLocation = offset.DebugLocation
+        };
+
+        if (address.RequiresVarianceCheck) {
+            address.Remove();
+            return false;
+        }
+
+        offset.ReplaceWith(address, insertIfInst: true);
+        return true;
     }
 
     private static ForestAnalysis PrepareExpressions(MethodBody method)
