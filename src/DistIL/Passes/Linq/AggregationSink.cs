@@ -20,7 +20,7 @@ internal class AggregationSink : LinqSink
             // goto hasData ? Exit : ThrowHelper
             builder.Throw(typeof(InvalidOperationException), builder.CreateEq(_hasData, ConstInt.CreateI(0)));
         }
-        SubjectCall.ReplaceUses(MapResult(builder, _accumulator!));
+        Result = MapResult(builder, _accumulator!);
     }
 
     public override void EmitBody(IRBuilder builder, Value currItem, BodyLoopData loopData)

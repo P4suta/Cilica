@@ -50,7 +50,8 @@ public abstract class CilIntrinsic : IntrinsicInst
         protected internal override IntrinsicInst CloneWith(TypeDesc resultType, EntityDesc[] staticArgs, Value[] args)
             => base.CloneWith(GetResultType(resultType), staticArgs, args);
 
-        private static TypeDesc GetResultType(TypeDesc destType) => destType.IsValueType ? PrimType.Object : destType;
+        private static TypeDesc GetResultType(TypeDesc destType)
+            => destType.IsValueType || destType is GenericParamType ? PrimType.Object : destType;
     }
 
     /// <summary> (object)T Box&lt;T&gt;(T val) </summary>

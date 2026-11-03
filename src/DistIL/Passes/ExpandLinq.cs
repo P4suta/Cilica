@@ -25,9 +25,8 @@ public class ExpandLinq : IMethodPass
             }
         }
 
-        foreach (var query in queries) {
-            query.Emit();
-        }
+        var validated = new HashSet<CallInst>();
+        foreach (var query in queries) query.Emit(validated);
         return queries.Count > 0 ? MethodInvalidations.Loops : 0;
     }
 

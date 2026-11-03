@@ -15,9 +15,10 @@ internal static class IRBuilderExt
 
         if (invoker.ParamSig.Count == 3) {
             CallInst call = null!;
-            createAccum(ConstInt.CreateI(0), currIndex => {
-                call = ib.CreateCallVirt(invoker, lambda, currItem, currIndex);
-                return ib.CreateAdd(currIndex, ConstInt.CreateI(1));
+            createAccum(ConstInt.CreateI(-1), previousIndex => {
+                var index = ib.CreateBin(BinaryOp.AddOvf, previousIndex, ConstInt.CreateI(1));
+                call = ib.CreateCallVirt(invoker, lambda, currItem, index);
+                return index;
             });
             return call;
         }

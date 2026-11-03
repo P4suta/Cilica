@@ -1,10 +1,211 @@
 namespace DistIL.PracticeTests;
 
 using DistIL.Attributes;
+using System.Collections;
+using System.Runtime.CompilerServices;
 
 [Optimize, CheckCodeGenAfterRun]
 public class ExpandLinqTests
 {
+    [Fact]
+    public void CastUnboxesValueTypes()
+    {
+        object[] source = [1, 2, 3];
+        Assert.Equal(new[] { 1, 2, 3 }, source.Cast<int>().ToArray());
+        // CHECK: CIL::UnboxObj
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Theory]
+    [InlineData(-1, 0)]
+    [InlineData(0, 0)]
+    [InlineData(1, 1)]
+    [InlineData(3, 3)]
+    [InlineData(10, 3)]
+    public void ArrayTakeClampsItsCount(int count, int expectedLength)
+    {
+        int[] source = [1, 2, 3];
+        var result = source.Take(count).ToArray();
+        Assert.Equal(expectedLength, result.Length);
+        for (int i = 0; i < result.Length; i++) Assert.Equal(i + 1, result[i]);
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Theory]
+    [InlineData(-1, 0, 0)]
+    [InlineData(0, 0, 0)]
+    [InlineData(1, 1, 1)]
+    [InlineData(2, 2, 2)]
+    [InlineData(10, 3, 4)]
+    public void TakeStopsBeforeAcquisitionAndAdvancement(int count, int expectedLength, int expectedMoves)
+    {
+        var source = new TrackingEnumerable([1, 2, 3]);
+        var result = source.Select(x => x).Take(count).ToArray();
+        Assert.Equal(expectedLength, result.Length);
+        Assert.Equal(expectedMoves, source.Moves);
+        Assert.Equal(count > 0 ? 1 : 0, source.Acquisitions);
+        Assert.Equal(count > 0 ? 1 : 0, source.Disposals);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Theory]
+    [InlineData(-3, 2)]
+    [InlineData(int.MaxValue, 1)]
+    [InlineData(int.MaxValue - 2, 3)]
+    [InlineData(int.MinValue, 0)]
+    [InlineData(0, 0)]
+    public void RangeHandlesSignedAndInclusiveBounds(int start, int count)
+    {
+        var result = Enumerable.Range(start, count).Select(x => x).ToArray();
+        Assert.Equal(count, result.Length);
+        for (int i = 0; i < result.Length; i++) Assert.Equal(checked(start + i), result[i]);
+        // CHECK: ThrowIfNegative
+        // CHECK: ThrowIfGreaterThan
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Theory]
+    [InlineData(0, -1)]
+    [InlineData(int.MaxValue, 2)]
+    public void RangeValidatesWhenTheQueryIsCreated(int start, int count)
+    {
+        int reached = 0;
+        string? parameter = null;
+        try {
+            var query = Enumerable.Range(start, count);
+            reached = 1;
+            _ = query.Select(x => x).ToArray();
+        } catch (ArgumentOutOfRangeException ex) { parameter = ex.ParamName; }
+        Assert.Equal(0, reached);
+        Assert.Equal("count", parameter);
+        // CHECK: ThrowIfNegative
+        // CHECK: ThrowIfGreaterThan
+    }
+
+    [Fact]
+    public void EmptyQueriesValidatePredicatesEagerly()
+    {
+        var predicate = Utils.DoNotOptimize<Func<int, bool>>(null!);
+        int reached = 0;
+        string? parameter = null;
+        try {
+            var query = Array.Empty<int>().Where(predicate);
+            reached = 1;
+            _ = query.ToArray();
+        } catch (ArgumentNullException ex) { parameter = ex.ParamName; }
+        Assert.Equal(0, reached);
+        Assert.Equal("predicate", parameter);
+        // CHECK: ThrowIfNull
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Fact]
+    public void SelectManySupportsSelectorOverloads()
+    {
+        int[] source = [10, 20];
+        Assert.Equal(new[] { 10, 11, 20, 21 }, source.SelectMany(x => new[] { x, x + 1 }).ToArray());
+        Assert.Equal(new[] { 0, 1 }, source.SelectMany((x, i) => new[] { i }).ToArray());
+        Assert.Equal(new[] { 11, 21 }, source.SelectMany(x => new[] { 1 }, (x, y) => x + y).ToArray());
+        Assert.Equal(new[] { 10, 21 }, source.SelectMany((x, i) => new[] { i }, (x, y) => x + y).ToArray());
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Fact]
+    public void SelectManyDisposesInnerAndOuterOnFirst()
+    {
+        var outer = new TrackingEnumerable([1, 2]);
+        var inner = new TrackingEnumerable([10, 20]);
+        int result = outer.SelectMany(_ => inner).First();
+        Assert.Equal(10, result);
+        Assert.Equal(1, outer.Moves);
+        Assert.Equal(1, inner.Moves);
+        Assert.Equal(1, outer.Disposals);
+        Assert.Equal(1, inner.Disposals);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void SelectManyTakeStopsEveryEnumerator(int count)
+    {
+        var outer = new TrackingEnumerable([1, 2]);
+        var inner = new TrackingEnumerable([10, 20]);
+        var result = outer.SelectMany(_ => inner).Take(count).ToArray();
+        Assert.Equal(count, result.Length);
+        Assert.Equal(count, outer.Moves);
+        Assert.Equal(count, inner.Moves);
+        Assert.Equal(count, outer.Acquisitions);
+        Assert.Equal(count, inner.Acquisitions);
+        Assert.Equal(count, outer.Disposals);
+        Assert.Equal(count, inner.Disposals);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Fact]
+    public void SelectManyDisposesOnSelectorException()
+    {
+        var outer = new TrackingEnumerable([1, 2]);
+        var inner = new TrackingEnumerable([10, 20]);
+        bool threw = false;
+        try { _ = outer.SelectMany(_ => inner, (x, y) => ThrowAtTwenty(y)).ToArray(); }
+        catch (InvalidOperationException) { threw = true; }
+        Assert.True(threw);
+        Assert.Equal(1, outer.Disposals);
+        Assert.Equal(1, inner.Disposals);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Fact]
+    public void TakeCountsItemsBeforeDownstreamFiltering()
+    {
+        var source = new TrackingEnumerable([1, 2, 3]);
+        var result = source.Take(2).Where(x => x < 0).ToArray();
+        Assert.Empty(result);
+        Assert.Equal(2, source.Moves);
+        Assert.Equal(1, source.Disposals);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Fact]
+    public void TakeBeforeSelectManyCountsOuterItems()
+    {
+        var outer = new TrackingEnumerable([1, 2]);
+        var inner = new TrackingEnumerable([10, 20]);
+        var result = outer.Take(1).SelectMany(_ => inner).ToArray();
+        Assert.Equal(new[] { 10, 20 }, result);
+        Assert.Equal(1, outer.Moves);
+        Assert.Equal(3, inner.Moves);
+        Assert.Equal(1, outer.Disposals);
+        Assert.Equal(1, inner.Disposals);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [DoNotOptimize, MethodImpl(MethodImplOptions.NoInlining)]
+    static int ThrowAtTwenty(int value) => value == 20 ? throw new InvalidOperationException() : value;
+
+    [DoNotOptimize]
+    sealed class TrackingEnumerable(int[] values) : IEnumerable<int>
+    {
+        public int Acquisitions, Moves, Disposals;
+        public IEnumerator<int> GetEnumerator() { Acquisitions++; return Iterate().GetEnumerator(); }
+        IEnumerator IEnumerable.GetEnumerator() => GetEnumerator();
+        IEnumerable<int> Iterate()
+        {
+            try {
+                foreach (int value in values) { Moves++; yield return value; }
+                Moves++;
+            } finally { Disposals++; }
+        }
+    }
+
     [Fact]
     public void Array_Map_PredCount()
     {
@@ -103,9 +304,9 @@ public class ExpandLinqTests
 
         Assert.Equal(8, result);
 
+        // CHECK: try finally
         // CHECK: GetEnumerator
         // CHECK-SAME: ArraySegment`1+Enumerator[string]
-        // CHECK: try finally
     }
 
     [Fact]

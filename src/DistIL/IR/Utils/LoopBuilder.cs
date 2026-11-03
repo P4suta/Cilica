@@ -43,10 +43,17 @@ public class LoopBuilder
     //  ...
     public void Build(
         Func<IRBuilder, Value> emitCond,
-        Action<IRBuilder> emitBody)
+        Action<IRBuilder> emitBody,
+        Func<IRBuilder, Value>? emitGuard = null)
     {
-        var hasNext = emitCond(Header);
-        Header.SetBranch(hasNext, Body.Block, Exit.Block);
+        var condition = new IRBuilder(Header.Block, InsertionDir.After);
+        if (emitGuard != null) {
+            var next = Header.Method.CreateBlock(insertAfter: Header.Block);
+            Header.SetBranch(emitGuard(Header), next, Exit.Block);
+            condition.SetPosition(next);
+        }
+        var hasNext = emitCond(condition);
+        condition.SetBranch(hasNext, Body.Block, Exit.Block);
 
         emitBody(Body);
 
@@ -56,13 +63,14 @@ public class LoopBuilder
         PreHeader.SetBranch(Header.Block);
 
         foreach (var (headPhi, next) in _pendingAccums) {
-            headPhi.ReplaceOperand(next, InsertAccumPhis(Latch.Block, next, headPhi));
+            headPhi.ReplaceOperand(next, InsertAccumPhis(Latch.Block, next, headPhi, new()));
         }
         Latch.SetBranch(Header.Block);
     }
 
-    // Naive algorithm that inserts phis for each predecessor to form strict SSA (def dominates all uses).
-    private Value InsertAccumPhis(BasicBlock block, Instruction def, Instruction dom)
+    // Publish provisional phis before visiting predecessors so nested backedges
+    // can refer to the value being constructed without recursively revisiting it.
+    private Value InsertAccumPhis(BasicBlock block, Instruction def, Instruction dom, Dictionary<BasicBlock, Value> values)
     {
         if (block == def.Block) {
             return def;
@@ -70,14 +78,13 @@ public class LoopBuilder
         if (block == dom.Block) {
             return dom;
         }
-        if (block.NumPreds == 1) {
-            return InsertAccumPhis(block.Preds.First(), def, dom);
-        }
+        if (values.TryGetValue(block, out var value)) return value;
         Debug.Assert(block.NumPreds > 0);
 
         var phi = block.InsertPhi(def.ResultType);
+        values.Add(block, phi);
         foreach (var pred in block.Preds) {
-            phi.AddArg(pred, InsertAccumPhis(pred, def, dom));
+            phi.AddArg(pred, InsertAccumPhis(pred, def, dom, values));
         }
         return phi;
     }

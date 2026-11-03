@@ -20,7 +20,7 @@ internal abstract class ConcretizationSink : LinqSink
     public override void EmitTail(IRBuilder builder)
     {
         var result = WrapContainer(builder, _container!);
-        SubjectCall.ReplaceUses(result);
+        Result = result;
     }
 
     protected virtual Value AllocContainer(IRBuilder builder, EstimatedSourceLen estimLen)

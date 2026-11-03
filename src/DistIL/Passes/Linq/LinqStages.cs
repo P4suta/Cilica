@@ -41,13 +41,13 @@ internal class OfTypeStage : LinqStageNode
     {
         var destType = SubjectCall!.Method.GenericParams[0];
 
-        if (currItem.ResultType.IsValueType) {
+        if (currItem.ResultType.IsValueType || currItem.ResultType is GenericParamType) {
             currItem = builder.CreateBox(currItem.ResultType, currItem);
         }
         currItem = builder.CreateAsInstance(destType, currItem);
         builder.ForkIf(currItem, loopData.SkipBlock, negate: true);
 
-        if (destType.IsValueType) {
+        if (destType.IsValueType || destType is GenericParamType) {
             currItem = builder.CreateUnboxObj(destType, currItem);
         }
         Drain.EmitBody(builder, currItem, loopData);
@@ -62,10 +62,11 @@ internal class CastStage : LinqStageNode
     {
         var destType = SubjectCall!.Method.GenericParams[0];
 
-        if (currItem.ResultType.IsValueType) {
+        if (currItem.ResultType.IsValueType || currItem.ResultType is GenericParamType) {
             currItem = builder.CreateBox(currItem.ResultType, currItem);
         }
-        currItem = builder.CreateCastClass(destType, currItem);
+        currItem = destType.IsValueType || destType is GenericParamType
+            ? builder.CreateUnboxObj(destType, currItem) : builder.CreateCastClass(destType, currItem);
 
         Drain.EmitBody(builder, currItem, loopData);
     }
@@ -102,24 +103,25 @@ internal class SkipStage : LinqStageNode
 }
 internal class TakeStage : LinqStageNode
 {
+    LocalSlot _remaining = null!;
+    public LocalSlot Remaining => _remaining;
     public TakeStage(CallInst call, LinqStageNode sink)
         : base(call, sink) { }
 
     public override bool IsFiltering => true;
 
+    public override void Prepare(BodyLoopData loopData)
+    {
+        _remaining = loopData.PreHeader.Method.CreateVar(PrimType.Int32, "lq_takeRemaining", hardExposed: true);
+        loopData.PreHeader.CreateStore(_remaining, SubjectCall.Args[1]);
+        loopData.Limits.Add(_remaining);
+    }
+
     public override void EmitBody(IRBuilder builder, Value currItem, BodyLoopData loopData)
     {
-        // Behavior for `count <= 0` is to discard all elements.
-        var count = SubjectCall.Args[1];
-        var remIters = loopData.CreateAccum(count, emitUpdate: curr => {
-            Drain.EmitBody(builder, currItem, loopData);
-            return builder.CreateSub(curr, ConstInt.CreateI(1));
-        }).SetName("lq_takeRem");
-
-        var header = loopData.Header;
-        var loopBranch = (BranchInst)header.Block.Last;
-        Debug.Assert(loopBranch.IsConditional && loopBranch.Cond.ResultType == PrimType.Bool);
-        loopBranch.Cond = header.CreateAnd(loopBranch.Cond, header.CreateSgt(remIters, ConstInt.CreateI(0)));
+        var remaining = builder.CreateLoad(_remaining);
+        builder.CreateStore(_remaining, builder.CreateSub(remaining, ConstInt.CreateI(1)));
+        Drain.EmitBody(builder, currItem, loopData);
     }
 }
 internal class FlattenStage : LinqStageNode
@@ -134,23 +136,39 @@ internal class FlattenStage : LinqStageNode
     {
         var innerLoop = new LoopBuilder(SubjectCall.Block, "LQ_Flatten_");
 
-        var subCollection = builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem);
-        var enumerator = builder.CreateCallVirt("GetEnumerator", subCollection);
+        var subCollection = builder.CreateLambdaInvoke_ItemAndIndex(SubjectCall.Args[1], currItem, loopData.CreateAccum);
+        var enumeration = new EnumeratorLoop(innerLoop, subCollection, subCollection.ResultType, loopData.Enumeration);
+        loopData.HasDisposal = true;
+
+        // Limits before this flattening stage count outer items; only downstream
+        // limits constrain advancement of its inner enumerator.
+        var innerLimits = new List<LocalSlot>();
+        for (LinqStageNode? node = Drain; node != null; node = node.Drain) {
+            if (node is TakeStage take) innerLimits.Add(take.Remaining);
+        }
 
         var innerLoopData = loopData with {
+            Enumeration = enumeration,
+            Limits = innerLimits,
             SkipBlock = innerLoop.Latch.Block,
             CreateAccum = (seed, emitUpdate) => 
                 loopData.CreateAccum(seed, curr => innerLoop.CreateAccum(curr, emitUpdate))
         };
 
         innerLoop.Build(
-            emitCond: header => header.CreateCallVirt("MoveNext", enumerator),
+            emitCond: enumeration.MoveNext,
             emitBody: body => {
-                var innerItem = body.CreateCallVirt("get_Current", enumerator);
+                var innerItem = enumeration.Current(body);
+                if (SubjectCall.NumArgs == 3) {
+                    innerItem = body.CreateLambdaInvoke(SubjectCall.Args[2], currItem, innerItem);
+                }
                 Drain.EmitBody(body, innerItem, innerLoopData);
-            }
+            },
+            emitGuard: innerLoopData.Limits.Count == 0 ? null : innerLoopData.EmitGuard
         );
+        var continuation = builder.Method.CreateBlock(insertAfter: innerLoop.Exit.Block).SetName("LQ_Flatten_Continue");
+        enumeration.Finish(continuation);
         builder.SetBranch(innerLoop.PreHeader.Block);
-        builder.SetPosition(innerLoop.Exit.Block);
+        builder.SetPosition(continuation);
     }
 }

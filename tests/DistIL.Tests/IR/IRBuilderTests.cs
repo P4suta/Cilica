@@ -22,6 +22,30 @@ public class IRBuilderTests
     }
 
     [Fact]
+    public void LoopAccumulatorsCrossNestedBackedges()
+    {
+        var method = Utils.CreateDummyMethodBody(PrimType.Int32);
+        var entry = method.CreateBlock();
+        var outer = new LoopBuilder(entry);
+        entry.SetBranch(outer.EntryBlock);
+        var index = outer.CreateInductor();
+        Value result = null!;
+        outer.Build(h => h.CreateSlt(index, ConstInt.CreateI(2)), body => {
+            result = outer.CreateAccum(ConstInt.CreateI(0), current => {
+                var next = body.CreateAdd(current, ConstInt.CreateI(1));
+                var inner = new LoopBuilder(body.Block);
+                var innerIndex = inner.CreateInductor();
+                inner.Build(h => h.CreateSlt(innerIndex, ConstInt.CreateI(3)), _ => { });
+                body.SetBranch(inner.EntryBlock);
+                body.SetPosition(inner.Exit.Block);
+                return next;
+            });
+        });
+        outer.Exit.CreateReturn(result);
+        Assert.DoesNotContain(IRVerifier.Diagnose(method), d => d.Severity == DiagnosticSeverity.Error);
+    }
+
+    [Fact]
     public void Positioning()
     {
         var method = Utils.CreateDummyMethodBody(PrimType.Int32);
