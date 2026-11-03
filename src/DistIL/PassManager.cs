@@ -3,12 +3,19 @@ namespace DistIL;
 using DistIL.CodeGen.Cil;
 using DistIL.Frontend;
 using DistIL.Passes;
+using DistIL.IR.Utils;
 
 public class PassManager
 {
     public required Compilation Compilation { get; init; }
     public List<PipelineSegment> Pipeline { get; } = new();
     public List<IPassInspector> Inspectors { get; } = new();
+
+    readonly Dictionary<MethodDef, MethodBody?> _originalBodies = new();
+    readonly Dictionary<MethodDef, ILMethodBody?> _originalIL = new();
+    readonly Dictionary<MethodDef, long> _initialRevisions = new();
+    readonly Dictionary<MethodDef, MethodCompilationResult> _results = new();
+    bool _running;
 
     /// <summary> Adds a new segment to the pass pipeline. </summary>
     /// <param name="applyIndependently"> Whether to apply the segment on all methods independently from others. </param>
@@ -19,94 +26,161 @@ public class PassManager
         return pipe;
     }
 
-    /// <summary> Apply passes to the given methods, while additionally importing and generating IL. </summary>
-    public void Run(IReadOnlyCollection<MethodDef> methods)
+    /// <summary> Imports, transforms, verifies, and emits the selected methods. Failed methods retain their input bodies. </summary>
+    public CompilationResult Run(IReadOnlyCollection<MethodDef> methods) => Execute(methods, importAndEmit: true);
+
+    /// <summary> Transforms and verifies working copies of the supplied IR bodies. </summary>
+    public CompilationResult ApplyPasses(IReadOnlyCollection<MethodDef> methods) => Execute(methods, importAndEmit: false);
+
+    private CompilationResult Execute(IReadOnlyCollection<MethodDef> methods, bool importAndEmit)
     {
-        foreach (var insp in Inspectors) {
-            insp.OnBegin(Compilation);
-        }
+        Ensure.That(!_running, "Pass managers cannot be entered recursively");
 
-        ImportIL(methods);
-        ApplyPasses(methods);
-        GenerateIL(methods);
+        _running = true;
+        _originalBodies.Clear();
+        _originalIL.Clear();
+        _initialRevisions.Clear();
+        _results.Clear();
 
-        foreach (var insp in Inspectors) {
-            insp.OnFinish(Compilation);
+        try {
+            foreach (var inspector in Inspectors) {
+                inspector.OnBegin(Compilation);
+            }
+
+            PrepareMethods(methods, importAndEmit);
+            ApplyPipeline(methods);
+
+            foreach (var method in methods) {
+                if (method.Body == null || Compilation.HasFailed(method)) {
+                    continue;
+                }
+
+                try {
+                    IRVerifier.Verify(method.Body);
+                    bool changed = method.Body.Revision != _initialRevisions[method];
+
+                    if (importAndEmit) {
+                        GenerateIL(method);
+                    }
+
+                    _results[method].Status = changed ? MethodCompilationStatus.Optimized : MethodCompilationStatus.Unchanged;
+                } catch (Exception error) {
+                    Fail(method, importAndEmit ? "emission" : "verification", error);
+                }
+            }
+
+            Compilation.RemoveUnusedArtifacts();
+
+            return new CompilationResult(_results.Values.ToArray());
+        } finally {
+            _running = false;
+
+            foreach (var inspector in Inspectors) {
+                inspector.OnFinish(Compilation);
+            }
         }
     }
 
-    private void ImportIL(IReadOnlyCollection<MethodDef> candidates)
+    private void PrepareMethods(IReadOnlyCollection<MethodDef> methods, bool import)
     {
-        long startTs = Stopwatch.GetTimestamp();
+        long start = Stopwatch.GetTimestamp();
         int count = 0;
 
-        foreach (var method in candidates) {
+        foreach (var method in methods) {
+            _results.Add(method, new(method));
+            _originalBodies.Add(method, method.Body);
+            Compilation.BeginMethod(method);
+
             try {
-                if (method.ILBody != null && method.Body == null) {
+                if (import) {
+                    _originalIL[method] = method.ILBody;
+                }
+
+                if (method.Body != null) {
+                    IRVerifier.Verify(method.Body);
+                    method.Body = IRCloner.CloneBody(method.Body);
+                } else if (import && method.ILBody != null) {
                     method.Body = ILImporter.ParseCode(method);
                     count++;
                 }
-            } catch (Exception ex) {
-                Compilation.Logger.Error($"Failed to import code from '{method}'", ex);
-            }
-        }
 
-        var timer = Inspectors.OfType<PassTimingInspector>().FirstOrDefault();
-        timer?.IncrementStat(typeof(ILImporter), startTs, count);
-    }
-
-    private void GenerateIL(IReadOnlyCollection<MethodDef> candidates)
-    {
-        long startTs = Stopwatch.GetTimestamp();
-        int count = 0;
-
-        foreach (var method in candidates) {
-            try {
                 if (method.Body != null) {
-                    var spBuilder = method.GetDebugSymbols() != null ? new SequencePointBuilder(method) : null;
-                    method.ILBody = ILGenerator.GenerateCode(method.Body, spBuilder);
-                    spBuilder?.BuildAndReplace();
-                    
-                    count++;
+                    DeadCodeElim.RemoveUnreachableBlocks(method.Body);
+                    IRVerifier.Verify(method.Body);
+                    _initialRevisions[method] = method.Body.Revision;
                 }
-            } catch (Exception ex) {
-                Compilation.Logger.Error($"Failed to generate code for '{method}'", ex);
+            } catch (Exception error) {
+                Fail(method, "import", error);
             }
         }
 
-        var timer = Inspectors.OfType<PassTimingInspector>().FirstOrDefault();
-        timer?.IncrementStat(typeof(ILGenerator), startTs, count);
+        Inspectors.OfType<PassTimingInspector>().FirstOrDefault()?.IncrementStat(typeof(ILImporter), start, count);
     }
 
-    public void ApplyPasses(IReadOnlyCollection<MethodDef> candidates)
+    private void GenerateIL(MethodDef method)
+    {
+        long start = Stopwatch.GetTimestamp();
+        var symbols = method.GetDebugSymbols() != null ? new SequencePointBuilder(method) : null;
+        var generated = ILGenerator.GenerateCode(method.Body!, symbols);
+        var generatedSymbols = symbols?.BuildSymbols(generated.Instructions);
+        Compilation.EnsureReferencedMembersAccessible(method.Body!);
+        method.ILBody = generated;
+
+        if (symbols != null) {
+            method.Module.GetDebugSymbols(create: true)!.SetMethodSymbols(method, generatedSymbols);
+        }
+
+        Inspectors.OfType<PassTimingInspector>().FirstOrDefault()?.IncrementStat(typeof(ILGenerator), start, 1);
+    }
+
+    private void Fail(MethodDef method, string phase, Exception error)
+    {
+        method.Body = _originalBodies[method];
+
+        if (_originalIL.TryGetValue(method, out var original)) {
+            method.ILBody = original;
+        }
+
+        Compilation.FailMethod(method);
+        var result = _results[method];
+        result.Status = error is NotSupportedException or NotImplementedException
+            ? MethodCompilationStatus.Unsupported : MethodCompilationStatus.Failed;
+        result.FailedPhase = phase;
+        result.Error = error;
+        Compilation.Logger.Error($"Failed during {phase} for '{method}'; input body retained", error);
+    }
+
+    private void ApplyPipeline(IReadOnlyCollection<MethodDef> candidates)
     {
         for (int i = 0; i < Pipeline.Count;) {
-            int j = i + 1;
+            int end = i + 1;
 
-            // Group all serial segments
             if (!Pipeline[i]._applyIndependently) {
-                while (j < Pipeline.Count && !Pipeline[j]._applyIndependently) {
-                    j++;
+                while (end < Pipeline.Count && !Pipeline[end]._applyIndependently) {
+                    end++;
                 }
             }
-            var segments = Pipeline.AsSpan()[i..j];
+
+            var segments = Pipeline.AsSpan()[i..end];
 
             foreach (var method in candidates) {
-                if (method.Body == null) continue; // body will be null on failure to import the IL
-                
-                using var methodScope = Compilation.Logger.Push(s_ApplyScope, $"Apply passes to '{method}'");
-                var ctx = new MethodTransformContext(Compilation, method.Body);
+                if (method.Body == null || Compilation.HasFailed(method)) {
+                    continue;
+                }
+
+                using var scope = Compilation.Logger.Push(s_ApplyScope, $"Apply passes to '{method}'");
+                var context = new MethodTransformContext(Compilation, method.Body);
 
                 try {
-                    foreach (var seg in segments) {
-                        seg.Run(ctx, Inspectors.AsSpan());
+                    foreach (var segment in segments) {
+                        segment.Run(context, Inspectors.AsSpan());
                     }
-                } catch (Exception ex) {
-                    method.Body = null;
-                    Compilation.Logger.Error("Error while transforming method! Will fallback to original method body.", ex);
+                } catch (Exception error) {
+                    Fail(method, "transformation", error);
                 }
             }
-            i = j;
+
+            i = end;
         }
     }
 
@@ -194,27 +268,7 @@ public class PassManager
             bool changed = false;
 
             foreach (var pass in _passes) {
-                foreach (var insp in inspectors) {
-                    insp.OnBeforePass(pass, ctx);
-                }
-
-                long revision = ctx.Method.Revision;
-                long controlFlowRevision = ctx.Method.ControlFlowRevision;
-                var result = pass.Run(ctx);
-                result = ctx.Method.Revision == revision ? MethodInvalidations.None
-                    : result.Changes | (ctx.Method.ControlFlowRevision != controlFlowRevision
-                        ? MethodInvalidations.ControlFlow : MethodInvalidations.DataFlow);
-
-                if (result.Changes != 0) {
-                    result.InvalidateAffectedAnalyses(ctx);
-                    changed = true;
-
-                    ctx.Logger.Trace($"{pass.GetType().Name} changed {result.Changes}");
-                }
-
-                foreach (var insp in inspectors) {
-                    insp.OnAfterPass(pass, ctx, result);
-                }
+                changed |= PassRunner.Run(pass, ctx, inspectors).Changes != MethodInvalidations.None;
             }
 
             return changed;

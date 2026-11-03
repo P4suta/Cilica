@@ -5,7 +5,7 @@
     <IsTestProject>true</IsTestProject>
     
     <RunDistil>true</RunDistil>
-    <DistilExtraArgs>--dump-dir $(OutputPath)ir_dumps/ --purge-dumps --dump-fmts plaintext</DistilExtraArgs>
+    <DistilExtraArgs>--strict --verify-each --dump-dir $(OutputPath)ir_dumps/ --purge-dumps --dump-fmts plaintext</DistilExtraArgs>
   </PropertyGroup>
 
   <ItemGroup>

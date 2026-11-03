@@ -280,10 +280,10 @@ public class SimplifyCFG : IMethodPass
             var newSucc = cond ? br.Then : br.Else;
             if (newSucc.Phis().Any()) continue; // Don't mess with phi edges
 
-            pred.RedirectSucc(block, newSucc);
-            block.RedirectPhis(pred, null); // Remove phi edges
+            pred.RedirectEdge(block, newSucc);
             numChanged++;
         }
+
         return numChanged > 0;
     }
 

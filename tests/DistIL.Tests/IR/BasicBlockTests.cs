@@ -7,6 +7,29 @@ using DistIL.Util;
 public class BasicBlockTests
 {
     [Fact]
+    public void EdgeEditsMaintainPhiInputsAndRejectIncompleteEdits()
+    {
+        var method = Utils.CreateDummyMethodBody(PrimType.Int32);
+        var entry = method.CreateBlock();
+        var oldTarget = method.CreateBlock();
+        var target = method.CreateBlock();
+        entry.SetBranch(oldTarget);
+        oldTarget.SetBranch(target);
+        var phi = target.InsertPhi(new PhiInst(PrimType.Int32, (oldTarget, ConstInt.CreateI(1))));
+        target.SetBranch(new ReturnInst(phi));
+
+        Assert.Throws<InvalidOperationException>(() => entry.RedirectEdge(oldTarget, target));
+        Assert.Same(oldTarget, ((BranchInst)entry.Last).Then);
+        Assert.Equal(1, target.NumPreds);
+
+        entry.RedirectEdge(oldTarget, target, _ => ConstInt.CreateI(2));
+
+        Assert.Equal(2, phi.NumArgs);
+        Assert.Equal(ConstInt.CreateI(2), phi.GetValue(entry));
+        Assert.Empty(DistIL.IR.Utils.IRVerifier.Diagnose(method));
+    }
+
+    [Fact]
     public void InsertBeforeTerminatorPreservesDefinitionOrder()
     {
         var method = Utils.CreateDummyMethodBody(PrimType.Int32, PrimType.Int32);

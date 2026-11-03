@@ -201,22 +201,19 @@ public class ConstFolding
     public static bool FoldBlockBranch(BasicBlock block)
     {
         if (block.Last is BranchInst { IsConditional: true } br && FoldCondition(br.Cond) is bool cond) {
-            var (blockT, blockF) = cond ? (br.Then, br.Else!) : (br.Else!, br.Then);
+            block.ReplaceTerminator(new BranchInst(cond ? br.Then : br.Else!));
 
-            blockF.RedirectPhis(block, newPred: null);
-            block.SetBranch(blockT);
             return true;
         }
+
         if (block.Last is SwitchInst sw && (Fold(sw.TargetIndex) ?? sw.TargetIndex) is ConstInt caseIdx) {
             var targetBlock = sw.GetTarget((int)caseIdx.Value);
 
-            foreach (var succ in sw.GetUniqueTargets()) {
-                if (succ == targetBlock) continue;
-                succ.RedirectPhis(block, newPred: null);
-            }
-            block.SetBranch(targetBlock);
+            block.ReplaceTerminator(new BranchInst(targetBlock));
+
             return true;
         }
+
         return false;
     }
 

@@ -113,7 +113,8 @@ public enum LogLevel
 }
 public readonly struct LoggerScopeHandle : IDisposable
 {
-    public ICompilationLogger Logger { get; }
+    public ICompilationLogger? Logger { get; }
+
     public int SyncId { get; }
 
     public LoggerScopeHandle(ICompilationLogger logger, int syncId)
@@ -121,7 +122,8 @@ public readonly struct LoggerScopeHandle : IDisposable
         Logger = logger;
         SyncId = syncId;
     }
-    public void Dispose() => Logger.Pop(this);
+
+    public void Dispose() => Logger?.Pop(this);
 }
 public readonly struct LoggerScopeInfo
 {

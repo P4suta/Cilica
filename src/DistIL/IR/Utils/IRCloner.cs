@@ -10,12 +10,32 @@ public class IRCloner
     readonly List<BasicBlock> _blocks = new();
     protected readonly GenericContext _genericContext;
     protected readonly MethodBody _destMethod;
+    readonly bool _foldConstants;
 
-    public IRCloner(MethodBody method, GenericContext genericContext = default)
+    public IRCloner(MethodBody method, GenericContext genericContext = default, bool foldConstants = true)
     {
         _destMethod = method;
         _instCloner = new(this);
         _genericContext = genericContext;
+        _foldConstants = foldConstants;
+    }
+
+    public static MethodBody CloneBody(MethodBody source)
+    {
+        var copy = new MethodBody(source.Definition);
+        var cloner = new IRCloner(copy, foldConstants: false);
+
+        for (int i = 0; i < source.Args.Length; i++) {
+            cloner.AddMapping(source.Args[i], copy.Args[i]);
+        }
+
+        foreach (var block in source) {
+            cloner.AddMapping(block, copy.CreateBlock());
+        }
+
+        cloner.Run(source.EntryBlock);
+
+        return copy;
     }
 
     public void AddMapping(Value oldVal, Value newVal)
@@ -54,7 +74,7 @@ public class IRCloner
             }
 
             // If the cloned branch gets folded, we should only push reachable succs.
-            var newSuccs = ConstFolding.FoldBlockBranch(clonedBlock)
+            var newSuccs = _foldConstants && ConstFolding.FoldBlockBranch(clonedBlock)
                 ? [..clonedBlock.Succs]
                 : default(HashSet<BasicBlock>);
 
@@ -219,26 +239,29 @@ public class IRCloner
         {
             var left = Remap(inst.Left);
             var right = Remap(inst.Right);
-            Out(ConstFolding.FoldBinary(inst.Op, left, right)
+            Out((_ctx._foldConstants ? ConstFolding.FoldBinary(inst.Op, left, right) : null)
                 ?? new BinaryInst(inst.Op, left, right));
         }
+
         public void Visit(UnaryInst inst)
         {
             var value = Remap(inst.Value);
-            Out(ConstFolding.FoldUnary(inst.Op, value)
+            Out((_ctx._foldConstants ? ConstFolding.FoldUnary(inst.Op, value) : null)
                 ?? new UnaryInst(inst.Op, value));
         }
+
         public void Visit(CompareInst inst)
         {
             var left = Remap(inst.Left);
             var right = Remap(inst.Right);
-            Out(ConstFolding.FoldCompare(inst.Op, left, right)
+            Out((_ctx._foldConstants ? ConstFolding.FoldCompare(inst.Op, left, right) : null)
                 ?? new CompareInst(inst.Op, left, right));
         }
+
         public void Visit(ConvertInst inst)
         {
             var value = Remap(inst.Value);
-            Out(ConstFolding.FoldConvert(value, inst.ResultType, inst.CheckOverflow, inst.SrcUnsigned)
+            Out((_ctx._foldConstants ? ConstFolding.FoldConvert(value, inst.ResultType, inst.CheckOverflow, inst.SrcUnsigned) : null)
                 ?? new ConvertInst(value, inst.ResultType, inst.CheckOverflow, inst.SrcUnsigned));
         }
 
@@ -248,23 +271,30 @@ public class IRCloner
         public void Visit(FieldInsertInst inst) => Out(new FieldInsertInst(Remap(inst.Field), Remap(inst.Obj), Remap(inst.NewValue)));
 
         public void Visit(ArrayAddrInst inst) => Out(new ArrayAddrInst(Remap(inst.Array), Remap(inst.Index), Remap(inst.ElemType), inst.InBounds, inst.IsReadOnly));
-        public void Visit(FieldAddrInst inst) => Out(new FieldAddrInst(Remap(inst.Field), inst.IsStatic ? null : Remap(inst.Obj)));
+
+        public void Visit(FieldAddrInst inst) => Out(new FieldAddrInst(Remap(inst.Field), inst.IsStatic ? null : Remap(inst.Obj), inst.InBounds));
+
         public void Visit(PtrOffsetInst inst) => Out(new PtrOffsetInst(Remap(inst.BasePtr), Remap(inst.Index), Remap(inst.ResultType), inst.Stride, 0));
 
         public void Visit(CallInst inst)
         {
             var method = Remap(inst.Method);
             var args = RemapArgs(inst.Args);
-            
-            Out(ConstFolding.FoldCall(method, args)
-                ?? new CallInst(method, args, inst.IsVirtual, inst.Constraint == null ? null : Remap(inst.Constraint)));
+
+            Out((_ctx._foldConstants ? ConstFolding.FoldCall(method, args) : null)
+                ?? new CallInst(method, args, inst.IsVirtual, inst.Constraint == null ? null : Remap(inst.Constraint)) {
+                    InBounds = inst.InBounds,
+                    IsTailCall = inst.IsTailCall
+                });
         }
+
         public void Visit(NewObjInst inst) => Out(new NewObjInst(Remap(inst.Constructor), RemapArgs(inst.Args)));
         public void Visit(FuncAddrInst inst) => Out(new FuncAddrInst(Remap(inst.Method), inst.IsVirtual ? Remap(inst.Object) : null));
+
         public void Visit(IntrinsicInst inst)
         {
             var cloned = inst.CloneWith(Remap(inst.ResultType), RemapEntities(inst.StaticArgs), RemapArgs(inst.Args));
-            var folded = ConstFolding.FoldIntrinsic(cloned);
+            var folded = _ctx._foldConstants ? ConstFolding.FoldIntrinsic(cloned) : null;
 
             if (folded != null) {
                 Out(folded);
@@ -273,13 +303,14 @@ public class IRCloner
                 Out(cloned);
             }
         }
+
         public void Visit(SelectInst inst)
         {
             var cond = Remap(inst.Cond);
             var ifTrue = Remap(inst.IfTrue);
             var ifFalse = Remap(inst.IfFalse);
 
-            Out(ConstFolding.FoldSelect(cond, ifTrue, ifFalse)
+            Out((_ctx._foldConstants ? ConstFolding.FoldSelect(cond, ifTrue, ifFalse) : null)
                 ?? new SelectInst(cond, ifTrue, ifFalse, Remap(inst.ResultType)));
         }
 

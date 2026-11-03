@@ -481,7 +481,8 @@ public class PassRegressionTests
     private void CheckIR(string filename, IMethodPass pass)
     {
         CheckDisasm(filename, (comp, body, sw) => {
-            pass.Run(new MethodTransformContext(comp, body));
+            PassRunner.Run(pass, new MethodTransformContext(comp, body));
+            IRVerifier.Verify(body);
 
             IRPrinter.ExportPlain(body, sw);
             sw.Write("\n\n");

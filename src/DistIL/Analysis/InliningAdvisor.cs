@@ -2,6 +2,7 @@ namespace DistIL.Analysis;
 
 using DistIL.Frontend;
 using DistIL.Passes;
+using DistIL.IR.Utils;
 
 using MethodAttributes = System.Reflection.MethodAttributes;
 using ParameterAttributes = System.Reflection.ParameterAttributes;
@@ -11,6 +12,7 @@ public class InliningAdvisor : IGlobalAnalysis
 {
     readonly Dictionary<MethodDef, Entry> _cache = new();
     readonly Compilation _comp;
+    readonly HashSet<MethodDef> _importing = new();
 
     sealed record Entry(InlineRejectReason Reason, FunctionMetrics? Metrics, MethodBody Body, long Revision);
 
@@ -53,26 +55,32 @@ public class InliningAdvisor : IGlobalAnalysis
     /// <summary> Gets or attempts to import a method body for IPO purposes. </summary>
     public MethodBody? GetMethodBodyForIPO(MethodDef method)
     {
+        if (_comp.HasFailed(method) || _importing.Contains(method)) {
+            return null;
+        }
+
         if (method.Module != _comp.Module && !_comp.Settings.AllowCrossAssemblyIPO) {
             return null;
         }
+
         if (method.Body == null && method.ILBody != null) {
+            _importing.Add(method);
+
             try {
                 _comp.Logger.Debug($"Importing method for IPO: {method}");
-
-                // FIXME: make this less precarious somehow (Compilation.DefaultPassesForIPO?)
-                method.Body = ILImporter.ParseCode(method);
-
-                var ctx = new MethodTransformContext(_comp, method.Body);
-                new SsaPromotion().Run(ctx);
-
-                if (method.Name == ".ctor") {
-                    new InlineMethods().Run(ctx);
-                }
+                var body = ILImporter.ParseCode(method);
+                CompilationPipeline.Normalize(new MethodTransformContext(_comp, body), inlineConstructors: method.IsConstructor);
+                method.Body = body;
+                _comp.InvalidateAnalyses(method);
             } catch (Exception ex) {
+                method.Body = null;
+                _comp.FailMethod(method);
                 _comp.Logger.Error($"Failed to import method for IPO: {method}", ex);
+            } finally {
+                _importing.Remove(method);
             }
         }
+
         return method.Body;
     }
 
@@ -85,9 +93,6 @@ public class InliningAdvisor : IGlobalAnalysis
     }
     private static int GetAggressivenessFactor(MethodDef method)
     {
-        // if (method.Module.AsmName.Name == "System.Linq") {
-        //     return 3;
-        // }
         // Avoid inlining calls to BCL / System.* methods to avoid bloating IL.
         if (method.Module.AsmName.Name!.StartsWith("System")) {
             return 1;
@@ -148,7 +153,7 @@ public class InliningAdvisor : IGlobalAnalysis
 
         // Don't bother inlining async methods because we don't gain anything
         // from doing so yet, and it might mess up stack traces.
-        if (method.HasCustomAttrib("System.Runtime.CompilerServices", "AsyncStateMachine")) {
+        if (method.HasCustomAttrib("System.Runtime.CompilerServices", "AsyncStateMachineAttribute")) {
             return InlineRejectReason.Ineligible;
         }
 

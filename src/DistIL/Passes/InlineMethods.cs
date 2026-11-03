@@ -94,6 +94,10 @@ public class InlineMethods : IMethodPass
             return null;
         }
 
+        if (ctx.Compilation.HasFailed(target)) {
+            return null;
+        }
+
         // TODO: support for static virtuals
         if (target.Attribs.HasFlag(MethodAttributes.Static | MethodAttributes.Virtual)) {
             return null;
@@ -133,7 +137,7 @@ public class InlineMethods : IMethodPass
             builder.CreateTypeInitialization(target.DeclaringType);
         }
 
-        var cloner = new InlinerIRCloner(callerBody, target, comp, onNewCall);
+        var cloner = new InlinerIRCloner(callerBody, target, onNewCall);
 
         // Add argument mappings
         for (int i = 0; i < targetBody.Args.Length; i++) {
@@ -216,32 +220,13 @@ public class InlineMethods : IMethodPass
         return results.FirstOrDefault().Value;
     }
 
-    sealed class InlinerIRCloner(MethodBody caller, MethodDefOrSpec target, Compilation comp, Action<CallInst>? onNewCall)
+    sealed class InlinerIRCloner(MethodBody caller, MethodDefOrSpec target, Action<CallInst>? onNewCall)
         : IRCloner(caller, new GenericContext(target))
     {
         protected override Value CreateClone(Instruction inst)
         {
             var clonedVal = base.CreateClone(inst);
 
-            // Ensure that references defined in other modules are accessible
-            if (target.Module != _destMethod.Definition.Module) {
-                var entityRef = clonedVal switch {
-                    CallInst { Method: MethodDefOrSpec target } => target,
-                    NewObjInst { Constructor: MethodDefOrSpec ctor } => ctor,
-                    FieldAddrInst { Field: FieldDefOrSpec field } => field,
-                    FieldExtractInst { Field: FieldDefOrSpec field } => field,
-                    FieldInsertInst { Field: FieldDefOrSpec field } => field,
-                    CilIntrinsic.NewArray { ElemType: TypeDefOrSpec type } => type,
-                    CilIntrinsic.CastClass { DestType: TypeDefOrSpec type } => type,
-                    CilIntrinsic.UnboxObj { DestType: TypeDefOrSpec type } => type,
-                    CilIntrinsic.UnboxRef { DestType: TypeDefOrSpec type } => type,
-                    CilIntrinsic { StaticArgs: [ModuleEntity entity] } => entity,
-                    _ => null
-                };
-                if (entityRef != null) {
-                    comp.EnsureMembersAccessible(entityRef.Module);
-                }
-            }
             if (onNewCall != null && clonedVal is CallInst { Method: MethodDefOrSpec method } call) {
                 // Ignore calls to recursive methods to prevent infinite loop.
                 if (method.Definition != target.Definition) {

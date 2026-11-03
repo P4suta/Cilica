@@ -226,9 +226,68 @@ public class BasicBlock : TrackedValue
         }
     }
 
-    // TODO: Redirect* methods are quite finicky and error prone. Find a better way to do edge replacement/removal and consolidate them.
-    // - https://gcc.gnu.org/onlinedocs/gccint/control-flow-graph/maintaining-the-cfg.html
-    // - https://llvm.org/doxygen/classllvm_1_1BasicBlock.html
+    /// <summary> Replaces a terminator and maintains phi inputs for its removed and added edges. </summary>
+    /// <remarks> Consumes the replacement instruction. Each added edge into a phi block requires an incoming value. </remarks>
+    public void ReplaceTerminator(Instruction replacement, Func<PhiInst, Value>? incomingValue = null)
+    {
+        Ensure.That(replacement.Block == null && replacement.IsBranch);
+
+        var previousTargets = Last.Operands.ToArray().OfType<BasicBlock>().ToHashSet();
+        var nextTargets = replacement.Operands.ToArray().OfType<BasicBlock>().ToHashSet();
+        var arguments = new List<(PhiInst Phi, Value Value)>();
+
+        try {
+            foreach (var target in nextTargets) {
+                Ensure.That(target.Method == Method, "Branch targets must belong to the same method");
+
+                if (previousTargets.Contains(target)) {
+                    continue;
+                }
+
+                foreach (var phi in target.Phis()) {
+                    Ensure.That(incomingValue != null, "Added phi edges require incoming values");
+
+                    var value = incomingValue(phi);
+                    Ensure.That(value.ResultType.IsStackAssignableTo(phi.ResultType), "Phi edge has an incompatible value");
+
+                    arguments.Add((phi, value));
+                }
+            }
+        } catch {
+            replacement.Remove();
+            throw;
+        }
+
+        foreach (var target in previousTargets.Except(nextTargets)) {
+            target.RedirectPhis(this, null);
+        }
+
+        SetBranch(replacement);
+
+        foreach (var (phi, value) in arguments) {
+            phi.AddArg(this, value);
+        }
+    }
+
+    /// <summary> Redirects a successor and maintains phi inputs at both destinations. </summary>
+    public void RedirectEdge(BasicBlock oldTarget, BasicBlock newTarget, Func<PhiInst, Value>? incomingValue = null)
+    {
+        Ensure.That(Last.Operands.ContainsRef(oldTarget));
+
+        BasicBlock Map(BasicBlock block) => block == oldTarget ? newTarget : block;
+
+        Instruction replacement = Last switch {
+            BranchInst { IsJump: true } branch => new BranchInst(Map(branch.Then)),
+            BranchInst branch => new BranchInst(branch.Cond!, Map(branch.Then), Map(branch.Else!)),
+            SwitchInst branch => new SwitchInst(branch.TargetIndex, Map(branch.DefaultTarget),
+                Enumerable.Range(0, branch.NumTargets).Select(i => Map(branch.GetTarget(i))).ToArray()),
+            LeaveInst leave => new LeaveInst(Map(leave.Target)),
+            ResumeInst resume => new ResumeInst(resume.GetExitTargets().Select(Map), resume.FilterResult),
+            _ => throw new InvalidOperationException("Terminator has no replaceable successor")
+        };
+        replacement.DebugLocation = Last.DebugLocation;
+        ReplaceTerminator(replacement, incomingValue);
+    }
 
     /// <summary> Replaces the incomming block of all phis in successor blocks from this block to <paramref name="newPred"/>. </summary>
     public void RedirectSuccPhis(BasicBlock? newPred, bool removeTrivialPhis = true)

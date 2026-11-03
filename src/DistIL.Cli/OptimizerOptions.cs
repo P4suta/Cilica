@@ -5,6 +5,12 @@ using DistIL;
 [Verb("opt", isDefault: true, HelpText = "Optimizes a module.")]
 class OptimizerOptions
 {
+    [Option("strict", HelpText = "Fail without saving output if any selected method cannot be compiled.")]
+    public bool Strict { get; set; }
+
+    [Option("verify-each", HelpText = "Verify IR after every optimization pass.")]
+    public bool VerifyEachPass { get; set; }
+
     [Option('i', Required = true, HelpText = "Input module file path.")]
     public string InputPath { get; set; } = null!;
 

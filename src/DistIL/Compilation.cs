@@ -5,6 +5,8 @@ using System.Runtime.CompilerServices;
 using System.Security.Cryptography;
 
 using DistIL.Analysis;
+using DistIL.CodeGen.Cil;
+using MethodBody = IR.MethodBody;
 
 public class Compilation
 {
@@ -17,8 +19,11 @@ public class Compilation
     public ModuleResolver Resolver => Module.Resolver;
 
     private TypeDef? _auxType;
+    bool _ownsAuxType;
+    readonly HashSet<MemberDesc> _initialAuxMembers = new();
 
     readonly AnalysisCache<IGlobalAnalysis> _analyses = new();
+    readonly HashSet<MethodDef> _failedMethods = new();
 
     public Compilation(ModuleDef module, ICompilationLogger logger, CompilationSettings settings)
     {
@@ -27,8 +32,6 @@ public class Compilation
         Settings = settings;
         Runtime = new RuntimeLibrary(module.Resolver);
 
-        EnsureMembersAccessible(module.Resolver.CoreLib);
-        EnsureMembersAccessible(module);
     }
 
     public A GetAnalysis<A>() where A : IGlobalAnalysis
@@ -38,6 +41,46 @@ public class Compilation
     {
         foreach (var analysis in _analyses.Values) {
             analysis.Invalidate(method);
+        }
+    }
+
+    public bool HasFailed(MethodDef method) => _failedMethods.Contains(method);
+
+    internal void BeginMethod(MethodDef method) => _failedMethods.Remove(method);
+
+    internal void FailMethod(MethodDef method)
+    {
+        _failedMethods.Add(method);
+        InvalidateAnalyses(method);
+    }
+
+    internal void EnsureReferencedMembersAccessible(MethodBody body)
+    {
+        foreach (var inst in body.Instructions()) {
+            MemberDesc? member = inst switch {
+                CallInst call => call.Method,
+                NewObjInst allocation => allocation.Constructor,
+                FuncAddrInst address => address.Method,
+                FieldAddrInst field => field.Field,
+                FieldExtractInst field => field.Field,
+                FieldInsertInst field => field.Field,
+                _ => null
+            };
+
+            if (member?.DeclaringType is not TypeDefOrSpec type) {
+                continue;
+            }
+
+            bool publicMember = member switch {
+                MethodDesc method => method.IsPublic,
+                FieldDesc field => (field.Attribs & FieldAttributes.FieldAccessMask) == FieldAttributes.Public,
+                _ => false
+            };
+            bool publicType = (type.Attribs & TypeAttributes.VisibilityMask) is TypeAttributes.Public or TypeAttributes.NestedPublic;
+
+            if ((!publicMember && type != body.Definition.DeclaringType) || (!publicType && type.Module != Module)) {
+                EnsureMembersAccessible(type.Module);
+            }
         }
     }
 
@@ -51,13 +94,81 @@ public class Compilation
         _auxType = Module.FindType(null, name);
 
         if (_auxType == null) {
+            _ownsAuxType = true;
             _auxType = Module.CreateType(null, name, TypeAttributes.Sealed | TypeAttributes.BeforeFieldInit);
 
             var attribCtor = Module.Resolver.Import(typeof(CompilerGeneratedAttribute)).FindMethod(".ctor");
             var typeAttribs = _auxType.GetCustomAttribs(readOnly: false);
             typeAttribs.Add(new CustomAttrib(attribCtor));
+        } else {
+            _initialAuxMembers.UnionWith(_auxType.Fields);
+            _initialAuxMembers.UnionWith(_auxType.Methods);
         }
+
         return _auxType;
+    }
+
+    internal void RemoveUnusedArtifacts()
+    {
+        if (_auxType == null) {
+            return;
+        }
+
+        var live = new HashSet<MemberDesc>();
+        var pending = new Queue<MethodDef>(Module.MethodDefs().Where(method => method.DeclaringType != _auxType));
+
+        while (pending.TryDequeue(out var method)) {
+            if (method.ILBody is { } il) {
+                foreach (var inst in il.Instructions) {
+                    Mark(inst.Operand as MemberDesc);
+                }
+            }
+
+            if (method.Body is { } body)
+            foreach (var inst in body.Instructions()) {
+                Mark(inst switch {
+                    CallInst call => call.Method,
+                    NewObjInst allocation => allocation.Constructor,
+                    FuncAddrInst address => address.Method,
+                    FieldAddrInst field => field.Field,
+                    FieldExtractInst field => field.Field,
+                    FieldInsertInst field => field.Field,
+                    _ => null
+                });
+
+                if (inst is IntrinsicInst intrinsic) {
+                    foreach (var entity in intrinsic.StaticArgs) {
+                        Mark(entity as MemberDesc);
+                    }
+                }
+            }
+        }
+
+        _auxType.Fields.RemoveAll(field => !_initialAuxMembers.Contains(field) && !live.Contains(field));
+        _auxType.Methods.RemoveAll(method => !_initialAuxMembers.Contains(method) && !live.Contains(method));
+
+        if (_ownsAuxType && _auxType.Fields.Count == 0 && _auxType.Methods.Count == 0) {
+            Module.RemoveType(_auxType);
+            _auxType = null;
+            _ownsAuxType = false;
+        }
+
+        void Mark(MemberDesc? member)
+        {
+            MemberDesc? definition = member switch {
+                MethodDefOrSpec method => method.Definition,
+                FieldDefOrSpec field => field.Definition,
+                _ => null
+            };
+
+            if (definition?.DeclaringType != _auxType || !live.Add(definition)) {
+                return;
+            }
+
+            if (definition is MethodDef helper) {
+                pending.Enqueue(helper);
+            }
+        }
     }
 
     /// <summary> Copies <paramref name="data"/> into a static field RVA. </summary>
@@ -134,9 +245,11 @@ public class Compilation
                     [new ParamDef(attribType, "this"), new ParamDef(PrimType.String, "assemblyName")],
                     MethodAttributes.Public | MethodAttributes.HideBySig | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName
                 );
-                attribCtor.ILBody = new ILMethodBody() {
-                    Instructions = new[] { new ILInstruction(ILCode.Ret) }
-                };
+                var assembler = new ILAssembler();
+                assembler.Emit(ILCode.Ldarg_0);
+                assembler.Emit(ILCode.Call, attribType.BaseType!.FindMethod(".ctor", new MethodSig(PrimType.Void, [])));
+                assembler.Emit(ILCode.Ret);
+                attribCtor.ILBody = assembler.Assemble(null);
 
                 m_IgnoreAccessChecksToAttributeCtor = attribCtor;
             } else {
@@ -145,16 +258,23 @@ public class Compilation
                 foreach (var attrib in asmAttribs) {
                     if (attrib.Constructor == m_IgnoreAccessChecksToAttributeCtor) {
                         _assembliesToIgnoreAccessChecksFor.Add((string)attrib.Args[0]);
+
+                        if ((string)attrib.Args[0] == assemblyName) {
+                            return;
+                        }
                     }
                 }
             }
         }
+
         asmAttribs.Add(new CustomAttrib(m_IgnoreAccessChecksToAttributeCtor, [assemblyName]));
     }
 }
 
 public class CompilationSettings
 {
+    public bool VerifyEachPass { get; init; }
+
     /// <summary> If set to true, the resulting module will have a fixed dependency on a little-endianess. </summary>
     public bool AssumeLittleEndian { get; init; } = true; // TODO: add module cctor check
 

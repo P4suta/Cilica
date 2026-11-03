@@ -35,9 +35,14 @@ static void RunOptimizer(OptimizerOptions options)
     }
 
     var module = resolver.Load(options.InputPath);
-    
-    var comp = new Compilation(module, logger, new CompilationSettings());
-    RunPasses(options, comp);
+
+    var comp = new Compilation(module, logger, new CompilationSettings() { VerifyEachPass = options.VerifyEachPass });
+    var compilationResult = RunPasses(options, comp);
+
+    if (options.Strict && !compilationResult.Succeeded) {
+        Environment.ExitCode = 1;
+        return;
+    }
 
     string? outputPath = options.OutputPath;
 
@@ -47,45 +52,10 @@ static void RunOptimizer(OptimizerOptions options)
     }
     module.Save(outputPath, savePdb: !options.DisablePdbGeneration);
 }
-static void RunPasses(OptimizerOptions options, Compilation comp)
+static CompilationResult RunPasses(OptimizerOptions options, Compilation comp)
 {
-    var manager = new PassManager() {
-        Compilation = comp,
-        Inspectors = { new PassTimingInspector() }
-    };
-
-    manager.AddPasses()
-        .Apply<SimplifyCFG>()
-        .Apply<SsaPromotion>()
-        .Apply<ExpandLinq>()
-        .Apply<SimplifyInsts>(); // lambdas and devirtualization
-
-    manager.AddPasses(applyIndependently: true) // this is so that all callees are in SSA before inlining.
-        .Apply<InlineMethods>();
-
-    var simplifySeg = manager.AddPasses()
-        .Apply<SimplifyInsts>()
-        .Apply<SimplifyCFG>()
-        .Apply<DeadCodeElim>()
-        .RepeatUntilFixedPoint(maxIters: 3);
-
-    manager.AddPasses()
-        .Apply<ScalarReplacement>()
-        .IfChanged(c => c.Apply<SsaPromotion>()
-                         .Apply<InlineMethods>()) // SROA+SSA uncovers new devirtualization oportunities
-        .RepeatUntilFixedPoint(maxIters: 3);
-
-    manager.AddPasses()
-        .Apply<ValueNumbering>()
-        // FIXME: broken
-        // .Apply<AssertionProp>()
-        .Apply<PresizeLists>()
-        .Apply<LoopStrengthReduction>()
-        .IfChanged(simplifySeg);
-
-    if (comp.Logger.IsEnabled(LogLevel.Debug)) {
-        manager.AddPasses().Apply<VerificationPass>();
-    }
+    var manager = CompilationPipeline.CreateDefault(comp);
+    manager.Inspectors.Add(new PassTimingInspector());
 
     var dumpFilter = options.DumpDir != null || options.PassDumpBundlePath != null
         ? CompileFilter(options.DumpMethodFilter) : null;
@@ -111,7 +81,8 @@ static void RunPasses(OptimizerOptions options, Compilation comp)
     if (options.BisectFilter != null) {
         ApplyFuzzyBisect(options.BisectFilter, methods);
     }
-    manager.Run(methods);
+
+    return manager.Run(methods);
 }
 
 static PassManager.CandidateMethodFilter GetCandidateFilter(OptimizerOptions options, Compilation comp)

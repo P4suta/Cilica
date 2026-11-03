@@ -71,6 +71,18 @@ public class ModuleDef : EntityDesc
     public IEnumerable<MethodDef> MethodDefs()
         => TypeDefs.SelectMany(t => t.Methods);
 
+    internal void RemoveType(TypeDef type)
+    {
+        Ensure.That(type.Module == this);
+
+        foreach (var nested in type.NestedTypes.ToArray()) {
+            RemoveType(nested);
+        }
+
+        type.DeclaringType?.NestedTypes.Remove(type);
+        _typeDefs.Remove(type);
+    }
+
     // TODO: consider deprecating this in favor of exposing CustomAttribs and AssemblyCustomAttribs properties directly
     public List<CustomAttrib> GetCustomAttribs(bool forAssembly)
         => forAssembly ? _asmCustomAttribs : _modCustomAttribs;
@@ -177,6 +189,15 @@ public class ModuleDef : EntityDesc
         readonly List<TypeDef> _nested = new();
 
         public int Count => _roots.Count + _nested.Count;
+
+        public void Remove(TypeDef type)
+        {
+            if (type.IsNested) {
+                _nested.Remove(type);
+            } else {
+                _roots.Remove((type.Namespace, type.Name));
+            }
+        }
 
         public void Add(TypeDef type)
         {

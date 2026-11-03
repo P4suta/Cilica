@@ -7,6 +7,8 @@ public interface IPassInspector
     void OnBeforePass(IMethodPass pass, MethodTransformContext ctx) { }
     void OnAfterPass(IMethodPass pass, MethodTransformContext ctx, MethodPassResult result) { }
 
+    void OnPassFailed(IMethodPass pass, MethodTransformContext ctx, Exception error) { }
+
     void OnBegin(Compilation comp) { }
     void OnFinish(Compilation comp) { }
 }
@@ -37,6 +39,15 @@ public class PassTimingInspector(bool logStatsOnFinish = true) : IPassInspector
         if (logStatsOnFinish) {
             LogStats(comp.Logger);
         }
+    }
+
+    void IPassInspector.OnPassFailed(IMethodPass pass, MethodTransformContext ctx, Exception error)
+    {
+        if (_activePass != null) {
+            IncrementStat(pass.GetType(), _startTs, 0);
+        }
+
+        _activePass = null;
     }
 
     public void IncrementStat(Type passType, long startTs, int numChanges)
