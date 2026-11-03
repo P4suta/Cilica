@@ -5,6 +5,19 @@ using DistIL.Attributes;
 [Optimize, CheckCodeGenAfterRun]
 public class DevirtTests
 {
+    static Func<int,int> s_Alternative = x => x + 100;
+    static int Negate(int x) => -x;
+
+    [Theory]
+    [InlineData(true, 105)]
+    [InlineData(false, -5)]
+    public void DelegatePhiKeepsEachTarget(bool choose, int expected)
+    {
+        Func<int,int> fn = choose ? s_Alternative : new Func<int,int>(Negate);
+        Assert.Equal(expected, fn(5));
+        // CHECK: callvirt Func`2[int, int]::Invoke
+    }
+
     [Fact]
     public void Delegate_CallVirt()
     {

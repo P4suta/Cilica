@@ -338,6 +338,7 @@ public class SimplifyCFG : IMethodPass
                 // Write value in little-endian order
                 long bits = value switch {
                     ConstInt c => c.Value,
+                    ConstFloat c when storageType.Kind == TypeKind.Single => BitConverter.SingleToInt32Bits((float)c.Value),
                     ConstFloat c => BitConverter.DoubleToInt64Bits(c.Value)
                 };
                 for (int j = 0; j < stride; j++) {

@@ -37,11 +37,16 @@ partial class SimplifyInsts
             var allocInst = (phiArg1 as NewObjInst) ?? (phiArg2 as NewObjInst);
             var cacheLoad = (phiArg1 as LoadInst) ?? (phiArg2 as LoadInst);
 
-            if (allocInst == null || cacheLoad == null || !DevirtWithCtorArgs(call, allocInst)) return false;
+            if (allocInst == null || cacheLoad == null ||
+                !MatchCache(phi, allocInst, cacheLoad, out var branch, out var store) ||
+                !DevirtWithCtorArgs(call, allocInst, rematerializeInstance: true)) return false;
 
             // Last lambda to be inlined is responsible for cleanup
             if (phi.NumUses == 0) {
-                DeleteCache(phi, allocInst, cacheLoad);
+                branch.Cond = ConstInt.CreateI(0);
+                phi.Remove();
+                store.Remove();
+                allocInst.Remove();
             }
             return true;
         } else if (lambdaInstance is NewObjInst immAlloc) {
@@ -54,7 +59,7 @@ partial class SimplifyInsts
         }
         return false;
 
-        static bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc)
+        static bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc, bool rematerializeInstance = false)
         {
             if (alloc is not { Args: [var instanceObj, FuncAddrInst { Method: var method } addr] }) return false;
             if (call.NumArgs - (method.IsStatic ? 1 : 0) != method.ParamSig.Count) return false;
@@ -63,23 +68,28 @@ partial class SimplifyInsts
                 call.ReplaceWith(new CallInst(method, call.Args[1..].ToArray()), insertIfInst: true);
                 return true;
             } else if (method.IsInstance) {
-                call.Method = method;
-                // Create a new load before call to assert dominance
-                if (IRMatcher.StaticFieldLoad(instanceObj, out var field)) {
+                // Cached instance targets must be available on both phi edges.
+                if (rematerializeInstance) {
+                    if (!IRMatcher.StaticFieldLoad(instanceObj, out var field) ||
+                        !field.Attribs.HasFlag(System.Reflection.FieldAttributes.InitOnly)) return false;
                     var fieldAddr = new FieldAddrInst(field);
                     var newLoad = new LoadInst(fieldAddr);
                     fieldAddr.InsertBefore(call);
                     newLoad.InsertBefore(call);
                     instanceObj = newLoad;
                 }
+                call.Method = method;
                 call.SetArg(0, instanceObj);
                 call.IsVirtual = addr.IsVirtual;
                 return true;
             }
             return false;
         }
-        static bool DeleteCache(PhiInst phi, NewObjInst allocInst, LoadInst cacheLoad)
+        static bool MatchCache(PhiInst phi, NewObjInst allocInst, LoadInst cacheLoad,
+            out BranchInst branch, out StoreInst store)
         {
+            branch = null!;
+            store = null!;
             var condBlock = cacheLoad.Block;
 
             if (!(
@@ -91,17 +101,19 @@ partial class SimplifyInsts
                     condCache == cacheLoad &&
                 // BB_CacheLoad must store to the cache field
                 allocInst.NumUses == 2 && // phi and next store
+                ((phi.GetBlock(0) == condBlock && phi.GetBlock(1) == allocInst.Block) ||
+                 (phi.GetBlock(1) == condBlock && phi.GetBlock(0) == allocInst.Block)) &&
+                phi.GetValue(condBlock) == cacheLoad && phi.GetValue(allocInst.Block) == allocInst &&
                 IRMatcher.StaticFieldLoad(cacheLoad, out var cacheField) &&
                 allocInst.Next?.Next is StoreInst cacheStore && 
+                cacheStore.Value == allocInst &&
                 (cacheStore.Address as FieldAddrInst)?.Field == cacheField &&
                 cacheField.DeclaringType is TypeDefOrSpec declType && 
                 declType.Definition.HasCustomAttrib(typeof(CompilerGeneratedAttribute))
             )) return false;
 
-            br.Cond = ConstInt.CreateI(0); // We can't change the CFG, leave this for DCE.
-            phi.Remove();
-            cacheStore.Remove();
-            allocInst.Remove();
+            branch = br;
+            store = cacheStore;
             return true;
         }
     }

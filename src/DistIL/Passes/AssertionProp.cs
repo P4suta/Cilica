@@ -71,7 +71,7 @@ public class AssertionProp : IMethodPass
 
                 // Try to derive from pred branch, `if (obj != null)`
                 if (pred.Last is BranchInst { Cond: CompareInst { Op: CompareOp.Ne or CompareOp.Eq, Right: ConstNull } cmp } br && cmp.Left == arg) {
-                    result = (br.Then == pred) ^ (cmp.Op == CompareOp.Ne);
+                    result = (br.Then == block) == (cmp.Op == CompareOp.Ne);
                 } else {
                     result = Evaluate(CompareOp.Ne, arg, ConstNull.Create(), pred);
                 }

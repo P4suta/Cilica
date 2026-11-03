@@ -107,6 +107,14 @@ public class InlineMethods : IMethodPass
         var targetBody = Ensure.NotNull(target.Definition.Body);
         Ensure.That(callerBody != targetBody, "Cannot inline method into itself");
 
+        var builder = new IRBuilder(call, InsertionDir.Before);
+        if (call is CallInst { IsVirtual: true, InBounds: false } && args[0].ResultType.IsManagedObject()) {
+            builder.CreateNullCheck(args[0]);
+        }
+        if ((target.IsStatic || call is NewObjInst) && target.DeclaringType.RequiresTypeInitialization()) {
+            builder.CreateTypeInitialization(target.DeclaringType);
+        }
+
         var cloner = new InlinerIRCloner(callerBody, target, comp, onNewCall);
 
         // Add argument mappings

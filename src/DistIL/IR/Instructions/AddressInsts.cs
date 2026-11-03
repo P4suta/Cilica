@@ -32,6 +32,10 @@ public class ArrayAddrInst : AddressInst
     /// <summary> Checks if <see cref="AddressInst.ElemType"/> differs from the array type. </summary>
     public bool IsCasting => ElemType != Array.ResultType.ElemType;
 
+    /// <summary> Whether taking a writable address requires a runtime array variance check. </summary>
+    public bool RequiresVarianceCheck => !IsReadOnly && !ElemType.IsValueType &&
+        !(Array is CilIntrinsic.NewArray allocation && allocation.ElemType == ElemType);
+
     public override bool MayThrow => !InBounds;
     public override string InstName => "arraddr" + (IsReadOnly ? ".readonly" : "") + (InBounds ? ".inbounds" : "");
 

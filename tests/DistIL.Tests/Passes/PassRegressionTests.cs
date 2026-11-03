@@ -206,6 +206,163 @@ public class PassRegressionTests
         Assert.False(Utils.Compile<Func<IComparable[],IConvertible[],string,bool>>(body)(array, array, "second"));
     }
 
+    [Theory]
+    [InlineData(UnaryOp.Neg)]
+    [InlineData(UnaryOp.Not)]
+    [InlineData(UnaryOp.FNeg)]
+    public void SimplifyUnaryCancelsBothOperations(UnaryOp op)
+    {
+        var type = op == UnaryOp.FNeg ? PrimType.Double : PrimType.Int32;
+        var body = Utils.CreateTestMethod(_modResolver, type, type);
+        var ib = new IRBuilder(body.CreateBlock());
+        var inner = ib.Emit(new UnaryInst(op, body.Args[0]));
+        var outer = ib.Emit(new UnaryInst(op, inner));
+        var ret = ib.CreateReturn(outer);
+        Run(body, new SimplifyInsts(_modResolver));
+        Assert.Same(body.Args[0], ret.Value);
+    }
+
+    [Fact]
+    public void InliningPreservesCallVirtNullChecks()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.DeclaringType;
+        var callee = type.CreateMethod("Constant", PrimType.Int32, [new ParamDef(type, "this")]);
+        callee.Body = new MethodBody(callee);
+        callee.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        var ib = new IRBuilder(body.CreateBlock());
+        ib.CreateReturn(ib.CreateCallVirt(callee, ConstNull.Create()));
+        Run(body, new InlineMethods(), new DeadCodeElim());
+        Assert.Single(body.Instructions().OfType<CilIntrinsic.NullCheck>());
+        Assert.Throws<NullReferenceException>(() => Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
+    public void InliningPreservesStaticTypeInitialization()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var initialized = body.Definition.Module.CreateType(null, "Initialized");
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var cctor = initialized.CreateMethod(".cctor", PrimType.Void, [], MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        cctor.Body = new MethodBody(cctor);
+        var init = new IRBuilder(cctor.Body.CreateBlock());
+        init.CreateFieldStore(effect, null, ConstInt.CreateI(50));
+        init.CreateReturn();
+        var callee = initialized.CreateMethod("Noop", PrimType.Void, [], MethodAttributes.Public | MethodAttributes.Static);
+        callee.Body = new MethodBody(callee);
+        callee.Body.CreateBlock().SetBranch(new ReturnInst());
+        var ib = new IRBuilder(body.CreateBlock());
+        ib.CreateCall(callee);
+        ib.CreateReturn(ib.CreateFieldLoad(effect));
+        Run(body, new InlineMethods(), new DeadCodeElim());
+        Assert.DoesNotContain(body.Instructions().OfType<CallInst>(), c => c.Method == callee);
+        Assert.Equal(50, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void ScalarReplacementHonorsAddressEscapeAndFinalization(bool escape, bool finalizer)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, escape ? PrimType.Int32.CreateByref() : PrimType.Int32);
+        var holder = body.Definition.Module.CreateType(null, "Holder");
+        var field = holder.CreateField("Value", PrimType.Int32);
+        var ctor = holder.CreateMethod(".ctor", PrimType.Void, [new ParamDef(holder, "this")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        ctor.Body = new MethodBody(ctor);
+        var cb = new IRBuilder(ctor.Body.CreateBlock());
+        cb.CreateCall(_modResolver.Import(typeof(object)).FindMethod(".ctor"), ctor.Body.Args[0]);
+        cb.CreateReturn();
+        if (finalizer) {
+            var finalize = holder.CreateMethod("Finalize", PrimType.Void, [new ParamDef(holder, "this")], MethodAttributes.Family | MethodAttributes.Virtual);
+            finalize.Body = new MethodBody(finalize);
+            finalize.Body.CreateBlock().SetBranch(new ReturnInst());
+        }
+        var ib = new IRBuilder(body.CreateBlock());
+        var allocation = ib.CreateNewObj(ctor);
+        var address = ib.CreateFieldAddr(field, allocation);
+        ib.CreateStore(address, ConstInt.CreateI(42));
+        ib.CreateReturn(escape ? address : ib.CreateLoad(address));
+        Run(body, new ScalarReplacement(), new SsaPromotion());
+        Assert.Equal(escape || finalizer, allocation.Block != null);
+        if (!escape && !finalizer) Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
+    public void SimplifyCfgStoresSinglePrecisionSwitchBits()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Single, PrimType.Int32);
+        var entry = body.CreateBlock();
+        var a = body.CreateBlock(); var b = body.CreateBlock(); var fallback = body.CreateBlock(); var merge = body.CreateBlock();
+        entry.SetBranch(new SwitchInst(body.Args[0], fallback, a, b));
+        a.SetBranch(merge); b.SetBranch(merge); fallback.SetBranch(merge);
+        var phi = merge.InsertPhi(new PhiInst(PrimType.Single, (a, ConstFloat.CreateS(1)), (b, ConstFloat.CreateS(2)), (fallback, ConstFloat.CreateS(-0f))));
+        merge.SetBranch(new ReturnInst(phi));
+        Run(body, new SimplifyCFG());
+        var run = Utils.Compile<Func<int,float>>(body);
+        Assert.Equal(1, run(0)); Assert.Equal(2, run(1));
+        Assert.Equal(BitConverter.SingleToInt32Bits(-0f), BitConverter.SingleToInt32Bits(run(-1)));
+    }
+
+    [Fact]
+    public void AssertionPropagationUsesIncomingPhiEdgePolarity()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Bool, PrimType.Object, PrimType.Object);
+        var entry = body.CreateBlock(); var other = body.CreateBlock(); var merge = body.CreateBlock(); var exit = body.CreateBlock();
+        var first = new IRBuilder(entry); first.SetBranch(first.CreateNe(body.Args[0], ConstNull.Create()), other, merge);
+        var second = new IRBuilder(other); second.SetBranch(second.CreateNe(body.Args[1], ConstNull.Create()), exit, merge);
+        exit.SetBranch(new ReturnInst(ConstInt.CreateI(0)));
+        var ib = new IRBuilder(merge);
+        var phi = ib.CreatePhi(PrimType.Object, (entry, body.Args[0]), (other, body.Args[1]));
+        ib.CreateReturn(ib.CreateEq(phi, ConstNull.Create()));
+        Run(body, new AssertionProp());
+        var run = Utils.Compile<Func<object?,object?,bool>>(body);
+        Assert.True(run(null, null)); Assert.True(run(new object(), null)); Assert.False(run(new object(), new object()));
+    }
+
+    [Fact]
+    public void LoopStrengthReductionRetainsCovariantArrayStoreChecks()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Object.CreateArray(), PrimType.Object);
+        var entry = body.CreateBlock();
+        var loop = new LoopBuilder(entry);
+        entry.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        loop.Build(h => h.CreateSlt(index, h.CreateConvert(h.CreateArrayLen(body.Args[0]), PrimType.Int32)),
+            b => b.CreateArrayStore(body.Args[0], index, body.Args[1]));
+        loop.Exit.CreateReturn();
+        Run(body, new LoopStrengthReduction());
+        Assert.Single(body.Instructions().OfType<ArrayAddrInst>());
+        var run = Utils.Compile<Action<object[],object>>(body);
+        Assert.Throws<ArrayTypeMismatchException>(() => run(new string[1], new object()));
+        object[] ordinary = new object[1]; var value = new object(); run(ordinary, value); Assert.Same(value, ordinary[0]);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DictionaryLookupCoalescingRequiresTheSuccessfulEdge(bool bypassEdge)
+    {
+        var dictionary = _modResolver.Import(typeof(Dictionary<string,int>));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool, PrimType.String);
+        var entry = body.CreateBlock(); var check = body.CreateBlock(); var read = body.CreateBlock(); var missing = body.CreateBlock();
+        var ib = new IRBuilder(entry);
+        var dict = ib.CreateNewObj(dictionary.FindMethod(".ctor", new MethodSig(PrimType.Void, [])));
+        ib.CreateCallVirt("Add", dict, body.Args[1], ConstInt.CreateI(7));
+        if (bypassEdge) ib.SetBranch(body.Args[0], read, check); else ib.SetBranch(check);
+        var cb = new IRBuilder(check);
+        cb.SetBranch(cb.CreateCallVirt("ContainsKey", dict, body.Args[1]), read, missing);
+        var rb = new IRBuilder(read);
+        rb.CreateReturn(rb.CreateCallVirt("get_Item", dict, body.Args[1]));
+        missing.SetBranch(new ReturnInst(ConstInt.CreateI(-1)));
+        Run(body, new SimplifyInsts(_modResolver));
+        Assert.Equal(!bypassEdge, body.Instructions().OfType<CallInst>().Any(c => c.Method.Name == "TryGetValue"));
+        var run = Utils.Compile<Func<bool,string,int>>(body);
+        Assert.Equal(7, run(true, "key")); Assert.Equal(7, run(false, "key"));
+    }
+
     private static void Run(MethodBody body, params IMethodPass[] passes)
     {
         var comp = new Compilation(body.Definition.Module, new VoidLogger(), new CompilationSettings());

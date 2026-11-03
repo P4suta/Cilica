@@ -83,7 +83,7 @@ public class LoopStrengthReduction : IMethodPass
 
             switch (user) {
                 case ArrayAddrInst addr 
-                when !addr.IsCasting && IsBoundedByArrayLen(addr, loop.ExitCondition) is bool isBounded && (isBounded || addr.InBounds): {
+                when !addr.IsCasting && !addr.RequiresVarianceCheck && IsBoundedByArrayLen(addr, loop.ExitCondition) is bool isBounded && (isBounded || addr.InBounds): {
                     ref var info = ref indexedAccs.GetOrAddRef(addr.Array);
                     info.Addrs ??= new();
 

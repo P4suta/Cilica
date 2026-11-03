@@ -224,6 +224,14 @@ partial class ILGenerator
         }
         
         switch (op) {
+            case ILCode.Nop when inst is CilIntrinsic.NullCheck: {
+                var nonNull = _asm.DefineLabel();
+                _asm.Emit(ILCode.Brtrue, nonNull);
+                _asm.Emit(ILCode.Ldnull);
+                _asm.Emit(ILCode.Throw);
+                _asm.MarkLabel(nonNull);
+                break;
+            }
             case ILCode.Newarr: {
                 _asm.Emit(ILCode.Newarr, inst.ResultType.ElemType);
                 break;

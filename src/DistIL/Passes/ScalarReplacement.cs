@@ -34,8 +34,10 @@ public class ScalarReplacement : IMethodPass
         // Zero-init fields (this is necessary for correct SSA promotion)
         var builder = new IRBuilder(alloc, InsertionDir.Before);
 
-        foreach (var field in alloc.ResultType.Fields) {
-            builder.CreateInitObj(GetSlot(field));
+        for (var type = alloc.ResultType; type != null; type = type.BaseType) {
+            foreach (var field in type.Fields) {
+                if (field.IsInstance) builder.CreateInitObj(GetSlot(field));
+            }
         }
 
         // At this point we know that the constructor doesn't let the instance escape.
@@ -63,7 +65,7 @@ public class ScalarReplacement : IMethodPass
 
     private static bool IsSimpleCtor(MethodTransformContext ctx, NewObjInst alloc)
     {
-        if (alloc.ResultType.IsValueType) {
+        if (alloc.ResultType.IsValueType || HasFinalizer(alloc.ResultType)) {
             return false;
         }
         if (alloc.Constructor is not MethodDefOrSpec { Definition: var ctor }) {
@@ -85,8 +87,27 @@ public class ScalarReplacement : IMethodPass
     }
     private static bool Escapes(TrackedValue obj, bool isCtor = false)
     {
-        // Consider obj as escaping if it is being passed somewhere
-        return !obj.Users().All(u => u is FieldAddrInst || (isCtor && IsObjectCtorCall(u)));
+        return !obj.Users().All(u =>
+            u is FieldAddrInst addr && !AddressEscapes(addr) || (isCtor && IsObjectCtorCall(u)));
+    }
+
+    private static bool AddressEscapes(TrackedValue address)
+        => address.Uses().Any(use => use.Parent switch {
+            LoadInst => use.OperIndex != 0,
+            StoreInst => use.OperIndex != 0,
+            FieldAddrInst nested => use.OperIndex != 0 || AddressEscapes(nested),
+            CilIntrinsic.MemSet => use.OperIndex != 0,
+            CilIntrinsic.MemCopy => use.OperIndex > 1,
+            _ => true
+        });
+
+    private static bool HasFinalizer(TypeDesc type)
+    {
+        for (TypeDesc? curr = type; curr != null && !curr.IsCorelibType(typeof(object)); curr = curr.BaseType) {
+            if (curr.Methods.Any(m => m.Name == "Finalize" && m.IsInstance && m.ParamSig.Count == 1 &&
+                m.Attribs.HasFlag(System.Reflection.MethodAttributes.Virtual))) return true;
+        }
+        return false;
     }
 
     private static bool IsObjectCtorCall(Instruction inst)

@@ -2,6 +2,13 @@ namespace DistIL.IR;
 
 public abstract class CilIntrinsic : IntrinsicInst
 {
+    /// <summary> Throws NullReferenceException if the object reference is null. </summary>
+    public class NullCheck(Value value) : CilIntrinsic(PrimType.Void, [value])
+    {
+        public override ILCode Opcode => ILCode.Nop;
+        public override bool MayThrow => true;
+    }
+
     public abstract ILCode Opcode { get; }
 
     public override string Namespace => "CIL";

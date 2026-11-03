@@ -211,6 +211,16 @@ public class IRBuilder
     public CallInst CreateCallVirt(MethodDesc method, params Value[] args)
         => Emit(new CallInst(method, args, true));
 
+    public Instruction CreateNullCheck(Value value) => Emit(new CilIntrinsic.NullCheck(value));
+
+    /// <summary> Ensures that the type initializer has completed before subsequent instructions execute. </summary>
+    public CallInst CreateTypeInitialization(TypeDesc type)
+    {
+        var helper = Resolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers))
+            .FindMethod("RunClassConstructor", new MethodSig(PrimType.Void, [Resolver.SysTypes.RuntimeTypeHandle]));
+        return CreateCall(helper, Emit(new CilIntrinsic.LoadHandle(Resolver, type)));
+    }
+
     /// <summary> Searches for <paramref name="methodName"/> in the instance object type (first argument), and creates a callvirt instruction for it. </summary>
     public CallInst CreateCallVirt(string methodName, params Value[] args)
     {
