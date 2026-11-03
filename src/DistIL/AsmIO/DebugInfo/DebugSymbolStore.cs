@@ -4,19 +4,32 @@ using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 
 // https://github.com/dotnet/runtime/blob/main/docs/design/specs/PortablePdb-Metadata.md
-public partial class DebugSymbolStore(ModuleDef module)
+public partial class DebugSymbolStore(ModuleDef module) : IDisposable
 {
     public ModuleDef Module { get; } = module;
 
     internal readonly Dictionary<MethodDef, MethodDebugSymbols> _methodSymbols = new();
+    bool _disposed;
+
+    protected void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
+
+    public virtual void Dispose()
+    {
+        _disposed = true;
+        _methodSymbols.Clear();
+    }
 
     public virtual MethodDebugSymbols? GetMethodSymbols(MethodDef method)
     {
+        ThrowIfDisposed();
         Ensure.That(method.Module == Module);
         return _methodSymbols.GetValueOrDefault(method);
     }
+
     public void SetMethodSymbols(MethodDef method, MethodDebugSymbols? symbols)
     {
+        ThrowIfDisposed();
+
         if (symbols != null) {
             _methodSymbols[method] = symbols;
         } else {
@@ -27,6 +40,7 @@ public partial class DebugSymbolStore(ModuleDef module)
     /// <summary> Scans for all documents associated with the current debug symbols. </summary>
     public virtual IReadOnlyCollection<DebugSourceDocument> GetDocuments()
     {
+        ThrowIfDisposed();
         var set = new HashSet<DebugSourceDocument>();
 
         foreach (var method in _methodSymbols.Values) {
@@ -48,12 +62,14 @@ public partial class DebugSymbolStore(ModuleDef module)
 internal partial class PortablePdbSymbolStore : DebugSymbolStore
 {
     readonly MetadataReader _reader;
+    readonly MetadataReaderProvider _provider;
     readonly DebugSourceDocument[] _documents;
 
-    public PortablePdbSymbolStore(ModuleDef module, MetadataReader reader)
+    public PortablePdbSymbolStore(ModuleDef module, MetadataReaderProvider provider)
         : base(module)
     {
-        _reader = reader;
+        _provider = provider;
+        var reader = _reader = provider.GetMetadataReader();
 
         _documents = new DebugSourceDocument[reader.Documents.Count];
         int idx = 0;
@@ -68,6 +84,12 @@ internal partial class PortablePdbSymbolStore : DebugSymbolStore
                 HashAlgorithm = reader.GetGuid(doc.HashAlgorithm)
             };
         }
+    }
+
+    public override void Dispose()
+    {
+        base.Dispose();
+        _provider.Dispose();
     }
 
     public override MethodDebugSymbols? GetMethodSymbols(MethodDef method)

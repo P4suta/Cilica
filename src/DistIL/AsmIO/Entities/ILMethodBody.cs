@@ -23,6 +23,26 @@ public class ILMethodBody
 
     public ILMethodBody() { }
 
+    /// <summary> Returns the encoded size and validates contiguous instruction offsets. </summary>
+    public int GetCodeSize()
+    {
+        int offset = 0;
+
+        foreach (ref var inst in Instructions.AsSpan()) {
+            if (inst.Offset != offset) {
+                throw new BadImageFormatException("IL instruction offsets must be contiguous");
+            }
+
+            offset = checked(offset + inst.GetSize());
+        }
+
+        if (offset == 0) {
+            throw new BadImageFormatException("An IL method body must contain instructions");
+        }
+
+        return offset;
+    }
+
     private static ILInstruction[] DecodeInsts(ModuleLoader loader, BlobReader reader)
     {
         // Doing two passes over the raw data is slightly more efficient than using a list,

@@ -9,6 +9,12 @@ public class ModuleDef : EntityDesc
     public string ModName { get; set; } = null!;
     public AssemblyName AsmName { get; set; } = null!;
 
+    public ModuleImage? Image { get; set; }
+
+    public string RuntimeVersion { get; set; } = "v4.0.30319";
+
+    public Guid ModuleVersionId { get; internal set; }
+
     public MethodDef? EntryPoint { get; set; }
 
     /// <summary> All types defined in this module (incl. nested). </summary>
@@ -116,22 +122,28 @@ public class ModuleDef : EntityDesc
     /// </param>
     public void Save(Stream stream, Stream? pdbStream, string path)
     {
+        Resolver.ThrowIfDisposed();
+        Image?.ValidateForWriting(AsmName);
         var writer = new ModuleWriter(this);
         writer.BuildTables();
         writer.Serialize(stream, pdbStream, path);
     }
-    public void Save(string path, bool savePdb)
+
+    public void Save(string path, bool savePdb, string? backupPath = null)
     {
-        using var stream = File.Create(path);
-
-        using var pdbStream = savePdb && _debugSymbols != null
-            ? File.Create(Path.ChangeExtension(path, ".pdb")): null;
-
+        using var output = new AtomicOutput();
+        string pdbPath = Path.ChangeExtension(path, ".pdb");
+        var pdbStream = savePdb && GetDebugSymbols() != null
+            ? output.Create(pdbPath, backupPath == null ? null : pdbPath + ".bak") : null;
+        var stream = output.Create(path, backupPath);
         Save(stream, pdbStream, path);
+        output.Commit();
     }
 
     public DebugSymbolStore? GetDebugSymbols(bool create = false, Func<string, Stream?>? pdbFileStreamProvider = null)
     {
+        Resolver.ThrowIfDisposed();
+
         if (_debugSymbols != null) {
             return _debugSymbols;
         }
@@ -143,7 +155,12 @@ public class ModuleDef : EntityDesc
                 _loader._pe.TryOpenAssociatedPortablePdb(_loader._path, OpenPdbStream, out var provider, out string? pdbPath);
 
                 if (provider != null) {
-                    _debugSymbols = new PortablePdbSymbolStore(this, provider.GetMetadataReader());
+                    try {
+                        _debugSymbols = new PortablePdbSymbolStore(this, provider);
+                    } catch {
+                        provider.Dispose();
+                        throw;
+                    }
                 }
             } catch (Exception ex) {
                 Resolver._logger?.Error($"Failed to load debug symbols for module '{ModName}'", ex);
@@ -175,6 +192,14 @@ public class ModuleDef : EntityDesc
             }
             return null;
         }
+    }
+
+    internal void ReleaseReaders()
+    {
+        _debugSymbols?.Dispose();
+        _debugSymbols = null;
+        _loader?._pe.Dispose();
+        _loader = null;
     }
 
     public override string ToString()

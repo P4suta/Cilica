@@ -12,9 +12,17 @@ var parser = new CommandLine.Parser(c => {
 });
 var result = parser
     .ParseArguments<OptimizerOptions>(args)
-        .WithParsed(RunOptimizer);
+        .WithParsed(options => {
+            try {
+                RunOptimizer(options);
+            } catch (Exception error) {
+                Console.Error.WriteLine(options.Verbosity <= LogLevel.Debug ? error.ToString() : error.Message);
+                Environment.ExitCode = 1;
+            }
+        });
 
 if (result.Tag == ParserResultType.NotParsed) {
+    Environment.ExitCode = args.Any(arg => arg is "--help" or "--version") ? 0 : 2;
     var help = HelpText.AutoBuild(result, h => {
         h.AddEnumValuesToHelpText = true;
         return h;
@@ -44,13 +52,9 @@ static void RunOptimizer(OptimizerOptions options)
         return;
     }
 
-    string? outputPath = options.OutputPath;
-
-    if (outputPath == null) {
-        File.Move(options.InputPath, Path.ChangeExtension(options.InputPath, ".dll.bak"), overwrite: true);
-        outputPath = options.InputPath;
-    }
-    module.Save(outputPath, savePdb: !options.DisablePdbGeneration);
+    string outputPath = options.OutputPath ?? options.InputPath;
+    module.Save(outputPath, savePdb: !options.DisablePdbGeneration,
+        backupPath: options.OutputPath == null ? options.InputPath + ".bak" : null);
 }
 static CompilationResult RunPasses(OptimizerOptions options, Compilation comp)
 {

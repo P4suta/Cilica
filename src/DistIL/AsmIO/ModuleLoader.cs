@@ -18,15 +18,24 @@ internal class ModuleLoader
     {
         _path = path;
         _pe = new PEReader(File.OpenRead(path), PEStreamOptions.PrefetchEntireImage);
-        _reader = _pe.GetMetadataReader();
-        _mod = mod;
-        _tables = new TableEntryCache(_reader);
 
-        var asmDef = _reader.GetAssemblyDefinition();
-        _mod.AsmName = asmDef.GetAssemblyName();
-        
-        var modDef = _reader.GetModuleDefinition();
-        _mod.ModName = _reader.GetString(modDef.Name);
+        try {
+            _reader = _pe.GetMetadataReader();
+            _mod = mod;
+            _tables = new TableEntryCache(_reader);
+
+            var asmDef = _reader.GetAssemblyDefinition();
+            _mod.AsmName = asmDef.GetAssemblyName();
+
+            var modDef = _reader.GetModuleDefinition();
+            _mod.ModName = _reader.GetString(modDef.Name);
+            _mod.ModuleVersionId = _reader.GetGuid(modDef.Mvid);
+            _mod.RuntimeVersion = _reader.MetadataVersion;
+            _mod.Image = ModuleImage.Read(_pe);
+        } catch {
+            _pe.Dispose();
+            throw;
+        }
     }
 
     public void Load()
@@ -432,7 +441,7 @@ internal class ModuleLoader
 
         foreach (var handle in list) {
             var info = _reader.GetGenericParameterConstraint(handle);
-            
+
             builder.Add(new GenericParamConstraint(
                 GetTypeSig(info.Type),
                 LoadCustomAttribs(info.GetCustomAttributes())
@@ -459,7 +468,7 @@ internal class ModuleLoader
     {
         var info = _reader.GetStandaloneSignature(handle);
         Ensure.That(info.GetCustomAttributes().Count == 0);
-        
+
         return new FuncPtrType(new SignatureDecoder(this, info.Signature).DecodeMethodSig());
     }
 
@@ -524,7 +533,7 @@ internal class ModuleLoader
             case HandleKind.MethodSpecification: {
                 var info = _reader.GetMethodSpecification((MethodSpecificationHandle)handle);
                 var method = (MethodDefOrSpec)GetEntity(info.Method);
-                
+
                 var sigDec = new SignatureDecoder(this, info.Signature);
                 sigDec.ExpectHeader(SignatureKind.MethodSpecification);
 

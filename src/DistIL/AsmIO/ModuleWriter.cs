@@ -4,12 +4,14 @@ using System.Reflection;
 using System.Reflection.Metadata;
 using System.Reflection.Metadata.Ecma335;
 using System.Reflection.PortableExecutable;
+using System.Security.Cryptography;
 
 internal partial class ModuleWriter
 {
     readonly ModuleDef _mod;
     readonly MetadataBuilder _builder;
     readonly MethodBodyStreamEncoder _bodyEncoder;
+    readonly ReservedBlob<GuidHandle> _mvid;
     private BlobBuilder? _fieldDataStream, _resourceDataStream;
 
     readonly Dictionary<EntityDesc, EntityHandle> _handleMap = new();
@@ -22,6 +24,8 @@ internal partial class ModuleWriter
     {
         _mod = mod;
         _builder = new MetadataBuilder();
+        _mvid = _builder.ReserveGuid();
+        _mvid.CreateWriter().WriteGuid(Guid.Empty);
         _bodyEncoder = new MethodBodyStreamEncoder(new BlobBuilder());
     }
 
@@ -31,7 +35,7 @@ internal partial class ModuleWriter
         var mainModHandle = _builder.AddModule(
             0, 
             AddString(_mod.ModName), 
-            _builder.GetOrAddGuid(Guid.NewGuid()),
+            _mvid.Handle,
             _builder.GetOrAddGuid(default),
             _builder.GetOrAddGuid(default)
         );
@@ -321,7 +325,9 @@ internal partial class ModuleWriter
             Characteristics.ExecutableImage |
             (_mod.EntryPoint == null ? Characteristics.Dll : 0);
 
-        var header = new PEHeaderBuilder(imageCharacteristics: imageChars);
+        var image = _mod.Image ?? new ModuleImage(new PEHeaderBuilder(imageCharacteristics: imageChars));
+        image.ValidateForWriting(_mod.AsmName);
+        var header = image.Header;
         var entryPoint = _mod.EntryPoint == null ? default : (MethodDefinitionHandle)_handleMap[_mod.EntryPoint];
 
         var debugDirBuilder = new DebugDirectoryBuilder();
@@ -332,7 +338,7 @@ internal partial class ModuleWriter
             debugSymbols.Write(pdbEmitter);
 
             // Serialize
-            var pdbBuilder = new PortablePdbBuilder(pdbEmitter.TableBuilder, _builder.GetRowCounts(), entryPoint);
+            var pdbBuilder = new PortablePdbBuilder(pdbEmitter.TableBuilder, _builder.GetRowCounts(), entryPoint, ComputeContentId);
             var pdbBlob = new BlobBuilder();
             var pdbContentId = pdbBuilder.Serialize(pdbBlob);
             pdbBlob.WriteContentTo(pdbStream);
@@ -342,15 +348,30 @@ internal partial class ModuleWriter
 
         var peBuilder = new ManagedPEBuilder(
             header: header,
-            metadataRootBuilder: new MetadataRootBuilder(_builder),
+            metadataRootBuilder: new MetadataRootBuilder(_builder, _mod.RuntimeVersion),
             ilStream: _bodyEncoder.Builder,
             mappedFieldData: _fieldDataStream,
             managedResources: _resourceDataStream,
+            nativeResources: image.CreateResources(),
             entryPoint: entryPoint,
-            debugDirectoryBuilder: debugDirBuilder
+            debugDirectoryBuilder: debugDirBuilder,
+            flags: image.Flags,
+            deterministicIdProvider: ComputeContentId
         );
         var blob = new BlobBuilder();
-        peBuilder.Serialize(blob);
+        var contentId = peBuilder.Serialize(blob);
+        _mvid.CreateWriter().WriteGuid(contentId.Guid);
         blob.WriteContentTo(peStream);
+    }
+
+    private static BlobContentId ComputeContentId(IEnumerable<Blob> blobs)
+    {
+        using var hash = IncrementalHash.CreateHash(HashAlgorithmName.SHA256);
+
+        foreach (var blob in blobs) {
+            hash.AppendData(blob.GetBytes().AsSpan());
+        }
+
+        return BlobContentId.FromHash(hash.GetHashAndReset());
     }
 }

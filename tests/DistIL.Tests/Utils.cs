@@ -49,6 +49,33 @@ class Utils
     }
 }
 
+sealed class TemporaryDirectory : IDisposable
+{
+    readonly string _parent = System.IO.Path.GetFullPath(System.IO.Path.Combine(System.IO.Path.GetTempPath(), "DistIL.Tests")) + System.IO.Path.DirectorySeparatorChar;
+
+    public string Path { get; }
+
+    public TemporaryDirectory()
+    {
+        Path = System.IO.Path.Combine(_parent, Guid.NewGuid().ToString("N"));
+        Directory.CreateDirectory(Path);
+    }
+
+    public void Dispose()
+    {
+        var resolved = System.IO.Path.GetFullPath(Path);
+        var comparison = OperatingSystem.IsWindows() ? StringComparison.OrdinalIgnoreCase : StringComparison.Ordinal;
+
+        if (!resolved.StartsWith(_parent, comparison) || resolved.Length <= _parent.Length) {
+            throw new InvalidOperationException("Invalid temporary test directory");
+        }
+
+        if (Directory.Exists(resolved)) {
+            Directory.Delete(resolved, recursive: true);
+        }
+    }
+}
+
 class FakeTrackedValue : TrackedValue
 {
     public int Id;

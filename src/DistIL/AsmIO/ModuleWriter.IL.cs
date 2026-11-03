@@ -10,8 +10,9 @@ partial class ModuleWriter
         if (body == null) {
             return -1;
         }
+
         var enc = _bodyEncoder.AddMethodBody(
-            codeSize: body.Instructions[^1].GetEndOffset(),
+            codeSize: body.GetCodeSize(),
             body.MaxStack,
             body.ExceptionClauses.Length,
             hasSmallExceptionRegions: false, // TODO

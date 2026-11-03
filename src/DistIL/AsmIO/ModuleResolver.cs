@@ -6,13 +6,17 @@ using System.Text.RegularExpressions;
 
 public class ModuleResolver : IDisposable
 {
-    // TODO: Do we need to care about FullName (public keys and versions)?
     internal readonly Dictionary<string, ModuleDef> _cache = new(StringComparer.OrdinalIgnoreCase);
     internal readonly Dictionary<ResolvingUtils.MethodSelector, MethodDesc> FunctionCache = new();
     internal readonly Dictionary<string, TypeDefOrSpec> TypeCache = new();
 
     private string[] _searchPaths = [];
     internal readonly ICompilationLogger? _logger;
+    readonly Dictionary<string, ModuleDef> _paths = new(OperatingSystem.IsWindows() ? StringComparer.OrdinalIgnoreCase : StringComparer.Ordinal);
+    readonly HashSet<string> _frameworkAssemblies = new(StringComparer.OrdinalIgnoreCase);
+    bool _disposed;
+
+    public AssemblyResolutionPolicy ResolutionPolicy { get; }
 
     /// <summary> A reference to the <c>System.Private.CoreLib</c> assembly. </summary>
     public ModuleDef CoreLib => _coreLib ??= Resolve("System.Private.CoreLib");
@@ -21,25 +25,34 @@ public class ModuleResolver : IDisposable
     public SystemTypes SysTypes => _sysTypes ??= new(CoreLib);
     private SystemTypes? _sysTypes;
 
-    public ModuleResolver(ICompilationLogger? logger = null)
+    public ModuleResolver(ICompilationLogger? logger = null, AssemblyResolutionPolicy resolutionPolicy = AssemblyResolutionPolicy.RuntimeCompatible)
     {
         _logger = logger;
+        ResolutionPolicy = resolutionPolicy;
     }
+
+    internal void ThrowIfDisposed() => ObjectDisposedException.ThrowIf(_disposed, this);
 
     public void AddSearchPaths(IEnumerable<string> paths)
     {
+        ThrowIfDisposed();
         _searchPaths = _searchPaths
             .Concat(paths)
             .Select(FixRuntimePackRefPath)
             .Distinct(StringComparer.OrdinalIgnoreCase)
             .ToArray();
 
-        // Try to change search path for the `NETCore.App.Ref` pack to the actual implementation path.
-        // This is done for a couple reasons:
-        // - We make the assumption that "System.Private.CoreLib" always exist, but it doesn't in ref packs.
-        //   This would lead to multiple defs for e.g. "System.ValueType", which would cause issues.
-        // - We want to depend on _some_ private impl details which are not shipped in ref asms. 
-        //   Notably accessing private `List<T>` fields.
+        foreach (var path in _searchPaths) {
+            if (File.Exists(Path.Combine(path, "System.Private.CoreLib.dll")) ||
+                File.Exists(Path.Combine(path, "Microsoft.WindowsDesktop.App.deps.json")) ||
+                File.Exists(Path.Combine(path, "Microsoft.AspNetCore.App.deps.json"))) {
+                foreach (var file in Directory.EnumerateFiles(path, "*.dll")) {
+                    _frameworkAssemblies.Add(Path.GetFileNameWithoutExtension(file));
+                }
+            }
+        }
+
+        // Runtime implementation paths provide the canonical definitions behind reference-assembly type forwarders.
         static string FixRuntimePackRefPath(string path)
         {
             // e.g. "C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\7.0.3\ref\net7.0"
@@ -59,9 +72,11 @@ public class ModuleResolver : IDisposable
 
     public TypeDefOrSpec? Import(Type type, [DoesNotReturnIf(true)] bool throwIfNotFound = true)
     {
+        ThrowIfDisposed();
         Ensure.That(type.IsTypeDefinition || type.IsConstructedGenericType);
 
-        var mod = Resolve(type.Assembly.GetName());
+        var identity = type.Assembly.GetName();
+        var mod = IsFrameworkAssembly(identity) ? Resolve(identity.Name!, throwIfNotFound) : Resolve(identity, throwIfNotFound);
         TypeDefOrSpec? resolved = null;
 
         if (mod != null) {
@@ -99,55 +114,138 @@ public class ModuleResolver : IDisposable
 
     public ModuleDef? Resolve(AssemblyName name, [DoesNotReturnIf(true)] bool throwIfNotFound = true)
     {
-        return Resolve(name.Name ?? throw new InvalidOperationException(), throwIfNotFound);
-    }
+        ThrowIfDisposed();
+        string simpleName = name.Name ?? throw new ArgumentException("Assembly name is required", nameof(name));
 
-    public ModuleDef? Resolve(string name, [DoesNotReturnIf(true)] bool throwIfNotFound = true)
-    {
-        // FIXME: This is not ideal, but it should work fine the module is not saved.
-        if (name == "mscorlib") {
-            name = "netstandard";
+        if (simpleName == "mscorlib" && ResolutionPolicy == AssemblyResolutionPolicy.RuntimeCompatible) {
+            return Resolve("netstandard", throwIfNotFound);
         }
 
-        if (_cache.TryGetValue(name, out var module)) {
-            return module;
+        if (_cache.TryGetValue(simpleName, out var bound)) {
+            if (Matches(name, bound.AsmName)) {
+                return bound;
+            }
+
+            if (!throwIfNotFound) {
+                return null;
+            }
+
+            throw new FileLoadException($"Assembly '{name}' conflicts with the binding '{bound.AsmName}'");
         }
-        module = ResolveImpl(name);
+
+        var module = ResolveImpl(name);
 
         if (module == null && throwIfNotFound) {
-            throw new InvalidOperationException($"Failed to resolve module '{name}'");
+            throw new FileNotFoundException($"Could not resolve assembly '{name}'");
         }
 
-        Debug.Assert(module == null || _cache.GetValueOrDefault(name) == module);
         return module!;
     }
 
-    protected virtual ModuleDef? ResolveImpl(string name)
+    public ModuleDef? Resolve(string name, [DoesNotReturnIf(true)] bool throwIfNotFound = true)
+        => Resolve(new AssemblyName(name), throwIfNotFound);
+
+    protected virtual ModuleDef? ResolveImpl(AssemblyName name)
     {
+        string? compatiblePath = null;
+
         foreach (string basePath in _searchPaths) {
-            string path = Path.Combine(basePath, name + ".dll");
-            if (File.Exists(path)) {
+            string path = Path.Combine(basePath, name.Name + ".dll");
+
+            if (!File.Exists(path)) {
+                continue;
+            }
+
+            var identity = AssemblyName.GetAssemblyName(path);
+
+            if (!Matches(name, identity)) {
+                continue;
+            }
+
+            if (name.Version == null || identity.Version == name.Version) {
                 return Load(path);
             }
+
+            compatiblePath ??= path;
         }
-        return null;
+
+        return compatiblePath == null ? null : Load(compatiblePath);
+    }
+
+    private bool Matches(AssemblyName requested, AssemblyName actual)
+    {
+        if (!string.Equals(requested.Name, actual.Name, StringComparison.OrdinalIgnoreCase)) {
+            return false;
+        }
+
+        if (requested.CultureName != null && !string.Equals(requested.CultureName, actual.CultureName ?? "", StringComparison.OrdinalIgnoreCase)) {
+            return false;
+        }
+
+        if (requested.GetPublicKeyToken() is { } token && !token.AsSpan().SequenceEqual(actual.GetPublicKeyToken() ?? [])) {
+            return false;
+        }
+
+        return requested.Version == null || requested.Version == actual.Version ||
+            ResolutionPolicy == AssemblyResolutionPolicy.RuntimeCompatible && IsFrameworkAssembly(actual) && actual.Version >= requested.Version;
+    }
+
+    private bool IsFrameworkAssembly(AssemblyName identity)
+    {
+        string name = identity.Name ?? "";
+
+        if (!_frameworkAssemblies.Contains(name)) {
+            return false;
+        }
+
+        return Convert.ToHexString(identity.GetPublicKeyToken() ?? []) is
+            "7CEC85D7BEA7798E" or "B03F5F7F11D50A3A" or "CC7B13FFCD2DDD51" or "B77A5C561934E089";
     }
 
     public ModuleDef Load(string path)
     {
+        ThrowIfDisposed();
+        path = Path.GetFullPath(path);
+
+        if (_paths.TryGetValue(path, out var cached)) {
+            return cached;
+        }
+
         var module = new ModuleDef(this);
         module._loader = new ModuleLoader(path, module);
 
-        AddToCache(module.AsmName.Name!, module); // AsmName is loaded by ModuleLoader ctor
-        _logger?.Debug($"Loading module '{module.AsmName.Name}, v{module.AsmName.Version}'");
+        try {
+            if (_cache.TryGetValue(module.AsmName.Name!, out var existing)) {
+                if (existing.AsmName.FullName != module.AsmName.FullName || existing.ModuleVersionId == Guid.Empty ||
+                    existing.ModuleVersionId != module.ModuleVersionId) {
+                    throw new FileLoadException($"A different image is already bound for '{module.AsmName.Name}'");
+                }
 
-        module._loader.Load();
+                module.ReleaseReaders();
+                _paths.Add(path, existing);
 
-        return module;
+                return existing;
+            }
+
+            AddToCache(module.AsmName.Name!, module);
+            _logger?.Debug($"Loading module '{module.AsmName.Name}, v{module.AsmName.Version}'");
+            module._loader.Load();
+            _paths.Add(path, module);
+
+            return module;
+        } catch {
+            if (_cache.GetValueOrDefault(module.AsmName.Name!) == module) {
+                _cache.Remove(module.AsmName.Name!);
+            }
+
+            module.ReleaseReaders();
+            throw;
+        }
     }
 
     public ModuleDef Create(string asmName, Version? ver = null)
     {
+        ThrowIfDisposed();
         var module = new ModuleDef(this) {
             AsmName = new AssemblyName() {
                 Name = asmName,
@@ -167,12 +265,32 @@ public class ModuleResolver : IDisposable
     
     public void Dispose()
     {
-        foreach (var module in _cache.Values) {
-            module._loader!._pe.Dispose();
-            module._loader = null;
+        if (_disposed) {
+            return;
         }
+
+        _disposed = true;
+
+        foreach (var module in _cache.Values) {
+            module.ReleaseReaders();
+        }
+
         _cache.Clear();
+        _paths.Clear();
+        _frameworkAssemblies.Clear();
         TypeCache.Clear();
         FunctionCache.Clear();
+        _coreLib = null;
+        _sysTypes = null;
     }
+}
+
+public enum AssemblyResolutionPolicy
+{
+
+    Exact,
+
+    /// <summary> Permits version unification for signed runtime framework assemblies and the legacy mscorlib facade. </summary>
+    RuntimeCompatible
+
 }
