@@ -84,6 +84,7 @@ public class PassManager
     private void PrepareMethods(IReadOnlyCollection<MethodDef> methods, bool import)
     {
         long start = Stopwatch.GetTimestamp();
+        long allocated = GC.GetAllocatedBytesForCurrentThread();
         int count = 0;
 
         foreach (var method in methods) {
@@ -114,12 +115,14 @@ public class PassManager
             }
         }
 
-        Inspectors.OfType<PassTimingInspector>().FirstOrDefault()?.IncrementStat(typeof(ILImporter), start, count);
+        Inspectors.OfType<PassTimingInspector>().FirstOrDefault()?.IncrementStat(typeof(ILImporter), start, count, methods.Count,
+            GC.GetAllocatedBytesForCurrentThread() - allocated);
     }
 
     private void GenerateIL(MethodDef method)
     {
         long start = Stopwatch.GetTimestamp();
+        long allocated = GC.GetAllocatedBytesForCurrentThread();
         var symbols = method.GetDebugSymbols() != null ? new SequencePointBuilder(method) : null;
         var generated = ILGenerator.GenerateCode(method.Body!, symbols);
         var generatedSymbols = symbols?.BuildSymbols(generated.Instructions);
@@ -130,7 +133,8 @@ public class PassManager
             method.Module.GetDebugSymbols(create: true)!.SetMethodSymbols(method, generatedSymbols);
         }
 
-        Inspectors.OfType<PassTimingInspector>().FirstOrDefault()?.IncrementStat(typeof(ILGenerator), start, 1);
+        Inspectors.OfType<PassTimingInspector>().FirstOrDefault()?.IncrementStat(typeof(ILGenerator), start, 1,
+            allocatedBytes: GC.GetAllocatedBytesForCurrentThread() - allocated);
     }
 
     private void Fail(MethodDef method, string phase, Exception error)

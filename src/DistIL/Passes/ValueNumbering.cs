@@ -2,12 +2,12 @@ namespace DistIL.Passes;
 
 using DistIL.Analysis;
 
-// TODO: consider implementing https://gcc.gnu.org/wiki/GVN-PRE
 public class ValueNumbering : IMethodPass
 {
     public MethodPassResult Run(MethodTransformContext ctx)
     {
         var table = new ValueTable() {
+            Context = ctx,
             DomTree = ctx.GetAnalysis<DominatorTree>(),
             AliasAnalysis = ctx.GetAnalysis<AliasAnalysis>(),
             FuncInfo = ctx.Compilation.GetAnalysis<GlobalFunctionEffects>(),
@@ -34,6 +34,8 @@ public class ValueNumbering : IMethodPass
     class ValueTable
     {
         readonly Dictionary<Instruction, List<Instruction>> _availMap = new(VNComparer.Instance);
+        MemoryAccessAnalysis? _memory;
+        public required MethodTransformContext Context;
         public required DominatorTree DomTree;
         public required AliasAnalysis AliasAnalysis;
         public required GlobalFunctionEffects FuncInfo;
@@ -93,23 +95,26 @@ public class ValueNumbering : IMethodPass
                 // if effect == MayRead, check for clobbers
             }
 
-            // Scan CFG backwards to find memory clobbers
-            // TODO: investigate using MemorySSA for fast avail-dep checks: https://llvm.org/docs/MemorySSA.html
+            _memory ??= Context.GetAnalysis<MemoryAccessAnalysis>();
+
+            if (def.Block == user.Block) {
+                return !HasClobber(user.Block, def, user);
+            }
+
+            // Backedges contribute writes from the entire revisited block.
             var worklist = new DiscreteStack<BasicBlock>(user.Block);
 
             // Make the worklist forget the user block was pushed so the loop can check
             // loop backedges when visiting predecessors.
             worklist.UnmarkPushed(user.Block);
+            bool firstBlock = true;
 
             while (worklist.TryPop(out var block)) {
-                var inst = block == user.Block && worklist.UniqueCount == 0 ? user.Prev! : block.Last;
-                var firstInst = block == def.Block ? def : null;
-
-                for (; inst != firstInst; inst = inst.Prev!) {
-                    if (MayClobberDef(def, inst)) {
-                        return false;
-                    }
+                if (HasClobber(block, block == def.Block ? def : null, firstBlock ? user : null)) {
+                    return false;
                 }
+
+                firstBlock = false;
 
                 if (block == def.Block) continue; // stop when reaching def's block
 
@@ -119,6 +124,17 @@ public class ValueNumbering : IMethodPass
             }
 
             return true;
+
+            bool HasClobber(BasicBlock block, Instruction? after, Instruction? before)
+            {
+                foreach (var instruction in _memory.GetPotentialWrites(block, after, before)) {
+                    if (instruction.Block != null && MayClobberDef(def, instruction)) {
+                        return true;
+                    }
+                }
+
+                return false;
+            }
         }
 
         // Checks if `inst` may clobber the result value of `def`.
@@ -222,7 +238,7 @@ public class ValueNumbering : IMethodPass
             hash: (inst) => HashCode.Combine(inst.DestType, inst.Args[0])
         );
 
-        // FIXME: consider volatile accesses
+        // Volatile accesses are excluded by the value table.
         Reg<MemoryInst>(
             comp: (a, b) => a.Address == b.Address && a.ElemType == b.ElemType,
             hash: (inst) => HashCode.Combine(inst.Address)

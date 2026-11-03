@@ -437,6 +437,39 @@ public class PassRegressionTests
     }
 
     [Fact]
+    public void ValueNumberingChecksWritesAfterTheUseOnBackedges()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var field = body.Definition.DeclaringType.CreateField("Value", PrimType.Int32, FieldAttributes.Static | FieldAttributes.Public);
+        var entry = body.CreateBlock();
+        var header = body.CreateBlock();
+        var items = body.CreateBlock();
+        var exit = body.CreateBlock();
+        var start = new IRBuilder(entry);
+        var address = start.CreateFieldAddr(field);
+        start.CreateStore(address, ConstInt.CreateI(0));
+        var first = start.CreateLoad(address);
+        start.SetBranch(header);
+        var index = header.InsertPhi(new PhiInst(PrimType.Int32, (entry, ConstInt.CreateI(0))));
+        var result = header.InsertPhi(new PhiInst(PrimType.Int32, (entry, ConstInt.CreateI(0))));
+        var head = new IRBuilder(header, InsertionDir.After);
+        head.SetBranch(head.CreateSlt(index, ConstInt.CreateI(2)), items, exit);
+        var builder = new IRBuilder(items);
+        var second = builder.CreateLoad(address);
+        var next = builder.CreateAdd(index, ConstInt.CreateI(1));
+        builder.CreateStore(address, next);
+        builder.SetBranch(header);
+        index.AddArg(items, next);
+        result.AddArg(items, second);
+        var finish = new IRBuilder(exit);
+        finish.CreateReturn(finish.CreateAdd(first, result));
+        Run(body, new ValueNumbering());
+
+        Assert.NotNull(second.Block);
+        Assert.Equal(1, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
     public void InliningBoundsMutualRecursionWithProfitableArguments()
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);

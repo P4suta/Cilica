@@ -5,8 +5,8 @@ using DistIL.Attributes;
 using System.Runtime.Intrinsics;
 using System.Runtime.InteropServices;
 
-[Optimize(TryVectorize = true), DisassemblyDiagnoser]
-public class AutoVectorization
+[Optimize, DisassemblyDiagnoser]
+public class LoopKernels
 {
     [Params(4096)]
     public int ElemCount {

@@ -17,7 +17,7 @@ public class ListArrayBuilding
     }
 
     int _count;
-    IReadOnlyList<int> _items;
+    IReadOnlyList<int> _items = null!;
 
     [Benchmark]
     public int[] DirectArray_Gen()

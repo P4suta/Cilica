@@ -87,6 +87,38 @@ public class PassManagerTests(ModuleResolverFixture fixture)
         Assert.True(compilation.HasFailed(method));
     }
 
+    [Fact]
+    public void TimingTracksInvocationsChangesFailuresAndAnalysisReuse()
+    {
+        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32);
+        body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        var context = new MethodTransformContext(new Compilation(body.Definition.Module, new VoidLogger(), new()), body);
+        var timing = new PassTimingInspector(logStatsOnFinish: false);
+        var pass = new QueryAnalysisPass();
+        PassRunner.Run(pass, context, [timing]);
+        PassRunner.Run(pass, context, [timing]);
+        var stats = timing.Stats[typeof(QueryAnalysisPass)];
+
+        Assert.Equal(2, stats.Invocations);
+        Assert.Equal(0, stats.ChangedInvocations);
+        Assert.Equal(1, stats.AnalysisBuilds);
+        Assert.Equal(3, stats.AnalysisCacheHits);
+        Assert.True(stats.AllocatedBytes > 0);
+        Assert.Throws<NotSupportedException>(() => PassRunner.Run(new InvalidReturnPass(true), context, [timing]));
+        Assert.Equal(1, timing.Stats[typeof(InvalidReturnPass)].Failures);
+    }
+
+    sealed class QueryAnalysisPass : IMethodPass
+    {
+        public MethodPassResult Run(MethodTransformContext context)
+        {
+            context.GetAnalysis<DominatorTree>();
+            context.GetAnalysis<DominatorTree>();
+
+            return MethodInvalidations.None;
+        }
+    }
+
     [Theory]
     [InlineData(true)]
     [InlineData(false)]

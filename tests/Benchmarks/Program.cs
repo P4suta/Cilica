@@ -14,14 +14,16 @@ var defaultJob = Job.ShortRun
     .WithIterationCount(20)
     .WithToolchain(toolchain);
 
-var config = DefaultConfig.Instance
+bool compilerBenchmarks = args.Contains("--compiler");
+args = args.Where(arg => arg != "--compiler").ToArray();
+var config = compilerBenchmarks ? DefaultConfig.Instance.AddJob(Job.ShortRun.WithToolchain(toolchain)) : DefaultConfig.Instance
     .AddLogicalGroupRules(BenchmarkLogicalGroupRule.ByMethod, BenchmarkLogicalGroupRule.ByParams)
     .AddJob(defaultJob.AsBaseline())
     .AddJob(defaultJob.WithToolchain(new OptToolchain(toolchain)));
 
-BenchmarkSwitcher
-    .FromAssembly(typeof(Program).Assembly)
-    .Run(args, config);
+var benchmarks = compilerBenchmarks ? BenchmarkSwitcher.FromTypes([typeof(DistIL.Benchmarks.CompilerPasses)])
+    : BenchmarkSwitcher.FromAssembly(typeof(Program).Assembly);
+benchmarks.Run(args, config);
 
 class OptToolchain : Toolchain
 {
