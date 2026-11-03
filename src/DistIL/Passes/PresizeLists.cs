@@ -10,6 +10,7 @@ public class PresizeLists : IMethodPass
     {
         var loopAnalysis = ctx.GetAnalysis<LoopAnalysis>();
         var domTree = ctx.GetAnalysis<DominatorTree>();
+        var regions = ctx.GetAnalysis<ProtectedRegionAnalysis>();
 
         var candidateLists = new Dictionary<TrackedValue, (bool HasConditionalAdd, int AddCallCount)>();
         int numChanges = 0;
@@ -51,7 +52,7 @@ public class PresizeLists : IMethodPass
                 var numAddedItems = builder.CreateMul(loop.GetTripCount(builder)!, ConstInt.CreateI(info.AddCallCount));
                 var newList = list;
 
-                if (list is NewObjInst { NumArgs: 0 } listAlloc && CanSinkAlloc(listAlloc, numAddedItems as Instruction ?? loop.PreHeader.Last, domTree)) {
+                if (list is NewObjInst { NumArgs: 0 } listAlloc && CanSinkAlloc(listAlloc, numAddedItems as Instruction ?? loop.PreHeader.Last, domTree, regions)) {
 
                     var ctorWithCap = list.ResultType.FindMethod(".ctor", new MethodSig(PrimType.Void, [PrimType.Int32]));
                     newList = builder.CreateNewObj(ctorWithCap, [numAddedItems]);
@@ -144,8 +145,13 @@ public class PresizeLists : IMethodPass
     }
 
     // Checks if `alloc` can be moved to after `inst`
-    private static bool CanSinkAlloc(NewObjInst alloc, Instruction inst, DominatorTree domTree)
+    private static bool CanSinkAlloc(NewObjInst alloc, Instruction inst, DominatorTree domTree, ProtectedRegionAnalysis regions)
     {
+        var sourceRegion = regions.GetBlockRegion(alloc.Block);
+        for (var region = regions.GetBlockRegion(inst.Block); region != sourceRegion; region = region.Parent) {
+            if (region == null || region.GetHandlerGuard() != null ||
+                region.StartBlock.Guards().Any(g => g.Kind != GuardKind.Finally)) return false;
+        }
         foreach (var user in alloc.Users()) {
             if (!domTree.Dominates(inst, user)) {
                 return false;

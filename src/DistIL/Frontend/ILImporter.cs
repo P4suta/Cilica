@@ -168,7 +168,7 @@ public class ILImporter
                     ? block.StartOffset >= c.FilterStart && block.StartOffset < c.FilterEnd 
                     : block.StartOffset >= c.HandlerStart && block.StartOffset < c.HandlerEnd;
             });
-            var protectedNode = _regionTree!.FindEnclosing(parentClause.TryStart);
+            var protectedNode = _regionTree!.FindEnclosing(parentClause.TryStart, parentClause.TryEnd);
 
             var resume = (ResumeInst)block.Block.Last;
             resume.SetExitTargets(protectedNode.ExitTargets);

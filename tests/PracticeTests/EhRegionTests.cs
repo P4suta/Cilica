@@ -35,6 +35,8 @@ public class EhRegionTests
         // CHECK: leave [[target1:.*]]
         // CHECK: leave [[target2:.*]]
         // CHECK: resume [[target1]], [[target2]]
+        // CHECK: leave [[outerExit:.*]]
+        // CHECK: resume [[outerExit]]
     }
 
     [Fact]

@@ -33,6 +33,8 @@ public class PresizeListsTests
         } catch (InvalidOperationException) { }
         Assert.Equal(failAt, list.Count);
         for (int i = 0; i < list.Count; i++) Assert.Equal(i, list[i]);
+        // CHECK: newobj List`1[int]::.ctor()
+        // CHECK: try catch
         // CHECK: Add(
     }
 
