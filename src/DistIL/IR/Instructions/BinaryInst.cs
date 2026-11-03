@@ -31,7 +31,7 @@ public class BinaryInst : Instruction
         Op = op;
     }
 
-    private static TypeDesc? GetResultType(BinaryOp op, TypeDesc a, TypeDesc b)
+    internal static TypeDesc? GetResultType(BinaryOp op, TypeDesc a, TypeDesc b)
     {
         // Return original type for bit ops that never overflow (useful for bools)
         if (op is BinaryOp.And or BinaryOp.Or or BinaryOp.Xor && a == b) {

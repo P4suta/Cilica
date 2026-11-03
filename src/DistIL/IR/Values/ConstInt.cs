@@ -5,6 +5,11 @@ public class ConstInt : Const
     public long Value { get; }
     public ulong UValue => (ulong)(Value & GetMask(BitSize));
 
+    // CIL numeric instructions interpret the evaluation-stack width, independently
+    // of the signedness and storage width of the value's declared type.
+    internal long SignedStackValue => IsInt ? (int)Value : Value;
+    internal ulong UnsignedStackValue => IsInt ? (uint)Value : (ulong)Value;
+
     public bool IsInt => ResultType.StackType == StackType.Int;
     public bool IsLong => ResultType.StackType == StackType.Long;
 
@@ -14,7 +19,8 @@ public class ConstInt : Const
 
     private ConstInt(TypeDesc type, long value)
     {
-        Ensure.That(type.Kind.IsInt());
+        Ensure.That(type.StackType is StackType.Int or StackType.Long,
+            "Integer constants require a fixed-width type; use ConvertInst for native integers");
         ResultType = type;
 
         // truncate

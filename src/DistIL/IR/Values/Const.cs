@@ -51,7 +51,16 @@ public class ConstString : Const
 
     public override void Print(PrintContext ctx)
     {
-        ctx.Print($"\"{Value.Replace("\"", "\\\"")}\"", PrintToner.String);
+        var text = new StringBuilder("\"");
+        foreach (char ch in Value) {
+            text.Append(ch switch {
+                '\\' => "\\\\", '"' => "\\\"",
+                '\r' => "\\r", '\n' => "\\n", '\t' => "\\t",
+                _ when char.IsControl(ch) => "\\u" + ((int)ch).ToString("X4"),
+                _ => ch.ToString()
+            });
+        }
+        ctx.Print(text.Append('"').ToString(), PrintToner.String);
     }
 
     public override bool Equals(Const? other) => other is ConstString o && o.Value == Value;

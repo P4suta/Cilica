@@ -12,6 +12,28 @@ public class TypeTests
         _modResolver = mrf.Resolver;
     }
 
+    [Theory]
+    [InlineData(typeof(int), false)]
+    [InlineData(typeof(ValueTuple<int>), false)]
+    [InlineData(typeof(ValueTuple<object>), true)]
+    [InlineData(typeof(ValueTuple<ValueTuple<object>>), true)]
+    [InlineData(typeof(string), true)]
+    public void ReferenceContainment(Type type, bool expected)
+    {
+        Assert.Equal(expected, _modResolver.Import(type).IsRefOrContainsRefs());
+    }
+
+    [Fact]
+    public void ReferenceContainmentPreservesGenericUncertainty()
+    {
+        var parameter = GenericParamType.GetUnboundT(0);
+        var tuple = _modResolver.Import(typeof(ValueTuple<>)).GetSpec([parameter]);
+        Assert.Null(parameter.IsRefOrContainsRefs());
+        Assert.Null(tuple.IsRefOrContainsRefs());
+        Assert.False(PrimType.Int32.CreatePointer().IsRefOrContainsRefs());
+        Assert.True(PrimType.Int32.CreateByref().IsRefOrContainsRefs());
+    }
+
     [Fact]
     public void Test_GetCommonAncestor()
     {

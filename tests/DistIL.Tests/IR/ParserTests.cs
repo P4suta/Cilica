@@ -354,6 +354,26 @@ Block1:
         }
     }
 
+    [Fact]
+    public void PrintedConstantsRoundTrip()
+    {
+        Const[] constants = [
+            ConstFloat.CreateD(1e30), ConstFloat.CreateD(-1e-30), ConstFloat.CreateD(-0.0),
+            ConstFloat.CreateD(double.NaN), ConstFloat.CreateD(double.PositiveInfinity), ConstFloat.CreateD(double.NegativeInfinity),
+            ConstFloat.CreateS(1e30f), ConstFloat.CreateS(float.NaN), ConstFloat.CreateS(float.NegativeInfinity),
+            ConstString.Create("C:\\temp\\new\\"), ConstString.Create("\"\\\r\n\t\0\b\f\v 日本語")
+        ];
+        foreach (var expected in constants) {
+            var ctx = new ParserContext(expected.ToString(), _modResolver);
+            var lexer = new Lexer(ctx);
+            var token = lexer.Next();
+            Assert.Equal(TokenType.Literal, token.Type);
+            Assert.Equal(expected, token.Value);
+            Assert.Equal(TokenType.EOF, lexer.Next().Type);
+            Assert.False(ctx.HasErrors);
+        }
+    }
+
     private IRParser CreateParser(string code)
     {
         return new IRParser(new FakeParserContext(code, _modResolver));

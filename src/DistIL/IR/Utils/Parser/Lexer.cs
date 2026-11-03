@@ -128,6 +128,10 @@ internal class Lexer
         _startPos = _pos;
         char ch2 = _pos + 1 < _str.Length ? _str[_pos + 1] : '\0';
 
+        if ((ch is 'N' or 'I' || ch == '-' && ch2 is 'N' or 'I') && s_NumberRegex.IsMatch(_str, _pos)) {
+            return Tok(TokenType.Literal, ParseNumber());
+        }
+
         // Match token
         var sym = ch switch {
             '(' => TokenType.LParen,
@@ -201,7 +205,7 @@ internal class Lexer
     }
 
     // [-] int [.fract] [E [+|-] exp] [UL|U|L|F|D]
-    static readonly Regex s_NumberRegex = new(@"(-?\d+(\.\d+(?:E[+-]?\d+)?)?)(UL|U|L|F|D)?", RegexOptions.IgnoreCase);
+    static readonly Regex s_NumberRegex = new(@"\G(?<value>-?(?:\d+(?:\.\d+)?(?:E[+-]?\d+)?|Infinity|NaN))(?<suffix>UL|U|L|F|D)?(?![\w.])", RegexOptions.IgnoreCase);
     private Value ParseNumber()
     {
         var m = s_NumberRegex.Match(_str, _pos);
@@ -212,12 +216,12 @@ internal class Lexer
         }
         _pos += m.Length;
 
-        var literal = m.Groups[1].ValueSpan;
-        var postfix = m.Groups[3].ValueSpan;
+        var literal = m.Groups["value"].ValueSpan;
+        var postfix = m.Groups["suffix"].ValueSpan;
         bool F = postfix.EqualsIgnoreCase("F");
         bool D = postfix.EqualsIgnoreCase("D");
 
-        if (m.Groups[2].Success || F || D) { // fraction or exponent
+        if (literal.Contains('.') || literal.ContainsIgnoreCase("E") || literal.ContainsIgnoreCase("N") || F || D) {
             double r = double.Parse(literal, NumberStyles.Float, CultureInfo.InvariantCulture);
 
             var type = F ? PrimType.Single : PrimType.Double;
@@ -237,11 +241,13 @@ internal class Lexer
     private Value ParseString()
     {
         var sb = new StringBuilder();
+        bool terminated = false;
         _pos++; // skip initial quote
         while (_pos < _str.Length) {
             char ch = _str[_pos++];
-            if (ch == '"') break;
+            if (ch == '"') { terminated = true; break; }
             if (ch == '\\') {
+                if (_pos == _str.Length) break;
                 ch = _str[_pos++] switch {
                     'r' => '\r',
                     'n' => '\n',
@@ -249,16 +255,28 @@ internal class Lexer
                     '"' => '"',
                     '\\' => '\\', // \
                     '\'' => '\'', // '
+                    'u' => ParseUnicodeEscape(),
                     _ => Unk()
                 };
                 char Unk() { _ctx.Error("Unknown escaping sequence", (_pos - 2, _pos)); return '?'; }
             }
             sb.Append(ch);
         }
-        if (_pos >= _str.Length) {
+        if (!terminated) {
             Error("Unterminated string");
         }
         return ConstString.Create(sb.ToString());
+    }
+
+    private char ParseUnicodeEscape()
+    {
+        if (_str.Length - _pos >= 4 && ushort.TryParse(_str.AsSpan(_pos, 4), NumberStyles.HexNumber,
+            CultureInfo.InvariantCulture, out ushort value)) {
+            _pos += 4;
+            return (char)value;
+        }
+        Error("Invalid Unicode escape");
+        return '?';
     }
     private string ParseIdentifier()
     {

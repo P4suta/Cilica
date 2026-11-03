@@ -129,12 +129,17 @@ public static class TypeUtils
     /// <remarks> See <see cref="System.Runtime.CompilerServices.RuntimeHelpers.IsReferenceOrContainsReferences{T}"/> </remarks>
     public static bool? IsRefOrContainsRefs(this TypeDesc type)
     {
+        if (type is GenericParamType) return null;
         if (type is TypeDefOrSpec { IsValueType: true }) {
-            return type.Fields.All(f => !f.IsInstance || IsRefOrContainsRefs(f.Type) is false);
+            bool unknown = false;
+            foreach (var field in type.Fields) {
+                if (!field.IsInstance) continue;
+                var containsRefs = field.Type.IsRefOrContainsRefs();
+                if (containsRefs == true) return true;
+                unknown |= containsRefs == null;
+            }
+            return unknown ? null : false;
         }
-        if (type.StackType is not (StackType.Object or StackType.ByRef)) {
-            return false;
-        }
-        return null; // possibly a generic type parameter
+        return type.StackType is StackType.Object or StackType.ByRef;
     }
 }
