@@ -15,7 +15,7 @@
     </RemoveDuplicates>
 
     <PropertyGroup>
-      <CliOptimizerPath>$(MSBuildThisFileDirectory)../tools/net8.0/DistIL.Cli.dll</CliOptimizerPath>
+      <CliOptimizerPath>$(MSBuildThisFileDirectory)../tools/net10.0/DistIL.Cli.dll</CliOptimizerPath>
       <InputAsmPath>%(IntermediateAssembly.FullPath)</InputAsmPath>
 
       <!-- Trailing slashes are removed to prevent issues with argument splitting. -->

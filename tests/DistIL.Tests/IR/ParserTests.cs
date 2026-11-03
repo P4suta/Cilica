@@ -139,6 +139,28 @@ Head:
         Assert.True(insts[1] is CompareInst { Op: CompareOp.Slt, Left: var cmpL, Right: ConstInt } && cmpL == insts[0]);
     }
 
+    [Theory]
+    [InlineData("0", 0L)]
+    [InlineData("1", 1L)]
+    public void ParseLiteralBranchConditions(string literal, long expected)
+    {
+        var body = Parse($$"""
+            import $Root from TestAsm
+
+            static ParserDummy::TestCase() {
+            Entry:
+                goto {{literal}} ? Yes : No
+            Yes:
+                ret
+            No:
+                ret
+            }
+            """);
+
+        var branch = Assert.IsType<BranchInst>(body.EntryBlock.Last);
+        Assert.Equal(expected, Assert.IsType<ConstInt>(branch.Cond).Value);
+    }
+
     [Fact]
     public void ParseVarDecls()
     {

@@ -55,7 +55,7 @@ public class ModuleResolver : IDisposable
         // Runtime implementation paths provide the canonical definitions behind reference-assembly type forwarders.
         static string FixRuntimePackRefPath(string path)
         {
-            // e.g. "C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\7.0.3\ref\net7.0"
+            // e.g. "C:\Program Files\dotnet\packs\Microsoft.NETCore.App.Ref\10.0.14\ref\net10.0"
             //                              shared                     ****      ***********
             string normPath = Path.GetFullPath(path).Replace('\\', '/');
             string implPath = Regex.Replace(normPath, @"(.+?\/)packs(\/Microsoft\.NETCore\.App)\.Ref(\/.+?)\/.+", "$1shared$2$3");

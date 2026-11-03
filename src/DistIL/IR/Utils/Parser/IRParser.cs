@@ -729,15 +729,17 @@ public partial class IRParser
         var prevCursor = _lexer.Cursor;
         var token = _lexer.Next();
 
-        if (token.Type is not TokenType.Identifier or TokenType.Literal) {
+        if (token.Type is not (TokenType.Identifier or TokenType.Literal)) {
             _lexer.ErrorUnexpected(token, "Value");
-        }//
-        else if (_lexer.Match(matchType)) {
+        } else if (_lexer.Match(matchType)) {
             value = ParseValue(token);
+
             return true;
         }
+
         _lexer.Cursor = prevCursor;
         value = null;
+
         return false;
     }
 

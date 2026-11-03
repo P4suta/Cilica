@@ -58,7 +58,7 @@ public class ExpandLinq : IMethodPass
         if (source is EnumeratorSource && source.Drain == sink) {
             return sink is not (ConcretizationSink or LoopSink);
         }
-        // Range().ToArray() and ToList() are already special-cased by LINQ, and vectorized in .NET 8.
+        // LINQ specializes Range().ToArray() and ToList() over contiguous output storage.
         // - https://github.com/dubiousconst282/DistIL/issues/25
         // - https://github.com/dotnet/runtime/pull/87992
         if (source is IntRangeSource && source.Drain == sink) {

@@ -1,5 +1,5 @@
 <Project>
-  <Sdk Name="Microsoft.NET.Sdk.IL" Version="7.0.0" />
+  <Sdk Name="Microsoft.NET.Sdk.IL" Version="10.0.14" />
 
   <PropertyGroup>
     <OutputType>Library</OutputType>

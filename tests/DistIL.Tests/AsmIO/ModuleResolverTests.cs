@@ -33,11 +33,16 @@ public class ModuleResolverTests
         Assert.Same(module, resolver.Resolve(new AssemblyName(module.AsmName.FullName)));
 
         var version = new AssemblyName(module.AsmName.FullName) { Version = new(2, 0, 0, 0) };
-        var culture = new AssemblyName(module.AsmName.FullName) { CultureName = "ja-JP" };
         var token = new AssemblyName(module.AsmName.FullName);
         token.SetPublicKeyToken([1, 2, 3, 4, 5, 6, 7, 8]);
 
-        foreach (var identity in new[] { version, culture, token }) {
+        var identities = new List<AssemblyName> { version, token };
+
+        if (!(AppContext.TryGetSwitch("System.Globalization.Invariant", out bool invariant) && invariant)) {
+            identities.Add(new AssemblyName(module.AsmName.FullName) { CultureName = "ja-JP" });
+        }
+
+        foreach (var identity in identities) {
             Assert.Throws<FileLoadException>(() => resolver.Resolve(identity));
             Assert.Null(resolver.Resolve(identity, throwIfNotFound: false));
         }

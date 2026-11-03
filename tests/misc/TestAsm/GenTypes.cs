@@ -2,11 +2,11 @@ namespace TestAsm.TypeSys.Generics;
 
 public class GenBase<T>
 {
-    public virtual T GetFoo<M>(M x) => default(T);
+    public virtual T GetFoo<M>(M x) => default!;
 }
 public class DerivedA<T> : GenBase<T>
 {
-    public override T GetFoo<M>(M x) => default(T);
+    public override T GetFoo<M>(M x) => default!;
 }
 public class DerivedB<T> : DerivedA<T> { }
 public class DerivedC<T> : DerivedB<(T, int)> { }

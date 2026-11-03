@@ -104,9 +104,7 @@ public class ForestAnalysis : IMethodAnalysis
         }
     }
 
-    // Some instructions are free or cheap enough to make rematerialization preferable to
-    // spilling to local vars. RyuJIT doesn't do this as of .NET 8, so at least for instructions
-    // with embedded addressing, this should help ILP and avoid increasing register pressure.
+    // Cheap address expressions may be rematerialized to reduce temporary locals.
     private static bool IsCheaperToRematerialize(Instruction inst)
     {
         bool mayRematerialize =
