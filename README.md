@@ -7,6 +7,7 @@ Post-build IL optimizer and intermediate representation for .NET programs (exper
 # Notable Features
 - [SSA-based Intermediate Representation](./docs/api-walkthrough.md)
 - Linq Expansion
+- Loop Strength Reduction
 - Loop Vectorization
 - List Pre-sizing
 - Lambda Devirtualization

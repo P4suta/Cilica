@@ -5,13 +5,15 @@ The [DistIL.Core](https://www.nuget.org/packages/DistIL.Core) package contains t
 A module (synonymous with _assembly_) is the entry point of the type system. Loading a module from disk can be done through the `ModuleResolver` class:
 
 ```cs
-var resolver = new ModuleResolver();
+using var resolver = new ModuleResolver();
 resolver.AddSearchPaths([Environment.CurrentDirectory]); // Search for modules in the current working directory
 resolver.AddTrustedSearchPaths(); // Fallback to system modules from the current runtime
 ModuleDef module = resolver.Load("Foo.dll");
 // ...
-module.Save("Foo_out.dll");
+module.Save("Foo_out.dll", savePdb: true);
 ```
+
+Assembly resolution follows configured search-path order and caches bindings by assembly name. Assembly and type references are resolved when used; looking up one forwarded type does not resolve unrelated forwarders. Keep the resolver alive while accessing lazy metadata or saving its modules.
 
 ## Parsing and generating IL
 Extracting and maintaining data-flow information from raw IL code is difficult and borderline impossible due to its stack-machine model, making it an unfeasible target for any reasonably complex transformation. DistIL instead works over a traditional [SSA-based intermediate representation](https://en.wikipedia.org/wiki/Static_single-assignment_form), giving it a flexible and intuitive model over the IL.
@@ -27,9 +29,31 @@ MethodBody body = ILImporter.ParseCode(method); // Parse IL into a control flow 
 method.ILBody = ILGenerator.GenerateCode(body); // Generate IL code, taking care of register allocation and SSA-destruction
 ```
 
-The freshly parsed IR will contain many variables out of SSA-form, leaving the data-flow obscured through load and store instructions. The dedicated SSA promotion pass can be applied to fix this, but it requires the setup of the `Compilation` and `PassManager` classes. See [DistIL.Cli's source](../src/DistIL.Cli/Program.cs).
+The imported IR can contain locals represented by loads and stores. The shared pipeline normalizes eligible locals into SSA and runs the standard optimizations:
+
+```cs
+var compilation = new Compilation(module, new ConsoleLogger(),
+    new CompilationSettings { VerifyEachPass = true });
+var manager = CompilationPipeline.CreateDefault(compilation);
+var methods = PassManager.GetCandidateMethodsFromIL(module, (_, target) => target.Module == module);
+var result = manager.Run(methods);
+result.ThrowIfFailed();
+module.Save("Foo_out.dll", savePdb: true);
+```
+
+Compilation operates on working copies. Results distinguish unchanged, optimized, unsupported, and failed methods. Failed methods retain their input bodies. The CLI's `--strict` option prevents saving when a selected method fails; `--verify-each` checks the output of every pass. Verification also runs before CIL emission.
+
+Assembly output preserves supported PE/CLR target properties and native resources, and uses deterministic PE/PDB identifiers. File output is staged, with rollback on publication failure. Signed and native-code images are rejected for rewriting.
 
 The `ILGenerator` is able to generate reasonably compact IL by traversing expression trees that are implicitly built over the linear IR (by flagging SSA defs as leafs or branches). It also uses a register allocator based on a simple graph-coloring algorithm to reduce the final number of variables required.
+
+CIL preparation legalizes operations, prepares phi edges, and schedules expression trees before allocation. Allocation preserves the prepared graph, and emission leaves the supplied IR unchanged.
+
+## Mutation and analysis contracts
+
+Instruction edits advance method revisions. `MethodTransformContext.GetAnalysis<T>()` caches analyses, tracks their dependencies, and invalidates affected results after edits. `PassRunner.Run()` applies the same change tracking, invalidation, verification, and inspection rules to individual passes. Metadata signatures should remain fixed within a compilation; use a new compilation context after editing existing metadata.
+
+Use `SetBranch()` while constructing a graph. For connected CFG edits, `ReplaceTerminator()` and `RedirectEdge()` maintain phi inputs and require values for new edges into phi blocks. Instruction ownership and links are maintained by the IR insertion and removal APIs.
 
 ## Dumping the IR
 Taking easily readable snapshots of the IR is essential for development. DistIL supports a variety of flavors for IR dumps:
@@ -99,8 +123,7 @@ if (inst is BinaryInst { Op: BinaryOp.Sub, Left: BinaryInst { Op: BinaryOp.Add }
 
 ## Finding Methods
 
-The module resolver has an `FindMethod` extension method that makes it easier to find methods from the IR.
-You can get a MethodDesc by passing a selector. Found methods will be cached.
+The module resolver has a `FindMethod` extension method that makes it easier to find methods from the IR. You can get a MethodDesc by passing a selector. Found methods will be cached.
 
 ````cs
 var writeLine = moduleResolver.FindMethod("System.Console::WriteLine(string) -> void");
@@ -189,7 +212,7 @@ int Try2(string str) {
   </tr>
 </table>
 
-_Note: this is an older screenshot taken when stvar/ldvars were still in use. They have since been replaced with normal load and store instructions._ 
+_Note: this is an older screenshot taken when stvar/ldvars were still in use. They have since been replaced with normal load and store instructions._
 
 Protected regions are by far the most complex aspect of the IR. They are represented as implicit sub-graphs of the main CFG, delimited by _guard_ and _leave_ instructions. Being implicit allows for many transforms to work with none or few special cases, as guard/leave instructions provide clear region boundaries without introducing indirection levels or changing the overall shape of the IR.
 
