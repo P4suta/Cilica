@@ -51,8 +51,7 @@ public class PresizeLists : IMethodPass
                 var numAddedItems = builder.CreateMul(loop.GetTripCount(builder)!, ConstInt.CreateI(info.AddCallCount));
                 var newList = list;
 
-                if (list is NewObjInst listAlloc && CanSinkAlloc(listAlloc, numAddedItems as Instruction ?? loop.PreHeader.Last, domTree)) {
-                    Debug.Assert(listAlloc.Operands.Length == 0);
+                if (list is NewObjInst { NumArgs: 0 } listAlloc && CanSinkAlloc(listAlloc, numAddedItems as Instruction ?? loop.PreHeader.Last, domTree)) {
 
                     var ctorWithCap = list.ResultType.FindMethod(".ctor", new MethodSig(PrimType.Void, [PrimType.Int32]));
                     newList = builder.CreateNewObj(ctorWithCap, [numAddedItems]);
@@ -63,7 +62,7 @@ public class PresizeLists : IMethodPass
                 }
 
                 if (!info.HasConditionalAdd) {
-                    InlineAddCalls(loop, builder, newList, numAddedItems);
+                    TryReplaceArrayBuilder(loop, builder, newList, domTree);
                 }
                 numChanges++;
             }
@@ -72,10 +71,9 @@ public class PresizeLists : IMethodPass
         return numChanges > 0 ? MethodInvalidations.DataFlow : MethodInvalidations.None;
     }
 
-    // Given a list presized to the exact loop trip count, attempts to replace all Add() calls
-    // inside the loop with direct array stores.
-    // Also attempts to remove ToArray() calls and the list allocation.
-    private static bool InlineAddCalls(ShapedLoopInfo loop, IRBuilder builder, TrackedValue list, Value numAddedItems)
+    // A confined list construction can write directly to its result array.
+    // Observable lists retain Add's versioning and incremental mutation semantics.
+    private static bool TryReplaceArrayBuilder(ShapedLoopInfo loop, IRBuilder builder, TrackedValue list, DominatorTree domTree)
     {
         var addCalls = new List<CallInst>();
         var toArrayCall = default(CallInst);
@@ -100,27 +98,16 @@ public class PresizeLists : IMethodPass
             }
         }
 
-        Value? array;
-        Value offset = ConstInt.CreateI(0);
+        var continuation = loop.Exit.Last is LeaveInst leave ? leave.Target : loop.Exit;
+        if (toArrayCall == null || numToArrayCalls != 1 || numOtherUses != 0 ||
+            !domTree.Dominates(continuation, toArrayCall.Block) ||
+            list is not NewObjInst { Args: [{ ResultType.Kind: TypeKind.Int32 }] } listAlloc) return false;
 
-        // If the list is created within the method, and there are no other uses
-        // but the Add() calls and a single ToArray() outside the loop at the end,
-        // we can completely remove the list alloc and fill an array directly.
-        if (toArrayCall != null && numToArrayCalls == 1 && numOtherUses == 0 &&
-            list is NewObjInst { Args: [{ ResultType.Kind: TypeKind.Int32 }] } listAlloc
-        ) {
-            var elemType = list.ResultType.GenericParams[0];
-            array = builder.CreateNewArray(elemType, listAlloc.Args[0]).SetName("arrbuilder_items");
-
-            toArrayCall.ReplaceWith(array);
-            listAlloc.Remove();
-            Debug.Assert(listAlloc.NumUses == addCalls.Count);
-        } else {
-            // TODO: centralize List<T> field accesses and consider using CM.SetCount() and AsSpan() instead
-            array = builder.CreateFieldLoad("_items", list);
-            offset = builder.CreateFieldLoad("_size", list);
-            builder.CreateFieldStore("_size", list, builder.CreateAdd(offset, numAddedItems));
-        }
+        var elemType = list.ResultType.GenericParams[0];
+        var array = builder.CreateNewArray(elemType, listAlloc.Args[0]).SetName("arrbuilder_items");
+        toArrayCall.ReplaceWith(array);
+        listAlloc.Remove();
+        Debug.Assert(listAlloc.NumUses == addCalls.Count);
 
         // Emitting a pointer increment for IEnumerables is a bit questionable because bad collections could
         // theoretically report a wrong count, and the perf delta is quite small (the cost of a bounds check).
@@ -131,9 +118,8 @@ public class PresizeLists : IMethodPass
 
         // With a little more effort we can avoid creating a non-SSA variable and
         // potentially enable vectorization by specializing over canonical for..i loops.
-        if (loop is CountingLoopInfo { IsCanonical: true } forLoop) {
+        if (addCalls.Count == 1 && loop is CountingLoopInfo { IsCanonical: true } forLoop) {
             var basePtr = LoopStrengthReduction.CreateGetDataPtrRange(builder, array, getCount: false).BasePtr;
-            basePtr = builder.CreatePtrOffset(basePtr, offset);
 
             foreach (var call in addCalls) {
                 builder.SetPosition(call, InsertionDir.After);
@@ -144,7 +130,7 @@ public class PresizeLists : IMethodPass
             }
         } else {
             var idxVar = builder.Method.CreateVar(PrimType.Int32, "arrbuilder_idx");
-            builder.CreateStore(idxVar, offset);
+            builder.CreateStore(idxVar, ConstInt.CreateI(0));
 
             foreach (var call in addCalls) {
                 builder.SetPosition(call, InsertionDir.After);

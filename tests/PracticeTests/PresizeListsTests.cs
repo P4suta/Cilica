@@ -7,6 +7,52 @@ using DistIL.Attributes;
 [Optimize, CheckCodeGenAfterRun]
 public class PresizeListsTests
 {
+    [Theory]
+    [InlineData(-1)]
+    [InlineData(0)]
+    [InlineData(3)]
+    public void BuildArray_MultipleAppendsPreserveOrder(int count)
+    {
+        var list = new List<int>();
+        for (int i = 0; i < count; i++) { list.Add(i); list.Add(i + 100); }
+        var actual = list.ToArray();
+        Assert.Equal(count > 0 ? new[] { 0, 100, 1, 101, 2, 102 } : Array.Empty<int>(), actual);
+        // CHECK: CIL::NewArray
+        // CHECK-NOT: Add(
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    public void AppendExceptionsExposeOnlyCompletedItems(int failAt)
+    {
+        var list = new List<int>();
+        try {
+            for (int i = 0; i < 3; i++) list.Add(Produce(i, failAt));
+        } catch (InvalidOperationException) { }
+        Assert.Equal(failAt, list.Count);
+        for (int i = 0; i < list.Count; i++) Assert.Equal(i, list[i]);
+        // CHECK: Add(
+    }
+
+    [Fact]
+    public void AppendsInvalidateExistingEnumerators()
+    {
+        var list = new List<int>();
+        var iterator = list.GetEnumerator();
+        for (int i = 0; i < 3; i++) list.Add(i);
+        bool threw = false;
+        try { iterator.MoveNext(); }
+        catch (InvalidOperationException) { threw = true; }
+        Assert.True(threw);
+        // CHECK: Add(
+    }
+
+    [DoNotOptimize, MethodImpl(MethodImplOptions.NoInlining)]
+    private static int Produce(int value, int failAt)
+        => value == failAt ? throw new InvalidOperationException() : value;
+
     [Fact]
     public void BuildArray_ForLoop()
     {
@@ -104,7 +150,7 @@ public class PresizeListsTests
         // CHECK: Add(this: {{\w+}}, string: "First")
         // CHECK: get_Count(
         // CHECK: EnsureCapacity(
-        // CHECK-NOT: Add(
+        // CHECK: Add(
     }
 
     [Fact]
@@ -124,9 +170,8 @@ public class PresizeListsTests
         Assert.Equal("0", list[prevCount]);
         Assert.Equal("15", list[^1]);
 
-        // CHECK: GetArrayDataReference
         // CHECK: Format(
-        // CHECK-NOT: Add(
+        // CHECK: Add(
     }
 
     [MethodImpl(MethodImplOptions.NoInlining)]

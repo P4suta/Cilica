@@ -128,7 +128,8 @@ public class CountingLoopInfo : ShapedLoopInfo
         if (array != null) {
             return builder?.CreateConvert(builder.CreateArrayLen(array), PrimType.Int32);
         }
-        return End;
+        return ExitCondition.Op.IsSigned() && builder != null
+            ? builder.CreateMax(End, ConstInt.CreateI(0)) : End;
     }
 
     protected override bool Parse()
