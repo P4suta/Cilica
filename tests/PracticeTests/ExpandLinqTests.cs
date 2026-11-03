@@ -7,6 +7,24 @@ using System.Runtime.CompilerServices;
 [Optimize, CheckCodeGenAfterRun]
 public class ExpandLinqTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(15)]
+    [InlineData(16)]
+    [InlineData(17)]
+    [InlineData(35)]
+    public void StringPredicateCountsVectorizeWithScalarTails(int count)
+    {
+        string source = new string('A', count) + "XYZaaa";
+        int actual = source.Count(Matches);
+
+        Assert.Equal(count, actual);
+        // CHECK: Vector256
+        // CHECK-NOT: Enumerable::Count
+
+        static bool Matches(char character) => character == 'A';
+    }
+
     [Fact]
     public void MutableListFiltersPreserveVersionChecks()
     {

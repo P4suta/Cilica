@@ -2,11 +2,8 @@ using BenchmarkDotNet.Attributes;
 
 using DistIL.Attributes;
 
-using System.Runtime.Intrinsics;
-using System.Runtime.InteropServices;
-
 [Optimize, DisassemblyDiagnoser]
-public class LoopKernels
+public class AutoVectorization
 {
     [Params(4096)]
     public int ElemCount {
@@ -15,7 +12,7 @@ public class LoopKernels
 
             _elemCount = value;
             _sourceText = RandStr(value);
-            // Allocating arrays is surprisingly expansive, do it once here
+            // Allocate buffers outside the measured operations.
             _floatsIn = new float[value];
             _floatsOut = new float[value];
             _intsOut = new int[value];
