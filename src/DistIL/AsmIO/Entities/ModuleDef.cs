@@ -21,7 +21,7 @@ public class ModuleDef : EntityDesc
     public IReadOnlyCollection<TypeDef> TypeDefs => _typeDefs;
 
     /// <summary> All types exported by this module (incl. nested). </summary>
-    public IReadOnlyCollection<TypeDef> ExportedTypes => _exportedTypes;
+    public IReadOnlyCollection<TypeDef> ExportedTypes => _exportedTypes ??= _loader?.LoadExportedTypes() ?? new();
 
     /// <summary> A list of resources embedded in, or referenced by this module. </summary>
     /// <remarks> For more information, see <c>II.6.2.2 Manifest resources</c> of the ECMA335 spec. </remarks>
@@ -29,7 +29,8 @@ public class ModuleDef : EntityDesc
 
     public ModuleResolver Resolver { get; }
 
-    internal TypeList _typeDefs = new(), _exportedTypes = new();
+    internal TypeList _typeDefs = new();
+    private TypeList? _exportedTypes;
     internal List<ResourceDesc> _manifestResources = new();
 
     internal Dictionary<TypeDef, ModuleDef> _typeRefRoots = new(); // root assemblies for references of forwarded types
@@ -49,7 +50,7 @@ public class ModuleDef : EntityDesc
         var type = _typeDefs.Find(ns, name);
 
         if (type == null && includeExports) {
-            type = _exportedTypes.Find(ns, name);
+            type = _exportedTypes?.Find(ns, name) ?? _loader?.FindExportedType(ns, name);
         }
         if (type == null && throwIfNotFound) {
             throw new InvalidOperationException($"Type {ns}.{name} not found");

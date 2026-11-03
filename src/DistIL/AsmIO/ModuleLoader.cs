@@ -13,6 +13,8 @@ internal class ModuleLoader
     public readonly MetadataReader _reader;
     public readonly ModuleDef _mod;
     private readonly TableEntryCache _tables;
+    private readonly HashSet<EntityHandle> _resolving = new();
+    private Dictionary<(string? Namespace, string Name), ExportedTypeHandle>? _exportedTypeNames;
 
     public ModuleLoader(string path, ModuleDef mod)
     {
@@ -40,17 +42,6 @@ internal class ModuleLoader
 
     public void Load()
     {
-        foreach (var handle in _reader.AssemblyReferences) {
-            var info = _reader.GetAssemblyReference(handle);
-            var asm = _mod.Resolver.Resolve(info.GetAssemblyName(), throwIfNotFound: true);
-            _tables.Set(handle, asm);
-        }
-        foreach (var handle in _reader.TypeReferences) {
-            var info = _reader.GetTypeReference(handle);
-            var type = ResolveTypeRef(info);
-            _tables.Set(handle, type);
-        }
-
         foreach (var handle in _reader.TypeDefinitions) {
             var info = _reader.GetTypeDefinition(handle);
             var type = new TypeDef(_mod, GetOptString(info.Namespace), _reader.GetString(info.Name), info.Attributes);
@@ -72,10 +63,6 @@ internal class ModuleLoader
             _mod._typeDefs.Add(type);
             _tables.Set(handle, type);
         }
-        foreach (var handle in _reader.ExportedTypes) {
-            _mod._exportedTypes.Add(ResolveExportedType(handle));
-        }
-
         foreach (var handle in _reader.ManifestResources) {
             var info = _reader.GetManifestResource(handle);
             string name = _reader.GetString(info.Name);
@@ -121,6 +108,34 @@ internal class ModuleLoader
         }
     }
 
+    public TypeDef? FindExportedType(string? ns, string name)
+    {
+        if (_exportedTypeNames == null) {
+            _exportedTypeNames = new();
+
+            foreach (var handle in _reader.ExportedTypes) {
+                var info = _reader.GetExportedType(handle);
+
+                if (info.Implementation.Kind != HandleKind.ExportedType) {
+                    _exportedTypeNames.Add((GetOptString(info.Namespace), _reader.GetString(info.Name)), handle);
+                }
+            }
+        }
+
+        return _exportedTypeNames.TryGetValue((ns, name), out var match) ? (TypeDef)GetEntity(match) : null;
+    }
+
+    public ModuleDef.TypeList LoadExportedTypes()
+    {
+        var types = new ModuleDef.TypeList();
+
+        foreach (var handle in _reader.ExportedTypes) {
+            types.Add((TypeDef)GetEntity(handle));
+        }
+
+        return types;
+    }
+
     private TypeDef ResolveTypeRef(TypeReference info)
     {
         string? ns = GetOptString(info.Namespace);
@@ -147,12 +162,11 @@ internal class ModuleLoader
         TypeDef? impl;
 
         if (info.Implementation.Kind == HandleKind.ExportedType) {
-            var parent = ResolveExportedType((ExportedTypeHandle)info.Implementation);
+            var parent = (TypeDef)GetEntity(info.Implementation);
             impl = parent.FindNestedType(name);
         } else {
             var asm = (ModuleDef)GetEntity(info.Implementation);
-            impl = asm.FindType(ns, name) 
-                ?? throw new NotImplementedException(); // TODO: resolve recursive type exports
+            impl = asm.FindType(ns, name);
         }
         return impl ?? throw new InvalidOperationException($"Could not resolve forwarded type '{ns}.{name}'");
     }
@@ -491,8 +505,16 @@ internal class ModuleLoader
         var entity = _tables.Get(handle);
 
         if (entity == null) {
-            entity = LoadEntity(handle);
-            _tables.Set(handle, entity);
+            if (!_resolving.Add(handle)) {
+                throw new BadImageFormatException($"Cyclic metadata reference in '{_mod.ModName}': {handle.Kind}");
+            }
+
+            try {
+                entity = LoadEntity(handle);
+                _tables.Set(handle, entity);
+            } finally {
+                _resolving.Remove(handle);
+            }
         }
         return entity ?? throw new InvalidOperationException("Table entry is not yet populated");
     }
@@ -510,6 +532,16 @@ internal class ModuleLoader
     private EntityDesc LoadEntity(EntityHandle handle)
     {
         switch (handle.Kind) {
+            case HandleKind.AssemblyReference: {
+                var info = _reader.GetAssemblyReference((AssemblyReferenceHandle)handle);
+                return _mod.Resolver.Resolve(info.GetAssemblyName());
+            }
+            case HandleKind.TypeReference:
+                return ResolveTypeRef(_reader.GetTypeReference((TypeReferenceHandle)handle));
+            case HandleKind.ExportedType:
+                return ResolveExportedType((ExportedTypeHandle)handle);
+            case HandleKind.ModuleDefinition:
+                return _mod;
             // For any given parent type, all belonging methods and fields will be initialized
             // once the respective properties in TypeDef are accessed.
             case HandleKind.MethodDefinition: {
@@ -555,6 +587,7 @@ internal class ModuleLoader
     {
         static readonly TableIndex[] s_Tables = {
             TableIndex.AssemblyRef,
+            TableIndex.Module, TableIndex.ExportedType,
             TableIndex.TypeRef, TableIndex.MemberRef,
             TableIndex.TypeDef, TableIndex.TypeSpec,
             TableIndex.Field,

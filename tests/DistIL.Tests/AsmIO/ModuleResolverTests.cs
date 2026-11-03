@@ -58,6 +58,53 @@ public class ModuleResolverTests
     }
 
     [Fact]
+    public void UnusedReferencesAndForwardersResolveLazily()
+    {
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "Forwarders.dll");
+
+        Utils.WriteMetadataModule(path, metadata => {
+            var core = metadata.AddAssemblyReference(metadata.GetOrAddString(typeof(object).Assembly.GetName().Name!), new Version(10, 0), default, default, 0, default);
+            var missing = metadata.AddAssemblyReference(metadata.GetOrAddString("OptionalDependency"), new Version(1, 0), default, default, 0, default);
+            metadata.AddTypeReference(missing, metadata.GetOrAddString("Optional"), metadata.GetOrAddString("UnusedReference"));
+            metadata.AddExportedType((TypeAttributes)0x00200000, metadata.GetOrAddString("System"), metadata.GetOrAddString("String"), core, 0);
+            metadata.AddExportedType((TypeAttributes)0x00200000, metadata.GetOrAddString("Optional"), metadata.GetOrAddString("UnusedForwarder"), missing, 0);
+        });
+
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var module = resolver.Load(path);
+        var text = resolver.Import(typeof(string));
+
+        Assert.Same(text, module.FindType("System", "String"));
+        Assert.Throws<FileNotFoundException>(() => module.FindType("Optional", "UnusedForwarder"));
+        Assert.Same(text, module.FindType("System", "String"));
+        Assert.Null(module.FindType("Unrelated", "Absent"));
+    }
+
+    [Fact]
+    public void ForwarderCyclesProduceADiagnostic()
+    {
+        using var directory = new TemporaryDirectory();
+        Write("First", "Second");
+        Write("Second", "First");
+        using var resolver = new ModuleResolver();
+        resolver.AddSearchPaths([directory.Path]);
+        var module = resolver.Resolve("First");
+
+        Assert.Throws<BadImageFormatException>(() => module.FindType("Test", "Cycle"));
+        Assert.Throws<BadImageFormatException>(() => module.FindType("Test", "Cycle"));
+
+        void Write(string name, string target)
+        {
+            Utils.WriteMetadataModule(Path.Combine(directory.Path, name + ".dll"), metadata => {
+                var reference = metadata.AddAssemblyReference(metadata.GetOrAddString(target), new Version(1, 0), default, default, 0, default);
+                metadata.AddExportedType((TypeAttributes)0x00200000, metadata.GetOrAddString("Test"), metadata.GetOrAddString("Cycle"), reference, 0);
+            });
+        }
+    }
+
+    [Fact]
     public void SearchPathOrderControlsTheNameBinding()
     {
         using var directory = new TemporaryDirectory();

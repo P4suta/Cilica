@@ -68,7 +68,33 @@ internal partial class ModuleWriter
         foreach (var resource in _mod.ManifestResources) {
             EmitResource(resource);
         }
+
+        EmitExportedTypes();
         EmitPendingGenericParams();
+    }
+
+    private void EmitExportedTypes()
+    {
+        const TypeAttributes Forwarder = (TypeAttributes)0x00200000;
+        var handles = new Dictionary<TypeDef, ExportedTypeHandle>();
+
+        foreach (var type in _mod.ExportedTypes) {
+            Emit(type);
+        }
+
+        ExportedTypeHandle Emit(TypeDef type)
+        {
+            if (handles.TryGetValue(type, out var existing)) {
+                return existing;
+            }
+
+            var implementation = type.IsNested ? Emit(type.DeclaringType!) : GetHandle(type.Module);
+            var attributes = type.IsNested ? TypeAttributes.NestedPublic : TypeAttributes.Public | Forwarder;
+            var handle = _builder.AddExportedType(attributes, AddString(type.Namespace), AddString(type.Name), implementation, 0);
+            handles.Add(type, handle);
+
+            return handle;
+        }
     }
 
     private void EmitType(TypeDef type)

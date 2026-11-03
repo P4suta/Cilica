@@ -1,5 +1,8 @@
 namespace DistIL.Tests;
 
+using System.Reflection.Metadata;
+using System.Reflection.Metadata.Ecma335;
+using System.Reflection.PortableExecutable;
 using DistIL.AsmIO;
 using DistIL.IR;
 using DistIL.IR.Utils;
@@ -7,6 +10,22 @@ using DistIL.IR.Utils.Parser;
 
 class Utils
 {
+    public static void WriteMetadataModule(string path, Action<MetadataBuilder> populate)
+    {
+        var metadata = new MetadataBuilder();
+        metadata.AddModule(0, metadata.GetOrAddString(Path.GetFileName(path)), metadata.GetOrAddGuid(Guid.NewGuid()), default, default);
+        metadata.AddAssembly(metadata.GetOrAddString(Path.GetFileNameWithoutExtension(path)), new Version(1, 0), default, default, 0, 0);
+        metadata.AddTypeDefinition(0, default, metadata.GetOrAddString("<Module>"), default,
+            MetadataTokens.FieldDefinitionHandle(1), MetadataTokens.MethodDefinitionHandle(1));
+        populate(metadata);
+
+        var image = new ManagedPEBuilder(new PEHeaderBuilder(imageCharacteristics: Characteristics.Dll),
+            new MetadataRootBuilder(metadata), new BlobBuilder());
+        var bytes = new BlobBuilder();
+        image.Serialize(bytes);
+        File.WriteAllBytes(path, bytes.ToArray());
+    }
+
     public static MethodBody CreateTestMethod(ModuleResolver resolver, TypeDesc retType, params TypeDesc[] paramTypes)
     {
         var module = resolver.Create("Test_" + Guid.NewGuid().ToString("N"));

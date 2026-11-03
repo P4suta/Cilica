@@ -60,6 +60,34 @@ public class ModuleWriterTests(ModuleResolverFixture fixture)
     }
 
     [Fact]
+    public void RewritingPreservesRootAndNestedTypeForwarders()
+    {
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "Forwarders.dll");
+
+        Utils.WriteMetadataModule(path, metadata => {
+            var core = metadata.AddAssemblyReference(metadata.GetOrAddString(typeof(object).Assembly.GetName().Name!), new Version(10, 0), default, default, 0, default);
+            var parent = metadata.AddExportedType((System.Reflection.TypeAttributes)0x00200000,
+                metadata.GetOrAddString("System"), metadata.GetOrAddString("Environment"), core, 0);
+            metadata.AddExportedType(System.Reflection.TypeAttributes.NestedPublic, default, metadata.GetOrAddString("SpecialFolder"), parent, 0);
+        });
+
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var module = resolver.Load(path);
+        string output = Path.Combine(directory.Path, "output.dll");
+        module.Save(output, savePdb: false);
+
+        using var reader = new ModuleResolver();
+        reader.AddTrustedSearchPaths();
+        var rewritten = reader.Load(output);
+
+        Assert.Equal(2, rewritten.ExportedTypes.Count);
+        Assert.Same(reader.Import(typeof(Environment)), rewritten.FindType("System", "Environment"));
+        Assert.Contains(reader.Import(typeof(Environment.SpecialFolder)), rewritten.ExportedTypes);
+    }
+
+    [Fact]
     public void PeAndPortablePdbIdentifiersAreContentBased()
     {
         var module = CreateModule(symbols: true);
