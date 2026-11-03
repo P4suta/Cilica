@@ -559,8 +559,11 @@ internal class BlockState
                 if (isBlockLocal) {
                     _importer.SetBlockLocalVarSlot(index, Pop());
                 } else {
-                    Emit(new StoreInst(slot, Pop()));
+                    var store = new StoreInst(slot, Pop());
+                    Emit(store);
+                    store.Value = StoreInst.Coerce(store.ElemType, store.Value, store);
                 }
+
                 break;
             }
             case VarFlags.AddrTaken: {
@@ -877,16 +880,26 @@ internal enum InstFlags
 [Flags]
 internal enum VarFlags
 {
+
     None        = 0,
+
     // Should not be combined
     IsArg       = 1 << 0,
+
     IsLocal     = 1 << 1,
 
+
     Loaded      = 1 << 2,
+
     Stored      = 1 << 3,
+
     AddrTaken   = 1 << 4,
+
     OpMask = Loaded | Stored | AddrTaken,
 
+
     CrossesBlock    = 1 << 5,
+
     CrossesRegions  = 1 << 6
+
 }

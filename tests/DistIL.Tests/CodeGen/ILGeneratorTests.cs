@@ -4,10 +4,29 @@ using DistIL.AsmIO;
 using DistIL.CodeGen.Cil;
 using DistIL.IR;
 using DistIL.IR.Utils;
+using DistIL.Tests.Passes;
+using System.Reflection;
 
 [Collection("ModuleResolver")]
-public class ILGeneratorTests(ModuleResolverFixture fixture)
+public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Fact]
+    public void Test_ILGenerator() => CheckCIL("CodeGen/StructFieldInsertExtract.ethil");
+
+    [Fact]
+    public void ForestPreservesExceptionOrderWithStores()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var field = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var ib = new IRBuilder(body.CreateBlock());
+        var division = ib.Emit(new BinaryInst(BinaryOp.SDiv, ConstInt.CreateI(10), body.Args[0]));
+        ib.CreateFieldStore(field, null, ConstInt.CreateI(1));
+        ib.CreateReturn(division);
+        var il = ILGenerator.GenerateCode(body).Instructions.ToList();
+
+        Assert.True(il.FindIndex(i => i.OpCode == ILCode.Div) < il.FindIndex(i => i.OpCode == ILCode.Stsfld));
+    }
+
     [Theory]
     [InlineData(CompareOp.FOne, false)]
     [InlineData(CompareOp.FOne, true)]
@@ -15,7 +34,7 @@ public class ILGeneratorTests(ModuleResolverFixture fixture)
     [InlineData(CompareOp.FUeq, true)]
     public void LegalizedFloatPredicatesPreserveNaNsAndSignedZeros(CompareOp operation, bool branch)
     {
-        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Bool, PrimType.Double, PrimType.Double);
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Bool, PrimType.Double, PrimType.Double);
         var builder = new IRBuilder(body.CreateBlock());
         var comparison = builder.CreateCmp(operation, body.Args[0], body.Args[1]);
 
@@ -47,7 +66,7 @@ public class ILGeneratorTests(ModuleResolverFixture fixture)
     [Fact]
     public void CodeGenerationPreservesTheSourceGraphAndIsRepeatable()
     {
-        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32, PrimType.Bool);
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);
         var entry = body.CreateBlock();
         var other = body.CreateBlock();
         var exit = body.CreateBlock();
@@ -76,7 +95,7 @@ public class ILGeneratorTests(ModuleResolverFixture fixture)
     [InlineData(true, true)]
     public void PhiSchedulingPreservesReadsBeforeStores(bool expression, bool initLocals)
     {
-        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32);
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
         body.InitLocals = initLocals;
         var entry = body.CreateBlock();
         var exit = body.CreateBlock();

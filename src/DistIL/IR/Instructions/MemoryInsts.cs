@@ -107,24 +107,31 @@ public class StoreInst : MemoryInst
         if (!MustBeCoerced(destType, val)) {
             return val;
         }
-        var conv = new ConvertInst(val, destType);
+
+        var conversionType = destType.StackType == StackType.ByRef ? PrimType.IntPtr : destType;
+        var conv = new ConvertInst(val, conversionType);
         conv.InsertBefore(insertBefore);
+
         return conv;
     }
+
     public static bool MustBeCoerced(TypeDesc destType, Value srcValue)
     {
+        if (destType.IsPointerLike() && srcValue is ConstInt { IsInt: true, Value: 0 }) {
+            return true;
+        }
+
         if (destType.Kind.IsSmallInt() && srcValue is ConstInt cons) {
             return !cons.FitsInType(destType);
         }
         return MustBeCoerced(destType, srcValue.ResultType);
     }
+
     public static bool MustBeCoerced(TypeDesc destType, TypeDesc srcType)
     {
         // III.1.6 Implicit argument coercion
 
-        // `NInt -> &` as in "Start GC Tracking" sounds particularly brittle. Not even Roslyn makes guarantees about it:
-        //  https://github.com/dotnet/runtime/issues/34501#issuecomment-608548207
-        // It's probably for the best if we don't support it.
+        // General native-pointer to managed-reference conversions require an explicit IR operation.
         return (destType.Kind.IsSmallInt() && destType.Kind.Size() < srcType.Kind.Size()) ||
                (destType.StackType == StackType.Int && srcType.StackType == StackType.NInt) ||
                (destType.Kind == TypeKind.Single && srcType.Kind == TypeKind.Double);

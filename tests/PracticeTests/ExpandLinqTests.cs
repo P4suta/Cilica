@@ -75,6 +75,22 @@ public class ExpandLinqTests
     }
 
     [Fact]
+    public void IndexedCollectionsPreserveSkipAndTakeDispatch()
+    {
+        var source = new AlternateIndexedCollection { 1, 2, 3 };
+        var actual = source.Skip(1).Take(1).ToArray();
+
+        Assert.Equal(new[] { 2 }, actual);
+        // CHECK: Enumerable::Skip
+    }
+
+    [DoNotOptimize]
+    sealed class AlternateIndexedCollection : System.Collections.ObjectModel.Collection<int>, IEnumerable<int>
+    {
+        IEnumerator<int> IEnumerable<int>.GetEnumerator() => ((IEnumerable<int>)new[] { 42 }).GetEnumerator();
+    }
+
+    [Fact]
     public void CastUnboxesValueTypes()
     {
         object[] source = [1, 2, 3];

@@ -11,9 +11,25 @@ public sealed class RuntimeLibrary(ModuleResolver resolver)
     /// <summary> Whether the sequence uses mutable indexed storage with library-specific iteration rules. </summary>
     public static bool IsMutableIndexedSequence(TypeDesc type)
     {
-        for (var parent = type; parent != null; parent = parent.BaseType) {
-            if (parent.IsCorelibType(typeof(List<>))) {
+        var pending = new Stack<TypeDesc>();
+        var visited = new HashSet<TypeDesc>();
+        pending.Push(type);
+
+        while (pending.TryPop(out var current)) {
+            if (!visited.Add(current)) {
+                continue;
+            }
+
+            if (current.IsCorelibType(typeof(List<>)) || current.IsCorelibType(typeof(IList<>))) {
                 return true;
+            }
+
+            foreach (var implemented in current.Interfaces) {
+                pending.Push(implemented);
+            }
+
+            if (current.BaseType is { } parent) {
+                pending.Push(parent);
             }
         }
 

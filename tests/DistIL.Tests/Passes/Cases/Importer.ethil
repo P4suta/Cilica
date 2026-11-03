@@ -1,12 +1,8 @@
-import $Root from TestAsm.IL
-
-public static ImporterCases::PinnedVar1.expected(#x: int&) -> void {
-$Locals:
-    loc1: int&^
-BB_01:
-    store $loc1, #x
-    t1 = load $loc1 -> int&
-    call ImporterCases::MutPtr(int*: t1)
-    store $loc1, 0
-    ret
-}
+// CHECK: ImporterCases::PinnedVar1
+// CHECK: int&^
+// CHECK: store
+// CHECK: load
+// CHECK: ImporterCases::MutPtr
+// CHECK: conv 0
+// CHECK: store
+// CHECK: ret
