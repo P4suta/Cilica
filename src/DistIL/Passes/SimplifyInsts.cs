@@ -62,6 +62,11 @@ public partial class SimplifyInsts : IMethodPass
 
     private Value? SimplifyIntrinsic(IntrinsicInst inst)
     {
+        if (inst is CilIntrinsic.NullCheck check && IsRedundantNullCheck(check)) {
+            check.Remove();
+            return null;
+        }
+
         // unbox_obj(T, box(T, value))  ->  value
         // unbox_ref(T, box(T, value))  ->  store $tmp, value;  $tmp
         if (inst is CilIntrinsic.UnboxObj or CilIntrinsic.UnboxRef && inst.Args[0] is CilIntrinsic.Box box && box.NumUses == 1) {
@@ -81,6 +86,36 @@ public partial class SimplifyInsts : IMethodPass
             }
         }
         return ConstFolding.FoldIntrinsic(inst);
+    }
+
+    private static bool IsRedundantNullCheck(CilIntrinsic.NullCheck check)
+    {
+        var receiver = check.Args[0];
+
+        if (ConstFolding.FoldCondition(receiver) == true) {
+            return true;
+        }
+
+        for (var next = check.Next; next != null; next = next.Next) {
+            bool dereferencesReceiver = next switch {
+                FieldAddrInst { IsInstance: true, InBounds: false } address => address.Obj == receiver,
+                ArrayAddrInst { InBounds: false } address => address.Array == receiver,
+                CilIntrinsic.ArrayLen length => length.Args[0] == receiver,
+                CallInst { IsVirtual: true, IsStatic: false, InBounds: false, Constraint: null } call => call.Args[0] == receiver,
+                CilIntrinsic.NullCheck other => other.Args[0] == receiver,
+                _ => false
+            };
+
+            if (dereferencesReceiver) {
+                return true;
+            }
+
+            if (next.HasSideEffects || next.MayReadFromMemory || next is GuardInst) {
+                return false;
+            }
+        }
+
+        return false;
     }
 
     private Value? SimplifyBinary(BinaryInst inst)
