@@ -91,8 +91,10 @@ public class DeadCodeElim : IMethodPass
             }
             else if (inst is PhiInst phi) {
                 RemoveTrivialPhi(phi, peel: true);
+                changed |= phi.Block == null;
             }
         }
+
         return changed;
     }
 

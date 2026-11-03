@@ -4,7 +4,9 @@ namespace DistIL.IR;
 /// <remarks> This instruction does not perform memory access, it just extracts the value of a struct field already in a SSA register. </remarks>
 public class FieldExtractInst : Instruction
 {
-    public FieldDesc Field { get; set; }
+    public FieldDesc Field { get => _field; set => SetProperty(ref _field, value); }
+
+    private FieldDesc _field = default!;
 
     public Value Obj {
         get => _operands[0];
@@ -36,7 +38,9 @@ public class FieldExtractInst : Instruction
 /// <summary> Copies a struct and sets a specific field. </summary>
 public class FieldInsertInst : Instruction
 {
-    public FieldDesc Field { get; set; }
+    public FieldDesc Field { get => _field; set => SetProperty(ref _field, value); }
+
+    private FieldDesc _field = default!;
 
     public Value Obj {
         get => _operands[0];

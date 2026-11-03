@@ -149,15 +149,17 @@ public class PassManager
 
         void Push(MethodDef? caller, MethodDef target)
         {
-            if (target.ILBody != null && visited.Add(target)) {
+            if (target.ILBody != null && !visited.Contains(target)) {
                 if (IsIntrinsic(target) || IsIntrinsic(target.DeclaringType)) return;
                 
                 // Invoke the filter late as it may be expansive.
                 if (filter != null && !filter.Invoke(caller, target)) return;
 
+                visited.Add(target);
                 worklist.Push((target, false));
             }
         }
+
         static bool IsIntrinsic(ModuleEntity entity)
         {
             return entity.HasCustomAttrib("System.Runtime.CompilerServices", "IntrinsicAttribute");
@@ -196,7 +198,12 @@ public class PassManager
                     insp.OnBeforePass(pass, ctx);
                 }
 
+                long revision = ctx.Method.Revision;
+                long controlFlowRevision = ctx.Method.ControlFlowRevision;
                 var result = pass.Run(ctx);
+                result = ctx.Method.Revision == revision ? MethodInvalidations.None
+                    : result.Changes | (ctx.Method.ControlFlowRevision != controlFlowRevision
+                        ? MethodInvalidations.ControlFlow : MethodInvalidations.DataFlow);
 
                 if (result.Changes != 0) {
                     result.InvalidateAffectedAnalyses(ctx);
@@ -209,6 +216,7 @@ public class PassManager
                     insp.OnAfterPass(pass, ctx, result);
                 }
             }
+
             return changed;
         }
 

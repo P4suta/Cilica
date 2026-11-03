@@ -1,4 +1,4 @@
-﻿namespace DistIL.IR;
+namespace DistIL.IR;
 
 public class BasicBlock : TrackedValue
 {
@@ -13,8 +13,9 @@ public class BasicBlock : TrackedValue
     /// <see cref="ThrowInst"/>, <see cref="LeaveInst"/>, or <see cref="ResumeInst"/>. </remarks>
     public Instruction Last => _last!;
 
-    public BasicBlock? Prev { get => _prev; set => _prev = value; }
-    public BasicBlock? Next { get => _next; set => _next = value; }
+    public BasicBlock? Prev => _prev;
+
+    public BasicBlock? Next => _next;
 
     internal Instruction? _first, _last;
     internal BasicBlock? _prev, _next;
@@ -91,6 +92,7 @@ public class BasicBlock : TrackedValue
         newInst.Block = this;
 
         IIntrusiveList<BasicBlock, Instruction>.InsertBefore<InstLinkAccessor>(this, inst, newInst);
+        newInst.NotifyChanged();
     }
 
     /// <summary> Inserts <paramref name="newInst"/> after <paramref name="inst"/>. If <paramref name="inst"/> is null, <paramref name="newInst"/> will be inserted at the block start. </summary>
@@ -100,11 +102,12 @@ public class BasicBlock : TrackedValue
         newInst.Block = this;
 
         IIntrusiveList<BasicBlock, Instruction>.InsertAfter<InstLinkAccessor>(this, inst, newInst);
+        newInst.NotifyChanged();
     }
 
     /// <summary> Inserts <paramref name="newInst"/> before the block terminator, if one exists. </summary>
     public void InsertAnteLast(Instruction newInst)
-        => InsertBefore(LastNonBranch, newInst);
+        => InsertAfter(LastNonBranch, newInst);
 
     /// <summary> Moves a range of instructions from this block to <paramref name="newParent"/>, after <paramref name="newParentPos"/> (null means before the first instruction in <paramref name="newParent"/>). </summary>
     public void MoveRange(BasicBlock newParent, Instruction? newParentPos, Instruction first, Instruction last)
@@ -113,6 +116,9 @@ public class BasicBlock : TrackedValue
 
         Ensure.That(newParentPos == null || newParentPos?.Block == newParent);
         Ensure.That(first.Block == this && last.Block == this);
+        Ensure.That(newParent.Method == Method);
+
+        Method.NotifyChanged(controlFlow: true);
 
         // Set parent block for range
         for (var inst = first; true; inst = inst.Next!) {

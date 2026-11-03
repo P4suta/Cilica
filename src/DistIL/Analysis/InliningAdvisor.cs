@@ -15,6 +15,8 @@ public class InliningAdvisor : IGlobalAnalysis
 
     private InliningAdvisor(Compilation comp) => _comp = comp;
 
+    void IGlobalAnalysis.Invalidate(MethodDef method) => _cache.Remove(method);
+
     static IGlobalAnalysis IGlobalAnalysis.Create(Compilation comp)
         => new InliningAdvisor(comp);
 

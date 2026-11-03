@@ -15,6 +15,21 @@ public class MethodBody
 
     private LocalSlot? _firstVar, _lastVar;
 
+    /// <summary> Monotonic revision of semantic IR edits. </summary>
+    public long Revision { get; private set; }
+
+    /// <summary> Monotonic revision of block, edge, and exception-region edits. </summary>
+    public long ControlFlowRevision { get; private set; }
+
+    internal void NotifyChanged(bool controlFlow = false)
+    {
+        Revision++;
+
+        if (controlFlow) {
+            ControlFlowRevision++;
+        }
+    }
+
     public MethodBody(MethodDef def)
     {
         Definition = def;
@@ -28,6 +43,7 @@ public class MethodBody
 
         IIntrusiveList<MethodBody, BasicBlock>.InsertAfter<BlockLinkAccessor>(this, insertAfter ?? _lastBlock, block);
         NumBlocks++;
+        NotifyChanged(controlFlow: true);
 
         return block;
     }
@@ -42,6 +58,8 @@ public class MethodBody
 
         block.Method = null!; // prevent multiple remove calls
         NumBlocks--;
+        NotifyChanged(controlFlow: true);
+
         return false;
     }
 
@@ -50,6 +68,7 @@ public class MethodBody
     {
         var slot = new LocalSlot(this, type, pinned, hardExposed);
         IIntrusiveList<MethodBody, LocalSlot>.InsertAfter<VarLinkAccessor>(this, _lastVar, slot);
+        NotifyChanged();
 
         if (name != null) {
             GetSymbolTable().SetName(slot, name);

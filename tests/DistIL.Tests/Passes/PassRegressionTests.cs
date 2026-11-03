@@ -383,6 +383,26 @@ public class PassRegressionTests
         Assert.DoesNotContain(IRVerifier.Diagnose(body), d => d.Severity == DiagnosticSeverity.Error);
     }
 
+    [Fact]
+    public void ChangeReportingTracksPhiEliminationAndNoopSimplification()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);
+        var entry = body.CreateBlock();
+        var left = body.CreateBlock();
+        var right = body.CreateBlock();
+        var exit = body.CreateBlock();
+        entry.SetBranch(new BranchInst(body.Args[0], left, right));
+        left.SetBranch(exit);
+        right.SetBranch(exit);
+        var phi = exit.InsertPhi(new PhiInst(PrimType.Int32, (left, ConstInt.CreateI(1)), (right, ConstInt.CreateI(1))));
+        exit.SetBranch(new ReturnInst(phi));
+        var ctx = new MethodTransformContext(new Compilation(body.Definition.Module, new VoidLogger(), new()), body);
+
+        Assert.Equal(MethodInvalidations.DataFlow, new DeadCodeElim().Run(ctx).Changes);
+        Assert.Null(phi.Block);
+        Assert.Equal(MethodInvalidations.None, new SimplifyInsts(_modResolver).Run(ctx).Changes);
+    }
+
     private void CheckIR(string filename, IMethodPass pass)
     {
         CheckDisasm(filename, (comp, body, sw) => {

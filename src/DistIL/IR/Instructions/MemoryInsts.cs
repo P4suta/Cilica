@@ -19,7 +19,9 @@ public abstract class MemoryInst : Instruction
 
     public abstract TypeDesc ElemType { get; }
 
-    public PointerFlags Flags { get; set; }
+    public PointerFlags Flags { get => _flags; set => SetProperty(ref _flags, value); }
+
+    private PointerFlags _flags;
 
     public bool IsUnaligned => (Flags & PointerFlags.Unaligned) != 0;
     public bool IsVolatile => (Flags & PointerFlags.Volatile) != 0;

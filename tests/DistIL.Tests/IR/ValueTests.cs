@@ -7,6 +7,35 @@ using DistIL.Util;
 public class ValueTests
 {
     [Fact]
+    public void SemanticEditsAdvanceMethodRevision()
+    {
+        var method = Utils.CreateDummyMethodBody(PrimType.Int32, PrimType.Int32);
+        var block = method.CreateBlock();
+        var value = new BinaryInst(BinaryOp.Add, method.Args[0], ConstInt.CreateI(1));
+        block.InsertLast(value);
+        block.SetBranch(new ReturnInst(value));
+        long revision = method.Revision, cfgRevision = method.ControlFlowRevision;
+        value.Right = ConstInt.CreateI(2);
+
+        Assert.True(method.Revision > revision);
+        Assert.Equal(cfgRevision, method.ControlFlowRevision);
+
+        revision = method.Revision;
+        value.Op = BinaryOp.Sub;
+
+        Assert.True(method.Revision > revision);
+
+        revision = method.Revision;
+        value.Op = BinaryOp.Sub;
+
+        Assert.Equal(revision, method.Revision);
+
+        value.ReplaceUses(method.Args[0]);
+
+        Assert.True(method.Revision > revision);
+    }
+
+    [Fact]
     public void Test_UseList_SingleUser()
     {
         var value = new FakeTrackedValue(123);

@@ -42,6 +42,8 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     public bool SetDirty(MethodDef method) => _cache.Remove(method);
     public void SetAllDirty() => _cache.Clear();
 
+    void IGlobalAnalysis.Invalidate(MethodDef method) => SetAllDirty();
+
     private FunctionEffects ComputeEffects(MethodDef method)
     {
         if (method.IsStatic && method.DeclaringType.RequiresTypeInitialization()) {

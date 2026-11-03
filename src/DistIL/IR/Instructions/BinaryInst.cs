@@ -2,7 +2,9 @@ namespace DistIL.IR;
 
 public class BinaryInst : Instruction
 {
-    public BinaryOp Op { get; set; }
+    public BinaryOp Op { get => _op; set => SetProperty(ref _op, value); }
+
+    private BinaryOp _op;
 
     public Value Left {
         get => Operands[0];

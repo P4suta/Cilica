@@ -2,7 +2,9 @@ namespace DistIL.IR;
 
 public class UnaryInst : Instruction
 {
-    public UnaryOp Op { get; set; }
+    public UnaryOp Op { get => _op; set => SetProperty(ref _op, value); }
+
+    private UnaryOp _op;
 
     public Value Value {
         get => Operands[0];

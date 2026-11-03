@@ -15,24 +15,10 @@ public interface IMethodPass
 public readonly struct MethodPassResult
 {
     public MethodInvalidations Changes { get; init; }
-    // public IMethodAnalysis[] PreservedAnalyses { get; init; }
 
     public void InvalidateAffectedAnalyses(MethodTransformContext ctx)
     {
-        // TODO: proper abstractions (IMethodAnalysis.AffectedByInvalidations?)
-        if (Changes.HasFlag(MethodInvalidations.ControlFlow)) {
-            ctx.Invalidate<DominatorTree>();
-            ctx.Invalidate<DominanceFrontier>();
-            ctx.Invalidate<LoopAnalysis>();
-            ctx.Invalidate<ProtectedRegionAnalysis>();
-        }
-        if (Changes.HasFlag(MethodInvalidations.DataFlow)) {
-            ctx.Compilation.GetAnalysis<GlobalFunctionEffects>().SetAllDirty();
-            ctx.Invalidate<VarLivenessAnalysis>();
-            ctx.Invalidate<LivenessAnalysis>();
-            ctx.Invalidate<InterferenceGraph>();
-            ctx.Invalidate<ForestAnalysis>();
-        }
+        ctx.Invalidate(Changes);
     }
 
     public static implicit operator MethodPassResult(MethodInvalidations changes)
@@ -59,27 +45,52 @@ public class MethodTransformContext : IMethodAnalysisManager
     public ModuleDef Module => Method.Definition.Module;
 
     public ICompilationLogger Logger => Compilation.Logger;
-    
-    readonly Dictionary<Type, IMethodAnalysis> _analyses = new();
+
+    readonly AnalysisCache<IMethodAnalysis> _analyses = new();
+    long _revision, _controlFlowRevision;
+
+    public long AnalysisCacheHits => _analyses.Hits;
+
+    public long AnalysisBuilds => _analyses.Builds;
 
     public MethodTransformContext(Compilation comp, MethodBody method)
     {
         Compilation = comp;
         Method = method;
+        _revision = method.Revision;
+        _controlFlowRevision = method.ControlFlowRevision;
     }
 
-    public A GetAnalysis<A>(bool preserve = true) where A : IMethodAnalysis
+    public A GetAnalysis<A>() where A : IMethodAnalysis
     {
-        ref var analysis = ref _analyses.GetOrAddRef(typeof(A));
-        analysis ??= A.Create(this);
-        return (A)analysis;
+        if (_revision != Method.Revision) {
+            Invalidate(_controlFlowRevision != Method.ControlFlowRevision
+                ? MethodInvalidations.ControlFlow : MethodInvalidations.DataFlow);
+        }
+
+        return (A)_analyses.Get(typeof(A), () => A.Create(this));
     }
+
     public void Invalidate<A>() where A : IMethodAnalysis
     {
-        _analyses.Remove(typeof(A));
+        _analyses.Invalidate(typeof(A));
     }
+
     public void InvalidateAll()
     {
         _analyses.Clear();
+    }
+
+    internal void Invalidate(MethodInvalidations changes)
+    {
+        if (changes == MethodInvalidations.None) {
+            return;
+        }
+
+        bool controlFlow = changes.HasFlag(MethodInvalidations.ControlFlow);
+        _analyses.Invalidate((_, analysis) => analysis.IsInvalidatedBy(controlFlow));
+        Compilation.InvalidateAnalyses(Definition);
+        _revision = Method.Revision;
+        _controlFlowRevision = Method.ControlFlowRevision;
     }
 }

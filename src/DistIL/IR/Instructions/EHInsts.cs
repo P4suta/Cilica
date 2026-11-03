@@ -23,7 +23,10 @@ public class GuardInst : Instruction
     public bool HasFilter => Kind == GuardKind.Catch && Operands.Length >= 2;
 
     public TypeDesc? CatchType => ResultType;
-    public GuardKind Kind { get; set; }
+
+    public GuardKind Kind { get => _kind; set => SetProperty(ref _kind, value); }
+
+    private GuardKind _kind;
 
     public override string InstName => "try";
     public override bool SafeToRemove => false;

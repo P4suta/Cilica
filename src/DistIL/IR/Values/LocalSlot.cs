@@ -47,6 +47,7 @@ public class LocalSlot : TrackedValue
         Ensure.That(NumUses == 0);
         
         if (Method != null) {
+            Method.NotifyChanged();
             IIntrusiveList<MethodBody, LocalSlot>.RemoveRange<MethodBody.VarLinkAccessor>(Method, this, this);
             Method = null!;
         }

@@ -2,7 +2,25 @@ namespace DistIL.IR;
 
 public abstract class Value : IPrintable
 {
-    public TypeDesc ResultType { get; protected set; } = PrimType.Void;
+    private TypeDesc _resultType = PrimType.Void;
+
+    public TypeDesc ResultType
+    {
+        get => _resultType;
+        protected set
+        {
+            if (_resultType == value) {
+                return;
+            }
+
+            _resultType = value;
+
+            if (this is Instruction inst) {
+                inst.NotifyChanged();
+            }
+        }
+    }
+
     /// <summary> Whether this value's result type is not void. </summary>
     public bool HasResult => ResultType.Kind != TypeKind.Void;
 
@@ -70,10 +88,13 @@ public abstract class TrackedValue : Value
     private void TransferUses(TrackedValue dest)
     {
         var lastNode = default(UseRef);
+
         for (var node = _firstUse; node.Exists; node = node.Next) {
             node.OperandRef = dest;
+            node.Parent.NotifyChanged();
             lastNode = node;
         }
+
         // Append the uselist from the newValue at the end of this one, and transfer ownership
         if (dest._firstUse.Exists) {
             Debug.Assert(!dest._firstUse.Prev.Exists);
@@ -84,11 +105,13 @@ public abstract class TrackedValue : Value
         dest._firstUse = _firstUse;
         dest.NumUses += NumUses;
     }
+
     private void TransferUsesToUntracked(Value dest)
     {
         for (var node = _firstUse; node.Exists; ) {
             var next = node.Next;
             node.OperandRef = dest;
+            node.Parent.NotifyChanged();
             node.Def = default; // erase node slot to prevent "ghost" links
             node = next;
         }

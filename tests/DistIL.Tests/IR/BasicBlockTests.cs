@@ -7,6 +7,22 @@ using DistIL.Util;
 public class BasicBlockTests
 {
     [Fact]
+    public void InsertBeforeTerminatorPreservesDefinitionOrder()
+    {
+        var method = Utils.CreateDummyMethodBody(PrimType.Int32, PrimType.Int32);
+        var block = method.CreateBlock();
+        var first = new BinaryInst(BinaryOp.Add, method.Args[0], ConstInt.CreateI(1));
+        block.InsertAnteLast(first);
+        var ret = new ReturnInst(first);
+        block.SetBranch(ret);
+        var second = new BinaryInst(BinaryOp.Add, first, ConstInt.CreateI(2));
+        block.InsertAnteLast(second);
+
+        Assert.Equal(new Instruction[] { first, second, ret }, [.. block]);
+        Assert.Empty(DistIL.IR.Utils.IRVerifier.Diagnose(method));
+    }
+
+    [Fact]
     public void Test_InstInserts()
     {
         var method = Utils.CreateDummyMethodBody(PrimType.Int32);

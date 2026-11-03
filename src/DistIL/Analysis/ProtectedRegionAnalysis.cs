@@ -2,6 +2,10 @@ namespace DistIL.Analysis;
 
 public class ProtectedRegionAnalysis : IMethodAnalysis
 {
+    public bool IsInvalidatedBy(bool controlFlowChanged) => controlFlowChanged;
+
+    readonly Dictionary<BasicBlock, ProtectedRegion> _regions = new();
+
     public ProtectedRegion Root { get; }
 
     public ProtectedRegionAnalysis(MethodBody method)
@@ -32,6 +36,7 @@ public class ProtectedRegionAnalysis : IMethodAnalysis
                 continue;
             }
             region.Blocks.Add(block);
+            _regions.Add(block, region);
 
             // Don't need to visit resume edges because they only exist only for consistency.
             if (block.Last is ResumeInst) continue;
@@ -62,8 +67,8 @@ public class ProtectedRegionAnalysis : IMethodAnalysis
         => new ProtectedRegionAnalysis(mgr.Method);
 
     public ProtectedRegion GetBlockRegion(BasicBlock block)
-        => Root.FindInnermostParent(block)
-            ?? throw new InvalidOperationException("Block is not a child of any region (is it a new block?)");
+        => _regions.TryGetValue(block, out var region) ? region
+            : throw new InvalidOperationException("Block is not part of this region analysis");
 }
 public class ProtectedRegion
 {

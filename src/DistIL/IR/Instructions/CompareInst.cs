@@ -2,7 +2,9 @@ namespace DistIL.IR;
 
 public class CompareInst : Instruction
 {
-    public CompareOp Op { get; set; }
+    public CompareOp Op { get => _op; set => SetProperty(ref _op, value); }
+
+    private CompareOp _op;
 
     public Value Left {
         get => Operands[0];

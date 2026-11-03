@@ -16,7 +16,7 @@ public class Compilation
 
     private TypeDef? _auxType;
 
-    readonly Dictionary<Type, IGlobalAnalysis> _analyses = new();
+    readonly AnalysisCache<IGlobalAnalysis> _analyses = new();
 
     public Compilation(ModuleDef module, ICompilationLogger logger, CompilationSettings settings)
     {
@@ -29,10 +29,13 @@ public class Compilation
     }
 
     public A GetAnalysis<A>() where A : IGlobalAnalysis
+        => (A)_analyses.Get(typeof(A), () => A.Create(this));
+
+    public void InvalidateAnalyses(MethodDef method)
     {
-        ref var analysis = ref _analyses.GetOrAddRef(typeof(A));
-        analysis ??= A.Create(this);
-        return (A)analysis;
+        foreach (var analysis in _analyses.Values) {
+            analysis.Invalidate(method);
+        }
     }
 
     /// <summary> Returns the compiler's auxiliary type for the current module. </summary>

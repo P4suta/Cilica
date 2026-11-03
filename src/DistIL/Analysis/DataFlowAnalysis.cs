@@ -10,24 +10,26 @@ public abstract class DataFlowAnalysis
     {
         _states = new(method.NumBlocks);
 
-        var worklist = new ArrayStack<BasicBlock>(method.NumBlocks);
+        var worklist = new ArrayStack<BasicBlock>();
+        var postOrder = new List<BasicBlock>();
 
         // The initial propagation order has an influence over how quickly the computation will converge.
         // In forward problems, a RPO traversal will be quicker because most predecessor blocks are filled first.
         // Conversely for backward problems, a PO traversal visits all successors blocks first.
         method.TraverseDepthFirst(postVisit: (block) => {
-            ref var state = ref _states.GetOrAddRef(block);
-            Initialize(block, out state);
-
-            if (backward) {
-                // The worklist is processed in reverse order, this will place `block` at ^head
-                worklist.HackyFixedUnshift(block);
-            } else {
-                worklist.Push(block);
-            }
+            Initialize(block, out var state);
             state.InWorklist = true;
+            _states.Add(block, state);
+            postOrder.Add(block);
         });
-        Debug.Assert(!backward || worklist.Count == method.NumBlocks); // HackUnshift() assumes that the stack will be filled to its capacity
+
+        if (backward) {
+            postOrder.Reverse();
+        }
+
+        foreach (var block in postOrder) {
+            worklist.Push(block);
+        }
 
         // Compute the dataflow equation until a fixed point is reached
         while (worklist.TryPop(out var block)) {
@@ -59,6 +61,7 @@ public abstract class DataFlowAnalysis
                 }
             }
         }
+
         // Forward gen-kill transfer equation:
         //  In[b] = ∪(s of b.Preds => Out[s])
         //  Out[b] = Gen[b] ∪ (In[b] ∩ Killed[b]')
@@ -67,8 +70,13 @@ public abstract class DataFlowAnalysis
             bool changed = false;
 
             foreach (var pred in block.Preds) {
+                if (!_states.ContainsKey(pred)) {
+                    continue;
+                }
+
                 changed |= state.In.Union(GetState(pred).Out);
             }
+
             if (changed) {
                 state.Out.UnionDiffs(state.In, state.Killed);
 
@@ -77,8 +85,13 @@ public abstract class DataFlowAnalysis
                 }
             }
         }
+
         void Push(BasicBlock block)
         {
+            if (!_states.ContainsKey(block)) {
+                return;
+            }
+
             ref var state = ref _states.GetRef(block);
 
             if (!state.InWorklist) {

@@ -41,15 +41,10 @@ public class ArrayStack<T>
     public ref T PushRef()
     {
         if (_head >= _arr.Length) {
-            Array.Resize(ref _arr, _arr.Length * 2);
+            Array.Resize(ref _arr, Math.Max(4, _arr.Length * 2));
         }
-        return ref _arr[_head++];
-    }
 
-    /// <summary> Pushes an element at the back of the stack, assuming it will be filled up to exactly the current capacity. </summary>
-    public void HackyFixedUnshift(T value)
-    {
-        _arr[^(++_head)] = value;
+        return ref _arr[_head++];
     }
 
     public void Clear()

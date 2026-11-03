@@ -85,7 +85,11 @@ public abstract class CilIntrinsic : IntrinsicInst
     public class MemCopy : CilIntrinsic
     {
         public override ILCode Opcode => StaticArgs.Length > 0 ? ILCode.Cpobj : ILCode.Cpblk;
-        public PointerFlags Flags { get; set; }
+
+        public PointerFlags Flags { get => _flags; set => SetProperty(ref _flags, value); }
+
+        private PointerFlags _flags;
+
         public override bool IsMemoryBarrier => (Flags & PointerFlags.Volatile) != 0;
 
         public override bool MayThrow => true;
@@ -106,7 +110,11 @@ public abstract class CilIntrinsic : IntrinsicInst
     public class MemSet : CilIntrinsic
     {
         public override ILCode Opcode => StaticArgs.Length > 0 ? ILCode.Initobj : ILCode.Initblk;
-        public PointerFlags Flags { get; set; }
+
+        public PointerFlags Flags { get => _flags; set => SetProperty(ref _flags, value); }
+
+        private PointerFlags _flags;
+
         public override bool IsMemoryBarrier => (Flags & PointerFlags.Volatile) != 0;
 
         public override bool MayThrow => true;

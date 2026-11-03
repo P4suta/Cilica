@@ -21,6 +21,8 @@ public partial class SimplifyInsts : IMethodPass
 
     public MethodPassResult Run(MethodTransformContext ctx)
     {
+        long revision = ctx.Method.Revision;
+
         foreach (var inst in ctx.Method.Instructions()) {
             var newValue = inst switch {
                 BinaryInst c    => SimplifyBinary(c),
@@ -36,8 +38,8 @@ public partial class SimplifyInsts : IMethodPass
                 inst.ReplaceWith(newValue, insertIfInst: true);
             }
         }
-        // TODO: track invalidations precisely
-        return MethodInvalidations.DataFlow;
+
+        return ctx.Method.Revision != revision ? MethodInvalidations.DataFlow : MethodInvalidations.None;
     }
 
     private Value? SimplifyCall(CallInst call)

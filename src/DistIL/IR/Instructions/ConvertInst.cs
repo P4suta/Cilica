@@ -7,9 +7,15 @@ public class ConvertInst : Instruction
         get => Operands[0];
         set => ReplaceOperand(0, value);
     }
-    public bool CheckOverflow { get; set; }
+
+    public bool CheckOverflow { get => _checkOverflow; set => SetProperty(ref _checkOverflow, value); }
+
+    private bool _checkOverflow;
+
     /// <summary> Treat the source value as unsigned. Only relevant if target type is float or <c>CheckOverflow == true</c>. </summary>
-    public bool SrcUnsigned { get; set; }
+    public bool SrcUnsigned { get => _srcUnsigned; set => SetProperty(ref _srcUnsigned, value); }
+
+    private bool _srcUnsigned;
 
     public TypeKind SrcType => Value.ResultType.Kind;
     public TypeKind DestType => ResultType.Kind;

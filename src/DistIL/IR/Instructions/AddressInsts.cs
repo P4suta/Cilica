@@ -24,10 +24,14 @@ public class ArrayAddrInst : AddressInst
     }
 
     /// <summary> Indicates whether <see cref="Array"/> is known to be non-null and have in-bounds index. </summary>
-    public bool InBounds { get; set; }
+    public bool InBounds { get => _inBounds; set => SetProperty(ref _inBounds, value); }
+
+    private bool _inBounds;
 
     /// <summary> Hints that the result address will only be read from and no variance checks are necessary. </summary>
-    public bool IsReadOnly { get; set; }
+    public bool IsReadOnly { get => _isReadOnly; set => SetProperty(ref _isReadOnly, value); }
+
+    private bool _isReadOnly;
 
     /// <summary> Checks if <see cref="AddressInst.ElemType"/> differs from the array type. </summary>
     public bool IsCasting => ElemType != Array.ResultType.ElemType;
@@ -60,10 +64,15 @@ public class FieldAddrInst : AddressInst
             ReplaceOperand(0, value);
         }
     }
-    public FieldDesc Field { get; set; }
+
+    public FieldDesc Field { get => _field; set => SetProperty(ref _field, value); }
+
+    private FieldDesc _field = default!;
 
     /// <summary> Indicates whether <see cref="Obj"/> is known to be a non-null object instance containing <see cref="Field"/>. </summary>
-    public bool InBounds { get; set; }
+    public bool InBounds { get => _inBounds; set => SetProperty(ref _inBounds, value); }
+
+    private bool _inBounds;
 
     [MemberNotNullWhen(false, nameof(Obj))]
     public bool IsStatic => Field.IsStatic;
@@ -116,7 +125,9 @@ public class PtrOffsetInst : AddressInst
     }
 
     /// <summary> Known index stride. If zero, this is computed at runtime to be the size of <see cref="AddressInst.ElemType"/>. </summary>
-    public int Stride { get; set; } = 0;
+    public int Stride { get => _stride; set => SetProperty(ref _stride, value); }
+
+    private int _stride;
 
     /// <summary> Whether the index stride is a constant known at compile time. </summary>
     public bool KnownStride => Stride > 0;

@@ -8,8 +8,8 @@ public class LoopStrengthReduction : IMethodPass
 {
     public MethodPassResult Run(MethodTransformContext ctx)
     {
-        var loopAnalysis = ctx.GetAnalysis<LoopAnalysis>(preserve: true);
-        var domTree = ctx.GetAnalysis<DominatorTree>(preserve: true);
+        var loopAnalysis = ctx.GetAnalysis<LoopAnalysis>();
+        var domTree = ctx.GetAnalysis<DominatorTree>();
         int numChanges = 0;
 
         foreach (var loop in loopAnalysis.Loops) {

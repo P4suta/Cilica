@@ -2,22 +2,35 @@ namespace DistIL.IR;
 
 public class CallInst : Instruction
 {
-    public MethodDesc Method { get; set; }
+    public MethodDesc Method { get => _method; set => SetProperty(ref _method, value); }
+
+    private MethodDesc _method = default!;
+
     public ReadOnlySpan<Value> Args => _operands; // TODO: get rid of this, use Operands directly.
 
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
     public int NumArgs => _operands.Length;
 
-    public bool IsVirtual { get; set; }
+    public bool IsVirtual { get => _isVirtual; set => SetProperty(ref _isVirtual, value); }
+
+    private bool _isVirtual;
+
     public bool IsStatic => Method.IsStatic;
-    public TypeDesc? Constraint { get; set; }
+
+    public TypeDesc? Constraint { get => _constraint; set => SetProperty(ref _constraint, value); }
+
+    private TypeDesc? _constraint;
 
     /// <summary> Indicates that the current method's stack frame should be discarded before the call. </summary>
     /// <remarks> There are restrictions for when this flag can be used, and violations may result in invalid IL. See ECMA335 <c>III.2.4 tail. (prefix)</c> for details. </remarks>
-    public bool IsTailCall { get; set; }
+    public bool IsTailCall { get => _isTailCall; set => SetProperty(ref _isTailCall, value); }
+
+    private bool _isTailCall;
 
     /// <summary> For virtual calls, indicates if the instance object is known to be non-null. </summary>
-    public bool InBounds { get; set; }
+    public bool InBounds { get => _inBounds; set => SetProperty(ref _inBounds, value); }
+
+    private bool _inBounds;
 
     public override bool HasSideEffects => true;
     public override bool MayThrow => true;
@@ -72,7 +85,10 @@ public class CallInst : Instruction
 public class NewObjInst : Instruction
 {
     /// <summary> The <c>.ctor</c> method used to initialize the object. </summary>
-    public MethodDesc Constructor { get; set; }
+    public MethodDesc Constructor { get => _constructor; set => SetProperty(ref _constructor, value); }
+
+    private MethodDesc _constructor = default!;
+
     public ReadOnlySpan<Value> Args => _operands;
 
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
@@ -99,7 +115,10 @@ public class NewObjInst : Instruction
 
 public class FuncAddrInst : Instruction
 {
-    public MethodDesc Method { get; set; }
+    public MethodDesc Method { get => _method; set => SetProperty(ref _method, value); }
+
+    private MethodDesc _method = default!;
+
     public Value? Object {
         get => IsVirtual ? Operands[0] : null;
         set {

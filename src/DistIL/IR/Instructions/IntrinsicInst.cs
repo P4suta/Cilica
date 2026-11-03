@@ -34,7 +34,7 @@ public abstract class IntrinsicInst : Instruction
         // If it becomes a problem we could make this method abstract and use a T4 template/source generator to implement the boilerplate.
         var copy = (IntrinsicInst)MemberwiseDetachedClone();
         copy.Block = null!;
-        copy.Prev = copy.Next = null;
+        copy._prev = copy._next = null;
 
         copy.ResultType = resultType;
         copy.StaticArgs = staticArgs;

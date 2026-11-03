@@ -2,18 +2,31 @@ namespace DistIL.IR;
 
 public abstract class Instruction : TrackedValue
 {
-    public BasicBlock Block { get; set; } = null!;
+    public BasicBlock Block { get; internal set; } = null!;
 
     /// <summary> The previous instruction in the block. </summary>
-    public Instruction? Prev { get => _prev; set => _prev = value; }
+    public Instruction? Prev => _prev;
+
     /// <summary> The next instruction in the block. </summary>
-    public Instruction? Next { get => _next; set => _next = value; }
+    public Instruction? Next => _next;
 
     internal Instruction? _prev, _next;
 
     internal Value[] _operands;
     internal UseDef[] _useDefs;
     public ReadOnlySpan<Value> Operands => _operands;
+
+    internal void NotifyChanged() => Block?.Method?.NotifyChanged(IsBranch || this is GuardInst);
+
+    protected void SetProperty<T>(ref T field, T value)
+    {
+        if (EqualityComparer<T>.Default.Equals(field, value)) {
+            return;
+        }
+
+        field = value;
+        NotifyChanged();
+    }
 
     /// <summary> Location of source code that maps into this instruction. May be null to indicate unknown or compiler-generated code. </summary>
     public DebugSourceLocation? DebugLocation { get; set; }
@@ -87,9 +100,11 @@ public abstract class Instruction : TrackedValue
     {
         // Allow Remove() calls on unattached instructions to allow for proper disposal of value uses.
         if (Block != null) {
+            NotifyChanged();
             IIntrusiveList<BasicBlock, Instruction>.RemoveRange<BasicBlock.InstLinkAccessor>(Block, this, this);
             Block = null!;
         }
+
         RemoveOperandUses();
     }
 
@@ -108,22 +123,22 @@ public abstract class Instruction : TrackedValue
     {
         for (int i = 0; i < _operands.Length; i++) {
             if (_operands[i] == oldValue) {
-                _operands[i] = newValue;
-
-                oldValue.RemoveUse(this, i);
-                newValue.AddUse(this, i);
+                ReplaceOperand(i, newValue);
             }
         }
     }
+
     /// <summary> Replaces the operand at <paramref name="operIndex"/> with <paramref name="newValue"/>. </summary>
     public void ReplaceOperand(int operIndex, Value newValue)
     {
         var prevValue = _operands[operIndex];
+
         if (newValue != prevValue) {
             _operands[operIndex] = newValue;
 
             prevValue?.RemoveUse(this, operIndex);
             newValue.AddUse(this, operIndex);
+            NotifyChanged();
         }
     }
 
@@ -140,14 +155,17 @@ public abstract class Instruction : TrackedValue
     /// </summary>
     protected int GrowOperands(int amount)
     {
+        NotifyChanged();
         int oldLen = _operands.Length;
         Array.Resize(ref _operands, oldLen + amount);
         Array.Resize(ref _useDefs, oldLen + amount);
         return oldLen;
     }
+
     /// <summary> Removes operands in the specified range. </summary>
     protected void RemoveOperands(int startIndex, int count)
     {
+        NotifyChanged();
         Debug.Assert(startIndex >= 0 && startIndex + count <= _operands.Length);
 
         var oldOpers = _operands;

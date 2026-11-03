@@ -2,6 +2,8 @@ namespace DistIL.Analysis;
 
 public class DominatorTree : IMethodAnalysis
 {
+    public bool IsInvalidatedBy(bool controlFlowChanged) => controlFlowChanged;
+
     readonly Dictionary<BasicBlock, Node> _block2node = new();
     readonly Node _root;
     bool _hasDfsIndices = false; // whether Node.{PreIndex, PostIndex} have been calculated
@@ -213,6 +215,8 @@ public class DominatorTree : IMethodAnalysis
 
 public class DominanceFrontier : IMethodAnalysis
 {
+    public bool IsInvalidatedBy(bool controlFlowChanged) => controlFlowChanged;
+
     static readonly RefSet<BasicBlock> _emptySet = new();
     readonly Dictionary<BasicBlock, RefSet<BasicBlock>> _df = new();
 

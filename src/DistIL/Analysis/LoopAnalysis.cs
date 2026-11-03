@@ -3,38 +3,64 @@ namespace DistIL.Analysis;
 /// <summary> Finds natural loops in the CFG. </summary>
 public class LoopAnalysis : IMethodAnalysis
 {
-    /// <summary> List of outer-most loops. </summary>
+    public bool IsInvalidatedBy(bool controlFlowChanged) => controlFlowChanged;
+
+    /// <summary> All natural loops, in header order. </summary>
     public List<LoopInfo> Loops { get; } = new();
+
+    public IEnumerable<LoopInfo> RootLoops => Loops.Where(loop => loop.Parent == null);
 
     public LoopAnalysis(MethodBody method, DominatorTree domTree)
     {
         // Based on https://pages.cs.wisc.edu/~fischer/cs701.f14/finding.loops.html
         var worklist = new ArrayStack<BasicBlock>();
+        var reachable = new HashSet<BasicBlock>();
+        method.TraverseDepthFirst(preVisit: block => reachable.Add(block));
 
         foreach (var header in method) {
+            if (!reachable.Contains(header)) {
+                continue;
+            }
+
+            LoopInfo? loop = null;
+
             foreach (var latch in header.Preds) {
                 // Check if `latch -> header` is actually a back-edge
-                if (!domTree.Dominates(header, latch)) continue;
+                if (!reachable.Contains(latch) || !domTree.Dominates(header, latch)) {
+                    continue;
+                }
 
                 // The loop body includes the header, latch, and all
                 // predecessors from the latch up to the header.
-                var body = new RefSet<BasicBlock>();
-                body.Add(header);
+                if (loop == null) {
+                    loop = new LoopInfo() { Header = header, Blocks = new() };
+                    loop.Blocks.Add(header);
+                    Loops.Add(loop);
+                }
+
+                var body = loop.Blocks;
                 worklist.Push(latch);
 
                 while (worklist.TryPop(out var block)) {
                     if (!body.Add(block)) continue;
 
                     foreach (var pred in block.Preds) {
-                        worklist.Push(pred);
+                        if (reachable.Contains(pred)) {
+                            worklist.Push(pred);
+                        }
                     }
                 }
-                Loops.Add(new LoopInfo() {
-                    Header = header,
-                    Blocks = body
-                });
             }
-            // TODO: build loop tree
+        }
+
+        foreach (var loop in Loops) {
+            loop.Parent = Loops.Where(parent => parent != loop && parent.NumBlocks > loop.NumBlocks &&
+                loop.Blocks.GetEnumerator().AsEnumerable().All(parent.Contains)).MinBy(parent => parent.NumBlocks);
+
+            if (loop.Parent is { } parent) {
+                loop._nextSibling = parent._firstChild;
+                parent._firstChild = loop;
+            }
         }
     }
 
@@ -42,7 +68,7 @@ public class LoopAnalysis : IMethodAnalysis
         => (innermostOnly ? GetInnermostLoops() : Loops).Select(ShapedLoopInfo.Parse).Where(s => s != null)!;
 
     public IEnumerable<LoopInfo> GetInnermostLoops()
-        => Loops; // FIXME: proper impl once we have loop trees
+        => Loops.Where(loop => !loop.HasChildren);
 
     static IMethodAnalysis IMethodAnalysis.Create(IMethodAnalysisManager mgr)
         => new LoopAnalysis(mgr.Method, mgr.GetAnalysis<DominatorTree>());
