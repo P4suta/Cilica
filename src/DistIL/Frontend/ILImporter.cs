@@ -22,7 +22,7 @@ public class ILImporter
 
         _ilBody = method.ILBody;
         _method = method;
-        _body = new MethodBody(method);
+        _body = new MethodBody(method) { InitLocals = _ilBody.InitLocals };
 
         _regionTree = RegionNode.BuildTree(_ilBody.ExceptionClauses);
         _debugSyms = method.GetDebugSymbols();

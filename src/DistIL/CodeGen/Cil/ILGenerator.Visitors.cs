@@ -275,11 +275,12 @@ partial class ILGenerator
             default: throw new NotSupportedException($"Intrinsic '{inst}'");
         }
     }
+
     public void Visit(SelectInst inst)
     {
         // TODO: Consider merging adjacent selects into a single branch
 
-        // This assumes that neither values have side effects. This is handled by FixupIR(). 
+        // CIL preparation roots observable operands before conditional evaluation.
         var labelEnd = _asm.DefineLabel();
         var labelFalse = _asm.DefineLabel();
 

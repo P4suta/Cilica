@@ -118,7 +118,7 @@ public class ILAssembler
 
     /// <summary> Finishes assembling of the emitted IL instructions. </summary>
     /// <param name="layout"> CFG layout to derive exception clauses from. </param>
-    public ILMethodBody Assemble(LayoutedCFG? layout)
+    public ILMethodBody Assemble(LayoutedCFG? layout, bool initLocals = true)
     {
         ComputeOffsets();
         
@@ -127,7 +127,7 @@ public class ILAssembler
             Locals = _usedVars.ToArray(),
             ExceptionClauses = layout == null ? [] : BuildEHClauses(layout),
             MaxStack = _maxStackDepth,
-            InitLocals = true // TODO: preserve InitLocals
+            InitLocals = initLocals
         };
     }
 

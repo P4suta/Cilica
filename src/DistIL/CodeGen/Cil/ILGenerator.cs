@@ -8,61 +8,28 @@ public partial class ILGenerator : InstVisitor
     readonly SequencePointBuilder? _spBuilder;
     readonly RegisterAllocator _regAlloc;
     readonly ForestAnalysis _forest;
+    readonly LayoutedCFG _layout;
     readonly ILAssembler _asm = new();
     readonly Dictionary<LocalSlot, ILVariable> _slotVars = new();
 
     BasicBlock? _currBlock, _nextBlock;
     ParallelCopyEmitter? _pcopyEmitter;
 
-    private ILGenerator(MethodBody method, SequencePointBuilder? spBuilder)
+    private ILGenerator(CilPreparation prepared, SequencePointBuilder? spBuilder)
     {
-        _method = method;
+        _method = prepared.Method;
+        _forest = prepared.Forest;
+        _regAlloc = prepared.Registers;
+        _layout = prepared.Layout;
         _spBuilder = spBuilder;
-
-        _forest = new ForestAnalysis(method);
-        FixupIR();
-
-        var interfs = new InterferenceGraph(method, new LivenessAnalysis(method), _forest);
-        _regAlloc = new RegisterAllocator(method, interfs); // may split critical edges but ForestAnalysis is okay with that.
-
-        // DistIL.IR.Utils.IRPrinter.ExportDot(method, "code.dot", new[] { _regAlloc });
     }
 
     public static ILMethodBody GenerateCode(MethodBody method, SequencePointBuilder? spBuilder = null)
-    {
-        return new ILGenerator(method, spBuilder).Generate();
-    }
-
-    private void FixupIR()
-    {
-        foreach (var block in _method) {
-            // Sink defs that are uniquely used by phis to make coalescing possible.
-            // Loop counters like `a[i++] = x` are one example of where this is useful.
-            if (block.NumSuccs == 1) {
-                foreach (var phi in block.Succs.First().Phis()) {
-                    var value = phi.GetValue(block);
-
-                    if (value is Instruction { NumUses: 1, HasSideEffects: false } def) {
-                        if (MakeSpeculatableTree(def) != def) {
-                            def.MoveBefore(def.Block.Last);
-                        }
-                    }
-                }
-            }
-
-            // Visit(SelectInst) requires that the two values be speculatable.
-            foreach (var inst in block.NonPhis()) {
-                if (inst is SelectInst csel) {
-                    MakeSpeculatableTree(csel.IfTrue);
-                    MakeSpeculatableTree(csel.IfFalse);
-                }
-            }
-        }
-    }
+        => new ILGenerator(new CilPreparation(method), spBuilder).Generate();
 
     private ILMethodBody Generate()
     {
-        var layout = LayoutedCFG.Compute(_method);
+        var layout = _layout;
         var blocks = layout.Blocks;
 
         for (int i = 0; i < blocks.Length; i++) {
@@ -89,7 +56,8 @@ public partial class ILGenerator : InstVisitor
                 StoreResult(inst);
             }
         }
-        return _asm.Assemble(layout);
+
+        return _asm.Assemble(layout, _method.InitLocals);
     }
 
     private void StoreResult(Instruction def)
@@ -218,37 +186,4 @@ public partial class ILGenerator : InstVisitor
         }
     }
 
-    // Marks any leaf with side-effects from `value` as a root, to make a safely speculatable tree. 
-    private Instruction? MakeSpeculatableTree(Value value)
-    {
-        var leaf = GetLeafWithSideEffects(value);
-        if (leaf != null) {
-            _forest.SetLeaf(leaf, markAsLeaf: false);
-        }
-        return leaf;
-    }
-    private Instruction? GetLeafWithSideEffects(Value value)
-    {
-        if (value is Instruction inst) {
-            if ((inst.HasSideEffects && !_forest.IsTreeRoot(inst)) || inst is PhiInst) {
-                return inst;
-            }
-
-            var firstSideEff = default(Instruction);
-            int numSideEff = 0;
-
-            foreach (var oper in inst.Operands) {
-                var sideEffLeaf = GetLeafWithSideEffects(oper);
-                if (sideEffLeaf != null) {
-                    firstSideEff = sideEffLeaf;
-                    numSideEff++;
-                }
-            }
-
-            if (numSideEff != 0) {
-                return numSideEff == 1 ? firstSideEff : inst;
-            }
-        }
-        return null;
-    }
 }

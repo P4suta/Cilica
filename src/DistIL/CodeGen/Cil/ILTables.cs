@@ -129,10 +129,7 @@ internal static class ILTables
             CompareOp.FUgt  => (ILCode.Cgt_Un,  F),
             CompareOp.FUle  => (ILCode.Cgt,     T),
             CompareOp.FUge  => (ILCode.Clt,     T),
-            // FIXME: mappings for fcmp.one and fcmp.ueq
-            // one -> x < y || x > y
-            // ueq -> !one
-            _ => throw new InvalidOperationException()
+            _ => throw new NotSupportedException($"Comparison {op} requires CIL legalization")
         };
     }
 

@@ -8,6 +8,22 @@ public class MethodBody
     public ImmutableArray<Argument> Args { get; }
     public TypeDesc ReturnType => Definition.ReturnType;
 
+    private bool _initLocals = true;
+
+    public bool InitLocals
+    {
+        get => _initLocals;
+        set
+        {
+            if (_initLocals == value) {
+                return;
+            }
+
+            _initLocals = value;
+            NotifyChanged();
+        }
+    }
+
     /// <summary> The entry block of this method. Should not have predecessors. </summary>
     public BasicBlock EntryBlock => _firstBlock!;
     public int NumBlocks { get; private set; } = 0;

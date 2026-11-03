@@ -6,9 +6,7 @@ public class ForestAnalysis : IMethodAnalysis
     // Loosely based on:
     //   "Example stackify algorithm for turning SSA into WASM" - https://gist.github.com/evanw/58a8a5b8b4a1da32fcdcfbf9da87c82a
 
-    // We must track leafs rather than trees because ILGenerator will init
-    // ForestAnalysis before RegisterAllocator, which may split critical edges
-    // and cause codegen to completely skip instructions in these new blocks.
+    // Leaf membership identifies values emitted as operands of their expression roots.
     readonly RefSet<Instruction> _leafs = new();
 
     public ForestAnalysis(MethodBody method, AliasAnalysis? aa = null)

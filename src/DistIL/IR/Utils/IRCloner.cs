@@ -22,7 +22,7 @@ public class IRCloner
 
     public static MethodBody CloneBody(MethodBody source)
     {
-        var copy = new MethodBody(source.Definition);
+        var copy = new MethodBody(source.Definition) { InitLocals = source.InitLocals };
         var cloner = new IRCloner(copy, foldConstants: false);
 
         for (int i = 0; i < source.Args.Length; i++) {
