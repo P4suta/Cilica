@@ -7,6 +7,21 @@ using DistIL.IR.Utils;
 public class IRBuilderTests
 {
     [Fact]
+    public void PositionBeforeHeaderlessOrEmptyBlock()
+    {
+        var method = Utils.CreateDummyMethodBody(PrimType.Int32, PrimType.Int32);
+        var block = method.CreateBlock();
+        var builder = new IRBuilder(block, InsertionDir.Before);
+        var first = builder.CreateAdd(method.Args[0], ConstInt.CreateI(1));
+        var ret = builder.CreateReturn(first);
+        builder.SetPosition(block, InsertionDir.Before);
+        var inserted = builder.CreateAdd(method.Args[0], ConstInt.CreateI(2));
+        Assert.Same(inserted, block.First);
+        Assert.Same(first, block.First.Next);
+        Assert.Same(ret, block.Last);
+    }
+
+    [Fact]
     public void Positioning()
     {
         var method = Utils.CreateDummyMethodBody(PrimType.Int32);

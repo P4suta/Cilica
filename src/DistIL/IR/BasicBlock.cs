@@ -33,7 +33,7 @@ public class BasicBlock : TrackedValue
                 // Unconditional branches only have one operand, cond and switches have at least 2.
                 // See comment in SuccIterator for details.
                 int numOpers = Last.Operands.Length;
-                count += numOpers - (numOpers >= 2 ? 1 : 0);
+                count += numOpers - GetFirstSuccessorOperand(Last);
             }
             return count;
         }
@@ -319,6 +319,11 @@ public class BasicBlock : TrackedValue
     private static bool IsBranchWithSuccEdges(Instruction? inst)
         => inst is BranchInst or SwitchInst or LeaveInst or ResumeInst;
 
+    // Keep edge counts and iteration consistent, including finally resumes,
+    // whose operands are all successors rather than a condition followed by targets.
+    private static int GetFirstSuccessorOperand(Instruction inst)
+        => inst is BranchInst { IsConditional: true } or SwitchInst or ResumeInst { IsFromFilter: true } ? 1 : 0;
+
     // Enumerating block users (ignoring phis) will lead directly to predecessors.
     // GuardInst`s will not yield duplicates because handler blocks can only have one predecessor guard.
     // SwitchInst has a special representation to avoid duplicated block use edges.
@@ -364,7 +369,7 @@ public class BasicBlock : TrackedValue
                 //  Leave:  [targetBlock]
                 //  Resume: [filterResult?, targetBlock0, targetBlock1, ...]
                 var opers = _currInst.Operands;
-                _operIdx = opers.Length >= 2 && _currInst is not (GuardInst or ResumeInst { IsFromFilter: false }) ? 1 : 0;
+                _operIdx = GetFirstSuccessorOperand(_currInst);
             } else {
                 _currInst = block.First as GuardInst;
                 Ensure.That(block.Last is not GuardInst); // prevents an infinite loop in MoveNext()

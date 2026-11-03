@@ -28,7 +28,11 @@ public class IRBuilder
         _initialDir = InsertionDir._Invalid;
 
         if (dir == InsertionDir.Before) {
-            _last = block.FirstNonHeader.Prev;
+            if (block.FirstNonHeader is { } first) {
+                SetInitialPosBefore(first);
+            } else {
+                _initialDir = InsertionDir.After;
+            }
         } else if (dir == InsertionDir.BeforeLast && block.Last != null) {
             Ensure.That(block.Last.IsBranch, "Malformed block");
             SetInitialPosBefore(block.Last);

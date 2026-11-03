@@ -99,14 +99,13 @@ public class ResumeInst : Instruction
         int newCount = targets.Count + startIdx;
 
         if (newCount > _operands.Length) {
-            startIdx = GrowOperands(newCount - _operands.Length);
+            GrowOperands(newCount - _operands.Length);
         } else if (newCount < _operands.Length) {
             RemoveOperands(newCount, _operands.Length - newCount);
         }
 
         foreach (var target in targets) {
-            _operands[startIdx] = target;
-            target.AddUse(this, startIdx);
+            ReplaceOperand(startIdx, target);
             startIdx++;
         }
     }

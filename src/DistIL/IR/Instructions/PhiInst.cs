@@ -99,7 +99,7 @@ public class PhiInst : Instruction
 
     private int FindArgIndex(Value operand, bool isValue = false)
     {
-        for (int i = isValue ? 1 : 0; i < _operands.Length - 1; i += 2) {
+        for (int i = isValue ? 1 : 0; i < _operands.Length; i += 2) {
             if (_operands[i] == operand) {
                 return i / 2;
             }

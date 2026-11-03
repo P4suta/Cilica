@@ -185,6 +185,23 @@ public class BasicBlockTests
         Assert.Equal(new[] { block1 }, block3.Preds.ToList());
     }
 
+    [Theory]
+    [InlineData(false, 0)]
+    [InlineData(false, 1)]
+    [InlineData(false, 2)]
+    [InlineData(true, 0)]
+    [InlineData(true, 1)]
+    [InlineData(true, 2)]
+    public void Test_ResumeSuccessorCount(bool filter, int count)
+    {
+        var method = Utils.CreateDummyMethodBody();
+        var block = method.CreateBlock();
+        var targets = Enumerable.Range(0, count).Select(_ => method.CreateBlock()).ToArray();
+        block.SetBranch(new ResumeInst(targets, filter ? ConstInt.CreateI(1) : null));
+        Assert.Equal(count, block.NumSuccs);
+        Assert.Equal(targets, block.Succs.ToList());
+    }
+
     private List<Instruction> GetDummyInsts(int count)
     {
         var insts = new List<Instruction>();
