@@ -12,6 +12,8 @@ public class Compilation
     public ICompilationLogger Logger { get; }
     public CompilationSettings Settings { get; }
 
+    public RuntimeLibrary Runtime { get; }
+
     public ModuleResolver Resolver => Module.Resolver;
 
     private TypeDef? _auxType;
@@ -23,6 +25,7 @@ public class Compilation
         Module = module;
         Logger = logger;
         Settings = settings;
+        Runtime = new RuntimeLibrary(module.Resolver);
 
         EnsureMembersAccessible(module.Resolver.CoreLib);
         EnsureMembersAccessible(module);

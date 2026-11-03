@@ -24,7 +24,7 @@ public class ArrayType : CompoundType
                 => Array.IndexOf(s_BoxedCollectionNames, itf.Name) >= 0,
             "System.Collections.Generic"
                 => Array.IndexOf(s_GenCollectionNames, itf.Name) >= 0 && 
-                   ElemType.IsAssignableTo(itf.GenericParams[0]),
+                   AreArrayElementsAssignable(ElemType, itf.GenericParams[0]),
             _ => false
         };
     }

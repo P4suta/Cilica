@@ -1,4 +1,4 @@
-﻿namespace DistIL.AsmIO;
+namespace DistIL.AsmIO;
 
 /// <summary> Describes a type declaration. </summary>
 public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
@@ -100,6 +100,14 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
     /// <summary> Checks if this type is, inherits, or implements <paramref name="baseType"/>. </summary>
     public bool Inherits(TypeDesc baseType)
     {
+        if (this is ArrayType source && baseType is ArrayType destination) {
+            return AreArrayElementsAssignable(source.ElemType, destination.ElemType);
+        }
+
+        if (this is MDArrayType sourceMd && baseType is MDArrayType destinationMd) {
+            return sourceMd.Rank == destinationMd.Rank && AreArrayElementsAssignable(sourceMd.ElemType, destinationMd.ElemType);
+        }
+
         for (var parent = this; parent != null; parent = parent.BaseType) {
             if (parent == baseType || (baseType.IsInterface && Implements(parent, (TypeDefOrSpec)baseType))) {
                 return true;
@@ -108,50 +116,83 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
         return false;
     }
 
-    private static bool Implements(TypeDesc type, TypeDefOrSpec itf, bool isForAssignmentCheck = false)
+    internal static bool AreArrayElementsAssignable(TypeDesc source, TypeDesc destination)
+        => source == destination || source.IsManagedObject() && destination.IsManagedObject() &&
+            source is not GenericParamType && destination is not GenericParamType && source.IsAssignableTo(destination);
+
+    private static bool Implements(TypeDesc type, TypeDefOrSpec itf)
     {
-        if (type is PrimType prim) {
-            var resolver = itf.Module.Resolver;
-            type = prim.GetDefinition(resolver);
-        }
-        // Arrays actually implement lots of interfaces at runtime
-        // I.8.7.1 only mentions IList, but there are many others.
-        else if (type is ArrayType arr) {
-            return arr.Implements(itf);
-        }
+        var pending = new Stack<TypeDesc>();
+        var visited = new HashSet<TypeDesc>();
+        pending.Push(type);
 
-        if (itf.IsGeneric && itf.Definition.GenericParams.Any(g => g.IsCovariant)) {
-            return type.Interfaces.Any(m => CheckCovariant(m, itf)) || 
-                   (isForAssignmentCheck && CheckCovariant(type, itf));
-        }
-        return type.Interfaces.Contains(itf) || (isForAssignmentCheck && type == itf);
+        while (pending.TryPop(out var current)) {
+            if (!visited.Add(current)) {
+                continue;
+            }
 
-        static bool CheckCovariant(TypeDesc impl, TypeDefOrSpec itf)
-        {
-            var itfDef = itf.Definition;
-            // Check for the generic def, TypeDefs instances are unique.
-            if (ReferenceEquals(impl, itfDef)) {
+            if (current == itf || IsVariantAssignable(current, itf)) {
                 return true;
             }
-            if (impl is not TypeSpec implSpec || implSpec.Definition != itfDef) {
+
+            if (current is PrimType primitive) {
+                current = primitive.GetDefinition(itf.Module.Resolver);
+            }
+
+            if (current is ArrayType array && array.Implements(itf)) {
+                return true;
+            }
+
+            foreach (var parentInterface in current.Interfaces) {
+                pending.Push(parentInterface);
+            }
+
+            if (current.BaseType is { } parent) {
+                pending.Push(parent);
+            }
+        }
+
+        return false;
+    }
+
+    private static bool IsVariantAssignable(TypeDesc source, TypeDesc destination)
+    {
+        if (source is not TypeDefOrSpec a || destination is not TypeDefOrSpec b ||
+            a.Definition != b.Definition || !a.IsGeneric) {
+            return false;
+        }
+
+        bool variantType = a.IsInterface || a.BaseType is { Namespace: "System", Name: "MulticastDelegate" } parent && parent.IsCorelibType();
+
+        if (!variantType) {
+            return false;
+        }
+
+        for (int i = 0; i < a.GenericParams.Count; i++) {
+            var from = a.GenericParams[i];
+            var to = b.GenericParams[i];
+
+            if (from == to) {
+                continue;
+            }
+
+            if (!from.IsManagedObject() || !to.IsManagedObject() || from is GenericParamType || to is GenericParamType) {
                 return false;
             }
-            int count = itf.GenericParams.Count;
 
-            for (int i = 0; i < count; i++) {
-                var typeA = implSpec.GenericParams[i];
-                var typeB = itf.GenericParams[i];
+            var parameter = a.Definition.GenericParams[i];
+            bool compatible = parameter.IsCovariant ? from.IsAssignableTo(to)
+                : parameter.IsContravariant && to.IsAssignableTo(from);
 
-                if (typeA.IsValueType || typeB.IsValueType ? typeA != typeB : !typeA.Inherits(typeB)) {
-                    return false;
-                }
+            if (!compatible) {
+                return false;
             }
-            return true;
         }
+
+        return true;
     }
 
     /// <summary> Checks whether this type can be assigned to a variable of the given type, based on stronger typing rules. </summary>
-    /// <remarks> Note that support for ArrayType is not implemented. </remarks>
     public bool IsAssignableTo(TypeDesc assigneeType)
     {
         if (this == assigneeType) {
@@ -166,12 +207,18 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
         if (t1 is StackType.Int or StackType.Float) {
             return Kind.BitSize() <= assigneeType.Kind.BitSize();
         }
+
         if (t1 == StackType.Object) {
+            if (IsVariantAssignable(this, assigneeType)) {
+                return true;
+            }
+
             return IsInterface
                 ? assigneeType == PrimType.Object || 
-                    (assigneeType.IsInterface && Implements(this, (TypeDefOrSpec)assigneeType, isForAssignmentCheck: true))
+                    (assigneeType.IsInterface && Implements(this, (TypeDefOrSpec)assigneeType))
                 : Inherits(assigneeType);
         }
+
         return t1 != StackType.Struct; // structs of different types can't be assigned to each other
     }
 

@@ -20,14 +20,12 @@ public class InlineMethods : IMethodPass
 
     public MethodPassResult Run(MethodTransformContext ctx)
     {
-        // Not sure why, but using a stack instead of queue will lead to some removed calls with `Block == null`.
-        // A future improvement would be to use a priority queue to inline more benefitial calls first, so budget is more well spent.
-        var worklist = new Queue<CallInst>();
+        var worklist = new Queue<(CallInst Call, ImmutableArray<MethodDef> Ancestors)>();
 
         // Find initial calls
         foreach (var inst in ctx.Method.Instructions()) {
             if (inst is CallInst call) {
-                worklist.Enqueue(call);
+                worklist.Enqueue((call, [ctx.Definition]));
             }
         }
 
@@ -37,20 +35,40 @@ public class InlineMethods : IMethodPass
         // Budget should be less than caller cost to avoid code duplication (eg. in forwarding methods).
         int budget = _opts.InitialBudget + (int)(ownMetrics == null ? 0 : ownMetrics.BaseCost * _opts.BudgetFactor);
         int numChanges = 0;
+        int expandedInstructions = 0;
 
         // Recursive inline
-        while (worklist.TryDequeue(out var call) && budget > 0) {
+        while (worklist.TryDequeue(out var item) && budget > 0 && numChanges < _opts.MaxExpansions) {
+            var (call, ancestors) = item;
+
+            if (call.Block == null || ancestors.Length >= _opts.MaxDepth) {
+                continue;
+            }
+
             var target = ResolveTarget(ctx, advisor, call);
-            if (target == null) continue;
+
+            if (target == null || ancestors.Contains(target)) {
+                continue;
+            }
 
             int cost = advisor.EvaluateInliningCost(target.Body!, call.Args);
             if (cost > _opts.CostThreshold || cost > budget) continue;
+
+            int instructionCount = target.Body!.Instructions().Count();
+
+            if (instructionCount > _opts.MaxExpandedInstructions - expandedInstructions) {
+                continue;
+            }
+
+            expandedInstructions += instructionCount;
 
             budget -= Math.Max(cost, -_opts.NegativeCostLimit);
 
             ctx.Logger.Trace($"Inlining '{target}' into '{ctx.Method}'. RemBudget={budget} Cost={cost}");
 
-            var result = Inline(call, (MethodDefOrSpec)call.Method, call.Args, ctx.Compilation, onNewCall: worklist.Enqueue);
+            var chain = ancestors.Add(target);
+            var result = Inline(call, (MethodDefOrSpec)call.Method, call.Args, ctx.Compilation,
+                onNewCall: nested => worklist.Enqueue((nested, chain)));
 
             if (result != null) {
                 call.ReplaceUses(result);
@@ -236,6 +254,12 @@ public class InlineMethods : IMethodPass
 
     public class Options
     {
+        public int MaxDepth { get; init; } = 16;
+
+        public int MaxExpansions { get; init; } = 128;
+
+        public int MaxExpandedInstructions { get; init; } = 4096;
+
         /// <summary> Inline candidate instruction limit. </summary>
         public int CostThreshold { get; init; } = 250;
 

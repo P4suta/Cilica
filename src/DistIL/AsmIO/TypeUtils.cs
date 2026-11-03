@@ -78,35 +78,9 @@ public static class TypeUtils
     public static MethodDesc? ResolveVirtualMethod(MethodDesc method, TypeDesc actualType)
     {
         Ensure.That(method.Attribs.HasFlag(MethodAttributes.Virtual));
-        Ensure.That(actualType.Inherits(method.DeclaringType));
 
-        // FIXME: spec conformance
-        // - II.10.3.4 Impact of overrides on derived classes
-        // - II.12.2 Implementing virtual methods on interfaces
-        // - https://github.com/dotnet/runtime/blob/main/docs/design/specs/Ecma-335-Augments.md#ii122-implementing-virtual-methods-on-interfaces
-
-        var type = (TypeDefOrSpec)actualType;
-        // var sig = default(MethodSig?);
-
-        var genCtx = new GenericContext(actualType.GenericParams, method.GenericParams);
-
-        for (; type != null; type = type.BaseType) {
-            // Try get from MethodImpl table
-            if (type.Definition.MethodImpls.TryGetValue(method, out var explicitImpl)) {
-                return explicitImpl.GetSpec(genCtx);
-            }
-
-            // Search for method with matching sig
-            // sig ??= new MethodSig(method.ReturnSig, method.ParamSig.Skip(1).ToList(), isInstance: true, method.GenericParams.Count);
-
-            // if (type.FindMethod(method.Name, sig.Value, throwIfNotFound: false) is { } matchImpl) {
-            //     Debug.Assert(!matchImpl.Attribs.HasFlag(MethodAttributes.Abstract));
-            //     return matchImpl.GetSpec(genCtx);
-            // }
-        }
-        return null;
+        return actualType is TypeDefOrSpec type ? VirtualDispatch.Resolve(method, type) : null;
     }
-
 
     /// <summary> Checks if the given object can be cast to <paramref name="destType"/>, or null if unknown. </summary>
     public static bool? CheckCast(Value obj, TypeDesc destType)
@@ -123,8 +97,10 @@ public static class TypeUtils
         if (srcType.IsClass && destType.IsClass && !destType.Inherits(srcType)) {
             return false;
         }
+
         // Impossible cast: `destType` is an array but `srcType` is some other def
-        if (destType is ArrayType && !srcType.IsInterface && srcType != PrimType.Object && srcType != PrimType.Array) {
+        if (destType is ArrayType && srcType is not (ArrayType or MDArrayType) &&
+            !srcType.IsInterface && srcType != PrimType.Object && srcType != PrimType.Array) {
             return false;
         }
 

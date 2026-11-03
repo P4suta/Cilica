@@ -7,7 +7,7 @@
 
     <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
     <ProduceReferenceAssembly>false</ProduceReferenceAssembly>
-    <InvariantGlobalization>true</InvariantGlobalization>
+    <InvariantGlobalization Condition="'$(InvariantGlobalization)' == ''">false</InvariantGlobalization>
     
     <IsPackable>false</IsPackable>
   </PropertyGroup>

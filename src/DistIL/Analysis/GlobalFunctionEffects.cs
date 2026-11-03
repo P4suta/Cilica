@@ -2,8 +2,16 @@ namespace DistIL.Analysis;
 
 public class GlobalFunctionEffects : IGlobalAnalysis
 {
-    readonly Dictionary<MethodDef, FunctionEffects> _cache = new();
+    readonly Dictionary<MethodDef, Entry> _cache = new();
+    readonly Dictionary<MethodDef, HashSet<MethodDef>> _callers = new();
+    readonly Stack<(MethodDef Method, HashSet<MethodDef> Dependencies)> _building = new();
     readonly Compilation _comp;
+
+    public long Computations { get; private set; }
+
+    public long CacheHits { get; private set; }
+
+    sealed record Entry(FunctionEffects Effects, MethodBody? Body, long Revision, HashSet<MethodDef> Dependencies);
 
     private GlobalFunctionEffects(Compilation comp) => _comp = comp;
 
@@ -16,13 +24,58 @@ public class GlobalFunctionEffects : IGlobalAnalysis
             return FunctionEffects.Unknown;
         }
 
-        if (_cache.TryGetValue(def.Definition, out var entry)) return entry;
+        var target = def.Definition;
 
-        // Recursive queries must see a conservative summary until computation finishes.
-        _cache[def.Definition] = FunctionEffects.Unknown;
-        entry = ComputeEffects(def.Definition);
-        _cache[def.Definition] = entry;
-        return entry;
+        if (_building.TryPeek(out var parent)) {
+            parent.Dependencies.Add(target);
+        }
+
+        if (_building.Any(item => item.Method == target)) {
+            return FunctionEffects.Unknown;
+        }
+
+        if (_cache.TryGetValue(target, out var entry)) {
+            if (entry.Body == target.Body && entry.Revision == (target.Body?.Revision ?? 0) &&
+                (entry.Dependencies.Count == 0 || IsCurrent(target, new HashSet<MethodDef>()))) {
+                CacheHits++;
+
+                return entry.Effects;
+            }
+
+            SetDirty(target);
+        }
+
+        var dependencies = new HashSet<MethodDef>();
+        _building.Push((target, dependencies));
+
+        try {
+            var effects = ComputeEffects(target);
+            _cache.Add(target, new Entry(effects, target.Body, target.Body?.Revision ?? 0, dependencies));
+
+            foreach (var dependency in dependencies) {
+                (_callers.GetOrAddRef(dependency) ??= new()).Add(target);
+            }
+
+            Computations++;
+
+            return effects;
+        } finally {
+            _building.Pop();
+        }
+    }
+
+    bool IsCurrent(MethodDef method, HashSet<MethodDef> checkedMethods)
+    {
+        if (!checkedMethods.Add(method)) {
+            return true;
+        }
+
+        if (!_cache.TryGetValue(method, out var entry)) {
+            return false;
+        }
+
+        return entry.Body == method.Body && entry.Revision == (method.Body?.Revision ?? 0) &&
+            entry.Dependencies.All(dependency => IsCurrent(dependency, checkedMethods));
     }
 
     public FunctionEffects GetEffects(CallInst call)
@@ -39,19 +92,48 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         return effects;
     }
 
-    public bool SetDirty(MethodDef method) => _cache.Remove(method);
-    public void SetAllDirty() => _cache.Clear();
+    public bool SetDirty(MethodDef method)
+    {
+        bool found = _cache.ContainsKey(method);
+        var pending = new DiscreteStack<MethodDef>(method);
 
-    void IGlobalAnalysis.Invalidate(MethodDef method) => SetAllDirty();
+        while (pending.TryPop(out var current)) {
+            if (_callers.Remove(current, out var callers)) {
+                foreach (var caller in callers) {
+                    pending.Push(caller);
+                }
+            }
+
+            if (_cache.Remove(current, out var entry)) {
+                foreach (var dependency in entry.Dependencies) {
+                    if (_callers.TryGetValue(dependency, out var users)) {
+                        users.Remove(current);
+                    }
+                }
+            }
+        }
+
+        return found;
+    }
+
+    public void SetAllDirty()
+    {
+        _cache.Clear();
+        _callers.Clear();
+    }
+
+    void IGlobalAnalysis.Invalidate(MethodDef method) => SetDirty(method);
 
     private FunctionEffects ComputeEffects(MethodDef method)
     {
         if (method.IsStatic && method.DeclaringType.RequiresTypeInitialization()) {
             return FunctionEffects.Unknown;
         }
-        if (method.DeclaringType.IsCorelibType() && GetEffectsFromCorelibMethod(method) is { } effects) {
+
+        if (_comp.Runtime.GetKnownEffects(method) is { } effects) {
             return effects;
         }
+
         if (method.Body != null && (method.Module == _comp.Module || _comp.Settings.AllowCrossAssemblyIPO)) {
             return ComputeEffectsFromBody(method.Body);
         }
@@ -59,11 +141,10 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         return FunctionEffects.Unknown;
     }
 
-    // TODO: compute info for inlining heuristics
     private FunctionEffects ComputeEffectsFromBody(MethodBody body)
     {
         var memEffects = MemoryEffects.None;
-        var traits = FunctionTraits.None;
+        var traits = ControlFlowFacts.HasCycle(body) ? FunctionTraits.MayDiverge : FunctionTraits.None;
         int numReturns = 0, numThrows = 0;
 
         foreach (var block in body) {
@@ -83,7 +164,12 @@ public class GlobalFunctionEffects : IGlobalAnalysis
                         if (inst.MayWriteToMemory) memEffects |= MemoryEffects.Write;
                         if (inst.MayThrow) traits |= FunctionTraits.MayThrow;
                         if (inst.IsMemoryBarrier) traits |= FunctionTraits.MemoryBarrier;
-                        break;
+
+                            if (inst is NewObjInst or CilIntrinsic.NewArray or CilIntrinsic.Box or CilIntrinsic.Alloca) {
+                                traits |= FunctionTraits.Allocates;
+                            }
+
+                            break;
                     }
                 }
             }
@@ -105,98 +191,6 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     }
 
 
-    /*private FunctionEffects ComputeEffectsFromIL(ILMethodBody body)
-    {
-        var memEffects = MemoryEffects.None;
-        var traits = FunctionTraits.MayThrow;
-
-        foreach (var inst in body.Instructions) {
-            switch (inst.OpCode) {
-                case ILCode.Ldfld or ILCode.Ldsfld or ILCode.Ldflda:
-                case ILCode.Ldind_I or (>= ILCode.Ldind_I1 and <= ILCode.Ldind_Ref):
-                case ILCode.Ldelem or (>= ILCode.Ldelem_I1 and <= ILCode.Ldelem_Ref):
-                case ILCode.Ldobj:
-                case ILCode.Unbox or ILCode.Unbox_Any: {
-                    memEffects |= MemoryEffects.Read;
-                    break;
-                }
-                case ILCode.Stfld or ILCode.Stsfld: 
-                case ILCode.Stind_I or (>= ILCode.Stind_Ref and <= ILCode.Stind_R8): 
-                case ILCode.Stelem or (>= ILCode.Stelem_I and <= ILCode.Stelem_Ref):
-                case ILCode.Stobj: {
-                    memEffects |= MemoryEffects.Write;
-                    break;
-                }
-                case ILCode.Localloc: {
-                    traits |= FunctionTraits.HasStackAllocs | FunctionTraits.MayThrow;
-                    break;
-                }
-            }
-        }
-
-        return new FunctionEffects() {
-            MemEffects = memEffects,
-            Traits = traits
-        };
-    }*/
-
-    // TODO: consider moving this to a more easily editable config file or something
-    private static FunctionEffects? GetEffectsFromCorelibMethod(MethodDef method)
-    {
-        var type = method.DeclaringType;
-
-        if (type.Namespace == "System.Collections.Generic" && type.Name is "Dictionary`2" or "List`1" or "HashSet`1") {
-            bool isAccessor = method.Name == "get_Count" || (type.Name == "List`1" && method.Name == "get_Item");
-
-            return new FunctionEffects(
-                isAccessor ? MemoryEffects.Read : MemoryEffects.ReadWrite,
-                FunctionTraits.MayThrow
-            );
-        }
-
-        switch (method.DeclaringType.Name, method.Name) {
-            // Pure functions
-            case ("String", "op_Equality" or "op_Inequality" or "get_Length"):
-            case ("Object", "GetType"):
-            case ("Type", "op_Equality" or "op_Inequality" or "GetTypeFromHandle"):
-            case ("RuntimeHelpers", "IsReferenceOrContainsReferences"):
-            case ("Environment", "get_CurrentManagedThreadId"):
-            case ("Math" or "MathF", _) when IsPureMathFunc(method):
-            case ("Vector128`1" or "Vector256`1" or "Vector512`1", _) when method.Name.StartsWith("op_"): {
-                return new FunctionEffects(MemoryEffects.None, FunctionTraits.None);
-            }
-            // Throwing functions (some of these are actually pure, but it doesn't matter much)
-            case ("String", "IndexOf" or "LastIndexOf" or "Contains" or "Substring" or "Replace" or
-                            "ToLower" or "ToUpper" or "ToLowerInvariant" or "ToUpperInvariant"
-            ): {
-                return new FunctionEffects(MemoryEffects.None, FunctionTraits.MayThrow);
-            }
-            // TODO: Include MemoryExtensions and span stuff
-            //       also check if GVN can handle things like "span.IndexOf(1); span[0] = 0; span.IndexOf(1)" properly.
-        }
-        return null;
-    }
-
-    private static bool IsPureMathFunc(MethodDef method)
-    {
-        if (method.Params.All(p => p.Type.StackType == StackType.Float)) {
-            ReadOnlySpan<string> names = [
-                "Floor", "Ceiling", "Round", "Truncate",
-                "Abs", "Sqrt", "Cbrt", "Log", "Log2", "Log10", "Exp",
-                "Sin", "Cos", "Tan", "SinCos",
-                "Sinh", "Cosh", "Tanh",
-                "Asin", "Acos", "Atan",
-                "Sinh", "Cosh", "Atanh",
-                "ReciprocalEstimate", "ReciprocalSqrtEstimate",
-
-                "Pow", "Log", "Atan2",
-                "Min", "Max", "MaxMagnitude", "MinMagnitude",
-                "FusedMultiplyAdd",
-            ];
-            return names.Contains(method.Name);
-        }
-        return false;
-    }
 }
 
 public readonly struct FunctionEffects
@@ -208,6 +202,10 @@ public readonly struct FunctionEffects
 
     public bool IsUnknown => Traits == FunctionTraits.Unknown;
     public bool IsPure => Traits == FunctionTraits.None && MemEffects == MemoryEffects.None;
+
+    public bool MayDiverge => (Traits & FunctionTraits.MayDiverge) != 0;
+
+    public bool MayAllocate => (Traits & FunctionTraits.Allocates) != 0;
 
     public bool MayThrow => (Traits & FunctionTraits.MayThrow) != 0;
     public bool HasMemoryBarrier => (Traits & FunctionTraits.MemoryBarrier) != 0;
@@ -226,14 +224,27 @@ public readonly struct FunctionEffects
 [Flags]
 public enum FunctionTraits
 {
+
     None = 0,
+
     Unknown         = ~0,
-    CallTransferMask = MayThrow | MemoryBarrier,
+
+    CallTransferMask = MayThrow | MemoryBarrier | MayDiverge | Allocates,
+
 
     MayThrow        = 1 << 0,
+
     Recursive       = 1 << 1,
+
     DoesNotReturn   = 1 << 3, // e.g. ThrowHelper
+
     MemoryBarrier   = 1 << 4,
+
+    MayDiverge = 1 << 5,
+
+    Allocates = 1 << 6,
+
+
 
 }
 public enum MemoryEffects : byte

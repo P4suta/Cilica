@@ -85,7 +85,10 @@ public class ValueNumbering : IMethodPass
             if (def is CallInst call) {
                 var effect = FuncInfo.GetEffects(call);
 
-                if (effect.MayWriteMem || effect.HasMemoryBarrier) return false;
+                if (effect.MayWriteMem || effect.HasMemoryBarrier || effect.MayDiverge || effect.MayAllocate) {
+                    return false;
+                }
+
                 if (!effect.MayReadMem) return true;
                 // if effect == MayRead, check for clobbers
             }
@@ -117,6 +120,7 @@ public class ValueNumbering : IMethodPass
 
             return true;
         }
+
         // Checks if `inst` may clobber the result value of `def`.
         private bool MayClobberDef(Instruction def, Instruction inst)
         {

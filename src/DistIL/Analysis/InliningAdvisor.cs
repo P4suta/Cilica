@@ -7,11 +7,12 @@ using MethodAttributes = System.Reflection.MethodAttributes;
 using ParameterAttributes = System.Reflection.ParameterAttributes;
 using MethodImplAttributes = System.Reflection.MethodImplAttributes;
 
-// InlinerAnalysis? InlineabilityAnalysis? I guess I'll just yoink from LLVM again.
 public class InliningAdvisor : IGlobalAnalysis
 {
-    readonly Dictionary<MethodDef, (InlineRejectReason Reason, FunctionMetrics? Metrics)> _cache = new();
+    readonly Dictionary<MethodDef, Entry> _cache = new();
     readonly Compilation _comp;
+
+    sealed record Entry(InlineRejectReason Reason, FunctionMetrics? Metrics, MethodBody Body, long Revision);
 
     private InliningAdvisor(Compilation comp) => _comp = comp;
 
@@ -106,15 +107,17 @@ public class InliningAdvisor : IGlobalAnalysis
 
     public (InlineRejectReason Rejection, FunctionMetrics? Metrics) GetMetrics(MethodBody method)
     {
-        if (!_cache.TryGetValue(method.Definition, out var entry)) {
-            entry = ComputeMetrics(method);
-            _cache.Add(method.Definition, entry);
+        if (!_cache.TryGetValue(method.Definition, out var entry) || entry.Body != method || entry.Revision != method.Revision) {
+            var (reason, metrics) = ComputeMetrics(method);
+            entry = new Entry(reason, metrics, method, method.Revision);
+            _cache[method.Definition] = entry;
 
             if (entry.Reason != InlineRejectReason.Accepted) {
                 _comp.Logger.Trace($"Rejecting inlinee '{method}': {entry.Reason}");
             }
         }
-        return entry;
+
+        return (entry.Reason, entry.Metrics);
     }
 
     public void InvalidateMetrics(MethodBody method)

@@ -384,6 +384,81 @@ public class PassRegressionTests
     }
 
     [Fact]
+    public void DeadCodeElimPreservesDivergingCalls()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var spin = body.Definition.DeclaringType.CreateMethod("Spin", PrimType.Void, [], MethodAttributes.Public | MethodAttributes.Static);
+        spin.Body = new MethodBody(spin);
+        var entry = spin.Body.CreateBlock();
+        var loop = spin.Body.CreateBlock();
+        entry.SetBranch(loop);
+        loop.SetBranch(loop);
+        var builder = new IRBuilder(body.CreateBlock());
+        var call = builder.CreateCall(spin);
+        builder.CreateReturn(ConstInt.CreateI(42));
+        Run(body, new DeadCodeElim());
+
+        Assert.NotNull(call.Block);
+    }
+
+    [Fact]
+    public void ValueNumberingPreservesAmbientCultureAndStringAllocation()
+    {
+        var culture = _modResolver.Import(typeof(System.Globalization.CultureInfo));
+        var textType = _modResolver.Import(typeof(string));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Bool, culture);
+        var builder = new IRBuilder(body.CreateBlock());
+        var upper = textType.FindMethod("ToUpper", new MethodSig(PrimType.String, []));
+        var setter = culture.FindMethod("set_CurrentCulture", new MethodSig(PrimType.Void, [culture]));
+        var equal = textType.FindMethod("op_Equality", new MethodSig(PrimType.Bool, [PrimType.String, PrimType.String]));
+        var first = builder.CreateCallVirt(upper, ConstString.Create("i"));
+        builder.CreateCall(setter, body.Args[0]);
+        var second = builder.CreateCallVirt(upper, first.Args[0]);
+        builder.CreateReturn(builder.CreateCall(equal, first, second));
+        Run(body, new ValueNumbering());
+
+        Assert.NotNull(second.Block);
+
+        if (!(AppContext.TryGetSwitch("System.Globalization.Invariant", out bool invariant) && invariant)) {
+            var saved = System.Globalization.CultureInfo.CurrentCulture;
+
+            try {
+                System.Globalization.CultureInfo.CurrentCulture = new("en-US");
+
+                Assert.False(Utils.Compile<Func<System.Globalization.CultureInfo, bool>>(body)(new("tr-TR")));
+            } finally {
+                System.Globalization.CultureInfo.CurrentCulture = saved;
+            }
+        }
+
+        var effects = new Compilation(body.Definition.Module, new VoidLogger(), new()).GetAnalysis<GlobalFunctionEffects>();
+
+        Assert.True(effects.GetEffects(textType.FindMethod("ToUpperInvariant", new MethodSig(PrimType.String, []))).MayAllocate);
+    }
+
+    [Fact]
+    public void InliningBoundsMutualRecursionWithProfitableArguments()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.DeclaringType;
+        var parameters = Enumerable.Range(0, 10).Select(i => new ParamDef(PrimType.Int32, "p" + i)).ToImmutableArray();
+        var a = type.CreateMethod("A", PrimType.Int32, parameters, MethodAttributes.Public | MethodAttributes.Static);
+        var b = type.CreateMethod("B", PrimType.Int32, parameters, MethodAttributes.Public | MethodAttributes.Static);
+        a.Body = new MethodBody(a);
+        b.Body = new MethodBody(b);
+        var ia = new IRBuilder(a.Body.CreateBlock());
+        ia.CreateReturn(ia.CreateCall(b, a.Body.Args.Cast<Value>().ToArray()));
+        var ib = new IRBuilder(b.Body.CreateBlock());
+        ib.CreateReturn(ib.CreateCall(a, b.Body.Args.Cast<Value>().ToArray()));
+        var root = new IRBuilder(body.CreateBlock());
+        root.CreateReturn(root.CreateCall(a, Enumerable.Repeat<Value>(ConstInt.CreateI(1), 10).ToArray()));
+        Run(body, new InlineMethods(new() { InitialBudget = 1, BudgetFactor = 0 }));
+
+        Assert.Single(body.Instructions().OfType<CallInst>());
+        Assert.True(body.Instructions().Count() < 10);
+    }
+
+    [Fact]
     public void ChangeReportingTracksPhiEliminationAndNoopSimplification()
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);

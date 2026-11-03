@@ -95,6 +95,9 @@ public class NewObjInst : Instruction
     public int NumArgs => _operands.Length;
 
     public override bool HasSideEffects => true;
+
+    public override bool MayThrow => true;
+
     public override bool MayWriteToMemory => true;
     public override bool MayReadFromMemory => true;
     public override string InstName => "newobj";
@@ -115,6 +118,8 @@ public class NewObjInst : Instruction
 
 public class FuncAddrInst : Instruction
 {
+    public override bool MayThrow => IsVirtual;
+
     public MethodDesc Method { get => _method; set => SetProperty(ref _method, value); }
 
     private MethodDesc _method = default!;

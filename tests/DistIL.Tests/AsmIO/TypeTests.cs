@@ -5,6 +5,30 @@ using DistIL.AsmIO;
 [Collection("ModuleResolver")]
 public class TypeTests
 {
+    public interface IMixed<out T, U> { }
+
+    public interface IConsumer<in T> { }
+
+    public interface IDerived : IMixed<string, string> { }
+
+    public class Mixed : IDerived, IConsumer<object> { }
+
+    [Theory]
+    [InlineData(typeof(Mixed), typeof(IMixed<object, string>))]
+    [InlineData(typeof(Mixed), typeof(IMixed<object, object>))]
+    [InlineData(typeof(Mixed), typeof(IConsumer<string>))]
+    [InlineData(typeof(IDerived), typeof(IMixed<object, string>))]
+    [InlineData(typeof(IMixed<string, int>), typeof(IMixed<object, int>))]
+    [InlineData(typeof(IMixed<int, string>), typeof(IMixed<object, string>))]
+    [InlineData(typeof(Func<string>), typeof(Func<object>))]
+    [InlineData(typeof(Action<object>), typeof(Action<string>))]
+    [InlineData(typeof(Action<string>), typeof(Action<object>))]
+    [InlineData(typeof(List<string>), typeof(List<object>))]
+    public void GenericAssignabilityMatchesRuntime(Type source, Type destination)
+    {
+        Assert.Equal(destination.IsAssignableFrom(source), _modResolver.Import(source).IsAssignableTo(_modResolver.Import(destination)));
+    }
+
     readonly ModuleResolver _modResolver;
 
     public TypeTests(ModuleResolverFixture mrf)
@@ -57,6 +81,10 @@ public class TypeTests
     [Fact]
     public void Test_IsAssignableTo()
     {
+        Assert.True(PrimType.String.CreateArray().IsAssignableTo(PrimType.Object.CreateArray()));
+        Assert.False(PrimType.Int32.CreateArray().IsAssignableTo(PrimType.Object.CreateArray()));
+        Assert.False(PrimType.Byte.CreateArray().IsAssignableTo(_modResolver.Import(typeof(IList<int>))));
+
         var t_ListInt = _modResolver.Import(typeof(List<int>));
         var t_HashSetInt = _modResolver.Import(typeof(HashSet<int>));
         var t_ICollectionInt = _modResolver.Import(typeof(ICollection<int>));

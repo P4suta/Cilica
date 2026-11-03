@@ -65,4 +65,44 @@ public class AnalysisManagerTests(ModuleResolverFixture fixture)
     {
         static IMethodAnalysis IMethodAnalysis.Create(IMethodAnalysisManager mgr) => mgr.GetAnalysis<CyclicAnalysis>();
     }
+
+    [Fact]
+    public void EffectInvalidationPreservesUnrelatedSummaries()
+    {
+        var ctx = CreateContext();
+        var type = ctx.Definition.DeclaringType;
+        var leaf = type.CreateMethod("Leaf", PrimType.Int32, [], System.Reflection.MethodAttributes.Static);
+        leaf.Body = new MethodBody(leaf);
+        leaf.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(1)));
+        var caller = type.CreateMethod("Caller", PrimType.Int32, [], System.Reflection.MethodAttributes.Static);
+        caller.Body = new MethodBody(caller);
+        var builder = new IRBuilder(caller.Body.CreateBlock());
+        builder.CreateReturn(builder.CreateCall(leaf));
+        var effects = ctx.Compilation.GetAnalysis<GlobalFunctionEffects>();
+
+        Assert.True(effects.GetEffects(caller).IsPure);
+        Assert.True(effects.GetEffects(ctx.Definition).IsPure);
+
+        long computations = effects.Computations;
+        var loop = leaf.Body.CreateBlock();
+        loop.SetBranch(loop);
+        leaf.Body.EntryBlock.SetBranch(loop);
+        ctx.Compilation.InvalidateAnalyses(leaf);
+
+        Assert.True(effects.GetEffects(ctx.Definition).IsPure);
+        Assert.Equal(computations, effects.Computations);
+        Assert.True(effects.GetEffects(caller).MayDiverge);
+    }
+
+    [Fact]
+    public void InliningMetricsFollowMethodRevisions()
+    {
+        var ctx = CreateContext();
+        var advisor = ctx.Compilation.GetAnalysis<InliningAdvisor>();
+        var metrics = advisor.GetMetrics(ctx.Method).Metrics;
+        var extra = new BinaryInst(BinaryOp.Add, ctx.Method.Args[0], ConstInt.CreateI(3));
+        ctx.Method.EntryBlock.InsertAnteLast(extra);
+
+        Assert.NotSame(metrics, advisor.GetMetrics(ctx.Method).Metrics);
+    }
 }
