@@ -13,7 +13,7 @@ public partial class SimplifyInsts : IMethodPass
     public SimplifyInsts(ModuleResolver resolver)
     {
         t_Delegate = resolver.Import(typeof(Delegate));
-        t_DictionaryOfTT = resolver.Import(typeof(Dictionary<,>), throwIfNotFound: false);
+        t_DictionaryOfTT = resolver.Import(typeof(Dictionary<,>));
     }
 
     static IMethodPass IMethodPass.Create<TSelf>(Compilation comp)

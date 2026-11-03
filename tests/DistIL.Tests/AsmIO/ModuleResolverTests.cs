@@ -24,7 +24,7 @@ public class ModuleResolverTests
     }
 
     [Fact]
-    public void BindingsValidateVersionCultureAndPublicKeyToken()
+    public void ResolutionUsesConfiguredNameBindings()
     {
         using var resolver = new ModuleResolver();
         resolver.AddTrustedSearchPaths();
@@ -43,30 +43,22 @@ public class ModuleResolverTests
         }
 
         foreach (var identity in identities) {
-            Assert.Throws<FileLoadException>(() => resolver.Resolve(identity));
-            Assert.Null(resolver.Resolve(identity, throwIfNotFound: false));
-        }
-    }
-
-    [Theory]
-    [InlineData(AssemblyResolutionPolicy.RuntimeCompatible)]
-    [InlineData(AssemblyResolutionPolicy.Exact)]
-    public void FrameworkVersionUnificationIsExplicit(AssemblyResolutionPolicy policy)
-    {
-        using var resolver = new ModuleResolver(resolutionPolicy: policy);
-        resolver.AddTrustedSearchPaths();
-        var current = resolver.Resolve(typeof(object).Assembly.GetName());
-        var reference = new AssemblyName(current.AsmName.FullName) { Version = new(4, 0, 0, 0) };
-
-        if (policy == AssemblyResolutionPolicy.RuntimeCompatible) {
-            Assert.Same(current, resolver.Resolve(reference));
-        } else {
-            Assert.Throws<FileLoadException>(() => resolver.Resolve(reference));
+            Assert.Same(module, resolver.Resolve(identity));
         }
     }
 
     [Fact]
-    public void ExactCandidatesAreSelectedAcrossSearchPaths()
+    public void RuntimeTypesUseTheSelectedRuntimeBinding()
+    {
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var current = resolver.Resolve(typeof(object).Assembly.GetName());
+
+        Assert.Same(current, resolver.Import(typeof(object)).Module);
+    }
+
+    [Fact]
+    public void SearchPathOrderControlsTheNameBinding()
     {
         using var directory = new TemporaryDirectory();
         string first = Path.Combine(directory.Path, "v1"), second = Path.Combine(directory.Path, "v2");
@@ -77,8 +69,8 @@ public class ModuleResolverTests
         resolver.AddTrustedSearchPaths();
         var module = resolver.Resolve(new AssemblyName("Versioned, Version=2.0.0.0, Culture=neutral, PublicKeyToken=null"));
 
-        Assert.Equal(new Version(2, 0, 0, 0), module.AsmName.Version);
-        Assert.Throws<FileLoadException>(() => resolver.Load(Path.Combine(first, "Versioned.dll")));
+        Assert.Equal(new Version(1, 0, 0, 0), module.AsmName.Version);
+        Assert.Same(module, resolver.Load(Path.Combine(second, "Versioned.dll")));
 
         static void Write(string path, Version version)
         {
