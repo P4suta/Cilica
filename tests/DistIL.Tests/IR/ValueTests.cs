@@ -118,8 +118,9 @@ public class ValueTests
         var b = method.CreateBlock();
         var c = method.CreateBlock();
         var condition = new FakeTrackedValue(1);
-        var resume = new ResumeInst([a], filter ? condition : null);
+        var resume = new ResumeInst([a, a], filter ? condition : null);
         int start = filter ? 1 : 0;
+        CheckUses(a, (resume, start));
 
         resume.SetExitTargets(new HashSet<BasicBlock> { b });
         CheckUses(a);

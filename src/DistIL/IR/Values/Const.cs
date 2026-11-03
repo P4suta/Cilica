@@ -56,7 +56,7 @@ public class ConstString : Const
             text.Append(ch switch {
                 '\\' => "\\\\", '"' => "\\\"",
                 '\r' => "\\r", '\n' => "\\n", '\t' => "\\t",
-                _ when char.IsControl(ch) => "\\u" + ((int)ch).ToString("X4"),
+                _ when char.IsControl(ch) || char.IsSurrogate(ch) => "\\u" + ((int)ch).ToString("X4"),
                 _ => ch.ToString()
             });
         }

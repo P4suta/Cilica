@@ -361,7 +361,8 @@ Block1:
             ConstFloat.CreateD(1e30), ConstFloat.CreateD(-1e-30), ConstFloat.CreateD(-0.0),
             ConstFloat.CreateD(double.NaN), ConstFloat.CreateD(double.PositiveInfinity), ConstFloat.CreateD(double.NegativeInfinity),
             ConstFloat.CreateS(1e30f), ConstFloat.CreateS(float.NaN), ConstFloat.CreateS(float.NegativeInfinity),
-            ConstString.Create("C:\\temp\\new\\"), ConstString.Create("\"\\\r\n\t\0\b\f\v 日本語")
+            ConstString.Create("C:\\temp\\new\\"), ConstString.Create("\"\\\r\n\t\0\b\f\v 日本語"),
+            ConstString.Create("\uD800"), ConstString.Create("\U0001F600")
         ];
         foreach (var expected in constants) {
             var ctx = new ParserContext(expected.ToString(), _modResolver);

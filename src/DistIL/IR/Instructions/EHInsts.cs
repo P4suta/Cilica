@@ -85,7 +85,7 @@ public class ResumeInst : Instruction
     public override bool IsBranch => true;
 
     public ResumeInst(IEnumerable<BasicBlock> exitTargets, Value? filterResult = null)
-        : base(filterResult == null ? exitTargets.Distinct().ToArray() : [filterResult, ..exitTargets]) { }
+        : base(filterResult == null ? exitTargets.Distinct().ToArray() : [filterResult, ..exitTargets.Distinct()]) { }
 
     /// <summary> Unchecked cloning constructor. </summary>
     public ResumeInst(int _, Value[] operands)

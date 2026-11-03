@@ -35,7 +35,7 @@ partial class SimplifyInsts
         var declType = (TypeSpec)call.Method.DeclaringType;
         // Coalescing lookups requires both the same control-flow path and a
         // comparer whose hash/equality operations have no user-visible effects.
-        if (br.Then.NumPreds != 1 || !HasPureDefaultComparer(instance, declType.GenericParams[0])) return false;
+        if (br.Then.NumPreds != 1 || !HasPureDefaultComparer(instance, declType)) return false;
         // Only check for the get_Item() call once, because guaranteeing that the dictionary
         // won't change in between calls is tricky. (VN may handle this in the future.)
         if (br.Then.First is not CallInst { Method.Name: "get_Item" } getCall ||
@@ -54,10 +54,11 @@ partial class SimplifyInsts
         return true;
     }
 
-    private static bool HasPureDefaultComparer(Value instance, TypeDesc keyType)
+    private static bool HasPureDefaultComparer(Value instance, TypeSpec dictionaryType)
     {
+        var keyType = dictionaryType.GenericParams[0];
         if (keyType.Kind is not (>= TypeKind.Bool and <= TypeKind.Double or TypeKind.String)) return false;
-        return instance is NewObjInst alloc && alloc.Args switch {
+        return instance is NewObjInst alloc && alloc.ResultType == dictionaryType && alloc.Args switch {
             [] or [ConstInt] or [ConstNull] or [ConstInt, ConstNull] => true,
             _ => false
         };

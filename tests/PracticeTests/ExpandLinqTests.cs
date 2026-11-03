@@ -188,11 +188,43 @@ public class ExpandLinqTests
         // CHECK-NOT: call Enumerable
     }
 
+    [Fact]
+    public void NestedSelectManyDisposesFromInnerToOuter()
+    {
+        var order = new List<int>();
+        var outer = new TrackingEnumerable([1], () => order.Add(1));
+        var middle = new TrackingEnumerable([2], () => order.Add(2));
+        var inner = new TrackingEnumerable([3], () => order.Add(3));
+        int value = outer.SelectMany(_ => middle).SelectMany(_ => inner).First();
+        Assert.Equal(3, value);
+        Assert.Equal(new[] { 3, 2, 1 }, order);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
+    [Fact]
+    public void FlattenedFindAndQuantifyPreserveDefaultsAndDisposal()
+    {
+        var inner = new TrackingEnumerable([10, 20]);
+        int[] empty = [];
+        Assert.Equal(99, empty.SelectMany(_ => inner).FirstOrDefault(99));
+        Assert.Equal(0, inner.Acquisitions);
+        int[] outer = [1, 2];
+        bool any = outer.SelectMany(_ => inner).Any(x => x == 10);
+        Assert.True(any);
+        Assert.Equal(1, inner.Disposals);
+        bool all = outer.SelectMany(_ => inner).All(x => x < 20);
+        Assert.False(all);
+        Assert.Equal(2, inner.Disposals);
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable
+    }
+
     [DoNotOptimize, MethodImpl(MethodImplOptions.NoInlining)]
     static int ThrowAtTwenty(int value) => value == 20 ? throw new InvalidOperationException() : value;
 
     [DoNotOptimize]
-    sealed class TrackingEnumerable(int[] values) : IEnumerable<int>
+    sealed class TrackingEnumerable(int[] values, Action? onDispose = null) : IEnumerable<int>
     {
         public int Acquisitions, Moves, Disposals;
         public IEnumerator<int> GetEnumerator() { Acquisitions++; return Iterate().GetEnumerator(); }
@@ -202,7 +234,7 @@ public class ExpandLinqTests
             try {
                 foreach (int value in values) { Moves++; yield return value; }
                 Moves++;
-            } finally { Disposals++; }
+            } finally { Disposals++; onDispose?.Invoke(); }
         }
     }
 
