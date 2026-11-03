@@ -47,7 +47,7 @@ Assembly output preserves supported PE/CLR target properties and native resource
 
 The `ILGenerator` is able to generate reasonably compact IL by traversing expression trees that are implicitly built over the linear IR (by flagging SSA defs as leafs or branches). It also uses a register allocator based on a simple graph-coloring algorithm to reduce the final number of variables required.
 
-CIL preparation legalizes operations, prepares phi edges, and schedules expression trees before allocation. Allocation preserves the prepared graph, and emission leaves the supplied IR unchanged.
+CIL preparation selects indexed array instructions for bounded scalar accesses, legalizes operations, prepares phi edges, and schedules expression trees before allocation. Pointer offsets use zero extension when signed loop bounds prove a nonnegative counter. Allocation preserves the prepared graph, and emission leaves the supplied IR unchanged.
 
 ## Mutation and analysis contracts
 

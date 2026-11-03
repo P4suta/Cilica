@@ -13,7 +13,7 @@ DistIL also implements canonicalization, SSA promotion, control-flow simplificat
 
 Code examples show source and representative equivalent output, with compiler-generated delegate setup and temporary names simplified for readability. Decompiled unsafe operations correspond to lifted IL instructions; exact output depends on the surrounding method and subsequent simplification.
 
-The benchmark tables use .NET 10.0.14, BenchmarkDotNet 0.15.8, and an Intel Core i7-13700K on Windows 11 x64. Each job uses one launch, three warmup iterations, and ten measured iterations targeting 200 ms each. Error is half the 99.9% confidence interval; ratios compare DistIL with the baseline for the same workload. The tables include both improvements and regressions.
+The benchmark tables use .NET 10.0.14, BenchmarkDotNet 0.15.8, and an Intel Core i7-13700K on Windows 11 x64. Each job uses one launch, three warmup iterations, and ten measured iterations targeting 200 ms each. Error is half the 99.9% confidence interval; ratios compare DistIL with the baseline for the same workload. Ratios above one indicate a slowdown.
 
 ## LINQ Expansion
 
@@ -60,20 +60,20 @@ For a mutable `List<T>` source, the optimizer retains the relevant library stage
 
 | Method         | Toolchain          | ElemCount | Mean         | Error       | StdDev      | Ratio | RatioSD |
 |--------------- |------------------- |---------- |-------------:|------------:|------------:|------:|--------:|
-| FilterObjects  | .NET 10.0          | 4096      |    14.406 μs |   0.6405 μs |   0.3350 μs |  1.00 |    0.03 |
-| FilterObjects  | .NET 10.0 + DistIL | 4096      |     9.988 μs |   0.1973 μs |   0.1305 μs |  0.69 |    0.02 |
+| FilterObjects  | .NET 10.0          | 4096      |    19.002 μs |   0.9627 μs |   0.5729 μs |  1.00 |    0.04 |
+| FilterObjects  | .NET 10.0 + DistIL | 4096      |    15.508 μs |   0.2175 μs |   0.1295 μs |  0.82 |    0.02 |
 |                |                    |           |              |             |             |       |         |
-| FirstPredicate | .NET 10.0          | 4096      |     6.768 μs |   0.0661 μs |   0.0437 μs |  1.00 |    0.01 |
-| FirstPredicate | .NET 10.0 + DistIL | 4096      |     7.189 μs |   0.1188 μs |   0.0707 μs |  1.06 |    0.01 |
+| FirstPredicate | .NET 10.0          | 4096      |     6.876 μs |   0.1994 μs |   0.1319 μs |  1.00 |    0.03 |
+| FirstPredicate | .NET 10.0 + DistIL | 4096      |     6.752 μs |   0.0674 μs |   0.0446 μs |  0.98 |    0.02 |
 |                |                    |           |              |             |             |       |         |
-| Aggregate      | .NET 10.0          | 4096      |    30.469 μs |   0.7975 μs |   0.5275 μs |  1.00 |    0.02 |
-| Aggregate      | .NET 10.0 + DistIL | 4096      |    13.313 μs |   0.6233 μs |   0.4123 μs |  0.44 |    0.01 |
+| Aggregate      | .NET 10.0          | 4096      |    30.459 μs |   0.7505 μs |   0.4466 μs |  1.00 |    0.02 |
+| Aggregate      | .NET 10.0 + DistIL | 4096      |    11.128 μs |   0.4271 μs |   0.2542 μs |  0.37 |    0.01 |
 |                |                    |           |              |             |             |       |         |
-| CountLetters   | .NET 10.0          | 4096      |     3.285 μs |   0.0473 μs |   0.0313 μs |  1.00 |    0.01 |
-| CountLetters   | .NET 10.0 + DistIL | 4096      |     2.492 μs |   0.0079 μs |   0.0047 μs |  0.76 |    0.01 |
+| CountLetters   | .NET 10.0          | 4096      |     3.278 μs |   0.0448 μs |   0.0296 μs |  1.00 |    0.01 |
+| CountLetters   | .NET 10.0 + DistIL | 4096      |     2.477 μs |   0.0310 μs |   0.0185 μs |  0.76 |    0.01 |
 |                |                    |           |              |             |             |       |         |
-| RayTracer      | .NET 10.0          | 4096      | 8,980.562 μs | 188.9555 μs | 112.4444 μs |  1.00 |    0.02 |
-| RayTracer      | .NET 10.0 + DistIL | 4096      | 5,288.014 μs | 112.4827 μs |  74.4003 μs |  0.59 |    0.01 |
+| RayTracer      | .NET 10.0          | 4096      | 8,940.111 μs | 200.9677 μs | 132.9277 μs |  1.00 |    0.02 |
+| RayTracer      | .NET 10.0 + DistIL | 4096      | 5,019.279 μs |  80.5863 μs |  42.1482 μs |  0.56 |    0.01 |
 
 ### Features
 
@@ -110,6 +110,8 @@ For a mutable `List<T>` source, the optimizer retains the relevant library stage
 Canonical counting loops can replace array or span indexing with pointer induction when the loop bound proves each access is within the same storage. This exposes sequential accesses to the vectorizer and reduces repeated address calculation.
 
 The pass preserves covariant array-store checks and declines loops whose span view may be reassigned during iteration. It accesses arrays through `MemoryMarshal.GetArrayDataReference()` and spans through their public reference accessors. Loop analysis tracks nesting and combines backedges sharing a header.
+
+CIL preparation can select ordinary array instructions for bounded scalar accesses, exposing the array and index relationship to the runtime JIT. Vector accesses, reinterpretation, volatile or unaligned memory operations, and reference stores with unproven array-type compatibility retain pointer-based access.
 
 ## Loop Vectorization
 
@@ -201,17 +203,17 @@ public static void GenerateInts(Span<int> destination, int bias)
 
 | Method          | Toolchain          | ElemCount | Mean        | Error     | StdDev   | Ratio | Code Size |
 |---------------- |------------------- |---------- |------------:|----------:|---------:|------:|----------:|
-| CountLetters    | .NET 10.0          | 4096      |  3,255.1 ns |  25.59 ns | 16.93 ns |  1.00 |     450 B |
-| CountLetters    | .NET 10.0 + DistIL | 4096      |  2,497.1 ns |  27.23 ns | 18.01 ns |  0.77 |     211 B |
+| CountLetters    | .NET 10.0          | 4096      |  3,243.1 ns |  33.03 ns | 21.85 ns |  1.00 |     450 B |
+| CountLetters    | .NET 10.0 + DistIL | 4096      |  2,477.5 ns |  19.86 ns | 13.14 ns |  0.76 |     211 B |
 |                 |                    |           |             |           |          |       |           |
-| GenerateInts    | .NET 10.0          | 4096      |  1,182.1 ns |   8.12 ns |  4.25 ns |  1.00 |      84 B |
-| GenerateInts    | .NET 10.0 + DistIL | 4096      |  1,475.8 ns |   7.98 ns |  5.28 ns |  1.25 |      88 B |
+| GenerateInts    | .NET 10.0          | 4096      |  1,171.3 ns |  17.27 ns | 11.42 ns |  1.00 |      84 B |
+| GenerateInts    | .NET 10.0 + DistIL | 4096      |  1,177.9 ns |  12.14 ns |  7.23 ns |  1.01 |      84 B |
 |                 |                    |           |             |           |          |       |           |
-| GenerateFloats  | .NET 10.0          | 4096      |  2,783.8 ns |  33.88 ns | 22.41 ns |  1.00 |   1,724 B |
-| GenerateFloats  | .NET 10.0 + DistIL | 4096      |    605.2 ns |   5.90 ns |  3.90 ns |  0.22 |   1,861 B |
+| GenerateFloats  | .NET 10.0          | 4096      |  2,747.0 ns |  26.91 ns | 17.80 ns |  1.00 |   1,724 B |
+| GenerateFloats  | .NET 10.0 + DistIL | 4096      |    606.8 ns |   3.27 ns |  2.17 ns |  0.22 |   1,861 B |
 |                 |                    |           |             |           |          |       |           |
-| NormalizeFloats | .NET 10.0          | 4096      | 11,249.7 ns | 101.59 ns | 60.46 ns |  1.00 |   1,798 B |
-| NormalizeFloats | .NET 10.0 + DistIL | 4096      | 10,585.1 ns | 116.04 ns | 76.75 ns |  0.94 |   1,868 B |
+| NormalizeFloats | .NET 10.0          | 4096      | 11,142.0 ns |  32.92 ns | 19.59 ns |  1.00 |   1,798 B |
+| NormalizeFloats | .NET 10.0 + DistIL | 4096      | 10,595.0 ns | 115.48 ns | 76.38 ns |  0.95 |   1,868 B |
 
 ### Features
 
@@ -291,25 +293,25 @@ An `IReadOnlyList<T>` parameter alone does not establish the same contract: its 
 
 [Source](/tests/Benchmarks/ListArrayBuilding.cs). `DirectArray_Gen` provides a direct-allocation reference; `DynamicList_Gen` exercises a counting loop; `DynamicList_Enumer` intentionally enumerates through `IReadOnlyList<int>`.
 
-| Method             | Toolchain          | Count | Mean         | Error      | StdDev     | Ratio | RatioSD | Gen0   | Gen1   | Allocated | Alloc Ratio |
-|------------------- |------------------- |------ |-------------:|-----------:|-----------:|------:|--------:|-------:|-------:|----------:|------------:|
-| DirectArray_Gen    | .NET 10.0          | 4     |     4.409 ns |  0.2437 ns |  0.1612 ns |  1.00 |    0.05 | 0.0025 |      - |      40 B |        1.00 |
-| DirectArray_Gen    | .NET 10.0 + DistIL | 4     |     3.989 ns |  0.1627 ns |  0.1076 ns |  0.91 |    0.04 | 0.0025 |      - |      40 B |        1.00 |
-|                    |                    |       |              |            |            |       |         |        |        |           |             |
-| DirectArray_Gen    | .NET 10.0          | 1024  | 3,009.692 ns | 19.4498 ns | 11.5743 ns |  1.00 |    0.01 | 0.2566 |      - |    4120 B |        1.00 |
-| DirectArray_Gen    | .NET 10.0 + DistIL | 1024  | 3,007.700 ns | 30.9451 ns | 20.4683 ns |  1.00 |    0.01 | 0.2517 |      - |    4120 B |        1.00 |
-|                    |                    |       |              |            |            |       |         |        |        |           |             |
-| DynamicList_Gen    | .NET 10.0          | 4     |    12.904 ns |  0.8910 ns |  0.5893 ns |  1.00 |    0.06 | 0.0071 |      - |     112 B |        1.00 |
-| DynamicList_Gen    | .NET 10.0 + DistIL | 4     |     4.260 ns |  0.1754 ns |  0.1160 ns |  0.33 |    0.02 | 0.0025 |      - |      40 B |        0.36 |
-|                    |                    |       |              |            |            |       |         |        |        |           |             |
-| DynamicList_Gen    | .NET 10.0          | 1024  | 3,322.325 ns | 91.1160 ns | 60.2676 ns |  1.00 |    0.02 | 0.7990 |      - |   12544 B |        1.00 |
-| DynamicList_Gen    | .NET 10.0 + DistIL | 1024  | 2,991.996 ns | 27.5023 ns | 18.1911 ns |  0.90 |    0.02 | 0.2561 |      - |    4120 B |        0.33 |
-|                    |                    |       |              |            |            |       |         |        |        |           |             |
-| DynamicList_Enumer | .NET 10.0          | 4     |    12.943 ns |  0.3778 ns |  0.2248 ns |  1.00 |    0.02 | 0.0071 |      - |     112 B |        1.00 |
-| DynamicList_Enumer | .NET 10.0 + DistIL | 4     |    12.582 ns |  0.2776 ns |  0.1836 ns |  0.97 |    0.02 | 0.0071 |      - |     112 B |        1.00 |
-|                    |                    |       |              |            |            |       |         |        |        |           |             |
-| DynamicList_Enumer | .NET 10.0          | 1024  | 1,330.843 ns | 17.5525 ns | 11.6099 ns |  1.00 |    0.01 | 0.7997 | 0.0133 |   12544 B |        1.00 |
-| DynamicList_Enumer | .NET 10.0 + DistIL | 1024  | 1,319.549 ns | 20.9208 ns | 10.9420 ns |  0.99 |    0.01 | 0.7957 | 0.0130 |   12544 B |        1.00 |
+| Method             | Toolchain          | Count | Mean         | Error       | StdDev      | Ratio | RatioSD | Gen0   | Gen1   | Allocated | Alloc Ratio |
+|------------------- |------------------- |------ |-------------:|------------:|------------:|------:|--------:|-------:|-------:|----------:|------------:|
+| DirectArray_Gen    | .NET 10.0          | 4     |     4.250 ns |   0.2812 ns |   0.1860 ns |  1.00 |    0.06 | 0.0025 |      - |      40 B |        1.00 |
+| DirectArray_Gen    | .NET 10.0 + DistIL | 4     |     3.835 ns |   0.0960 ns |   0.0635 ns |  0.90 |    0.04 | 0.0025 |      - |      40 B |        1.00 |
+|                    |                    |       |              |             |             |       |         |        |        |           |             |
+| DirectArray_Gen    | .NET 10.0          | 1024  | 2,967.018 ns |  24.1653 ns |  15.9839 ns |  1.00 |    0.01 | 0.2485 |      - |    4120 B |        1.00 |
+| DirectArray_Gen    | .NET 10.0 + DistIL | 1024  | 2,983.729 ns |  52.3547 ns |  34.6294 ns |  1.01 |    0.01 | 0.2513 |      - |    4120 B |        1.00 |
+|                    |                    |       |              |             |             |       |         |        |        |           |             |
+| DynamicList_Gen    | .NET 10.0          | 4     |    12.103 ns |   0.2076 ns |   0.1086 ns |  1.00 |    0.01 | 0.0071 |      - |     112 B |        1.00 |
+| DynamicList_Gen    | .NET 10.0 + DistIL | 4     |     3.963 ns |   0.0811 ns |   0.0537 ns |  0.33 |    0.01 | 0.0025 |      - |      40 B |        0.36 |
+|                    |                    |       |              |             |             |       |         |        |        |           |             |
+| DynamicList_Gen    | .NET 10.0          | 1024  | 3,356.179 ns | 220.0201 ns | 145.5297 ns |  1.00 |    0.06 | 0.7861 |      - |   12544 B |        1.00 |
+| DynamicList_Gen    | .NET 10.0 + DistIL | 1024  | 3,024.206 ns |  59.5000 ns |  39.3556 ns |  0.90 |    0.04 | 0.2523 |      - |    4120 B |        0.33 |
+|                    |                    |       |              |             |             |       |         |        |        |           |             |
+| DynamicList_Enumer | .NET 10.0          | 4     |    12.642 ns |   0.4448 ns |   0.2942 ns |  1.00 |    0.03 | 0.0071 |      - |     112 B |        1.00 |
+| DynamicList_Enumer | .NET 10.0 + DistIL | 4     |    12.248 ns |   0.2347 ns |   0.1552 ns |  0.97 |    0.02 | 0.0071 |      - |     112 B |        1.00 |
+|                    |                    |       |              |             |             |       |         |        |        |           |             |
+| DynamicList_Enumer | .NET 10.0          | 1024  | 1,306.597 ns |  19.9740 ns |  13.2116 ns |  1.00 |    0.01 | 0.7956 | 0.0132 |   12544 B |        1.00 |
+| DynamicList_Enumer | .NET 10.0 + DistIL | 1024  | 1,347.235 ns |  55.7880 ns |  36.9003 ns |  1.03 |    0.03 | 0.7946 | 0.0129 |   12544 B |        1.00 |
 
 ## Scalar Replacement
 
@@ -395,6 +397,8 @@ Inlining combines call-site benefits with callee costs. Direct calls and resolve
 The default policy uses an initial budget of 80 plus half the caller's estimated cost, a per-call cost threshold of 250, and independent limits of 16 ancestor levels, 128 expansions, and 4096 expanded IR instructions. Ordinary IL candidates above 256 instructions are rejected early; `AggressiveInlining` raises that early limit to 4096. `NoInlining`, unsupported targets, and recursive ancestor chains prevent expansion.
 
 Virtual-call null checks and required type initialization are preserved. Cross-assembly IPO is controlled by compilation settings. When imported code requires access to private members, the compilation adds `IgnoresAccessChecksToAttribute` metadata as needed and removes unused auxiliary artifacts.
+
+Instruction simplification coalesces an explicit null check with a following dereference of the same receiver when no observable operation or control-flow boundary intervenes. Exceptions retain their ordering relative to stores and other potentially throwing operations.
 
 ## Pipeline and Compiler Benchmarks
 
