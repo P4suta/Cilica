@@ -3,183 +3,207 @@ namespace Cilica.Passes;
 using Cilica.Analysis;
 using Cilica.IR.Utils;
 
-using AssertFragment = (CompareOp Op, Value Right, BasicBlock ActiveBlock);
-
-/// <summary> A simple dominator-based "assertion propagation" pass. </summary>
+/// <summary> Propagates comparison and nullness facts along dominating control-flow paths. </summary>
 public class AssertionProp : IMethodPass
 {
     public MethodPassResult Run(MethodTransformContext ctx) => new Worker(ctx).Run();
 
     sealed class Worker(MethodTransformContext ctx)
     {
-        Dictionary<Value, List<AssertFragment>> _activeAsserts = new();
+        readonly Dictionary<Value, List<Assertion>> _assertions = new();
+        readonly Dictionary<BasicBlock, HashSet<BasicBlock>> _exceptionalPaths = new();
         DominatorTree _domTree = null!;
-        int _numChanges = 0;
+
+        // Entry facts also hold in handlers. Facts learned while executing a
+        // block require normal completion of the instructions preceding them.
+        readonly record struct Assertion(CompareOp Op, Value Right, BasicBlock Block, bool AtEntry);
 
         public MethodPassResult Run()
         {
             long revision = ctx.Method.Revision;
             _domTree = ctx.GetAnalysis<DominatorTree>();
-            _numChanges = 0;
-
             _domTree.Traverse(preVisit: ProcessBlock);
-
 
             return ctx.Method.Revision != revision ? MethodInvalidations.DataFlow : MethodInvalidations.None;
         }
 
         private void ProcessBlock(BasicBlock block)
         {
-            // Add implications from predecessor edge
-            if (block.NumPreds == 1 && block.Preds.First() is { Last: BranchInst { Cond: CompareInst predCmp } predBr }) {
-                var op = block == predBr.Then ? predCmp.Op : predCmp.Op.GetNegated();
-                Imply(op, predCmp.Left, predCmp.Right);
-
-                // Replace existing uses of the predecessor branch condition's
-                // that are dominated by this block, to catch cases like:
-                //   if (cond) { if (cond) { ... } }
-                foreach (var use in predCmp.Uses()) {
-                    if (_domTree.Dominates(block, use.Parent.Block)) {
-                        use.Operand = ConstInt.CreateI(block == predBr.Then ? 1 : 0);
-                        _numChanges++;
-                    }
-                }
+            if (block.NumPreds == 1 && TryGetEdgeComparison(block.Preds.First(), block, out var cmp, out var op)) {
+                Imply(op, cmp.Left, cmp.Right, block, atEntry: true);
+                ReplaceConditionUses(cmp, block, op == cmp.Op);
             }
 
-            // Add null asserts for phis
             foreach (var phi in block.Phis()) {
-                if (!phi.ResultType.IsPointerOrObject()) continue;
+                if (phi.ResultType.StackType != StackType.Object) continue;
 
                 bool? commonResult = null;
-
                 foreach (var (pred, arg) in phi) {
-                    bool? result = null;
-
-                    // Try to derive from pred branch, `if (obj != null)`
-                    if (pred.Last is BranchInst { Cond: CompareInst { Op: CompareOp.Ne or CompareOp.Eq, Right: ConstNull } cmp } br && cmp.Left == arg) {
-                        result = (br.Then == block) == (cmp.Op == CompareOp.Ne);
-                    } else {
-                        result = Evaluate(CompareOp.Ne, arg, ConstNull.Create(), pred);
-                    }
-
-                    // Abort if we have no info about this argument, or if it conflicts
-                    // with a previous one.
+                    var result = EvaluateOnEdge(CompareOp.Ne, arg, ConstNull.Create(), pred, block);
                     if (result == null || ((commonResult ??= result) != result)) {
                         commonResult = null;
                         break;
                     }
                 }
-
-                if (commonResult != null) {
-                    Imply(commonResult.Value ? CompareOp.Ne : CompareOp.Eq, phi, ConstNull.Create());
+                if (commonResult is bool nonNull) {
+                    Imply(nonNull ? CompareOp.Ne : CompareOp.Eq, phi, ConstNull.Create(), block, atEntry: true);
                 }
             }
 
-            // Looking for new implications and fold existing conditions
+            // Forward instruction order makes local facts available only after
+            // their establishing instruction. Phi queries above inspect edges,
+            // never facts from later instructions in this block.
             foreach (var inst in block.NonPhis()) {
-                switch (inst) {
-                    // Access to an object implies that it must be non-null afterwards.
-                    // FIXME: check if try..catch regions will mess with this
-                    case MemoryInst:
-                    case CallInst { IsVirtual: true }:
-                    case FieldAddrInst { IsInstance: true }:
-                    case ArrayAddrInst: {
-                        if (inst.Operands[0] is not TrackedValue obj) break;
-
-                        bool? isNonNull = Evaluate(CompareOp.Ne, obj, ConstNull.Create(), block);
-
-                        if (isNonNull is null) {
-                            Imply(CompareOp.Ne, obj, ConstNull.Create());
-                        } else if (isNonNull is true) {
-                            SetInBounds(inst);
-                        } // else, inst is unreachable
-
-                        break;
+                if (inst is CompareInst { ResultType.Kind: TypeKind.Bool } compare) {
+                    if (Evaluate(compare.Op, compare.Left, compare.Right, block) is bool result) {
+                        compare.ReplaceUses(ConstInt.CreateI(result ? 1 : 0));
                     }
-                    case CompareInst instC: {
-                        if (Evaluate(instC.Op, instC.Left, instC.Right, block) is bool cond) {
-                            instC.ReplaceUses(ConstInt.CreateI(cond ? 1 : 0));
-                            _numChanges++;
+                } else if (GetNullCheckedValue(inst) is { } obj) {
+                    if (Evaluate(CompareOp.Ne, obj, ConstNull.Create(), block) == true) {
+                        switch (inst) {
+                            case FieldAddrInst address: address.InBounds = true; break;
+                            case CallInst call: call.InBounds = true; break;
+                            case CilIntrinsic.NullCheck check: check.Remove(); break;
                         }
-                        break;
+                    } else {
+                        Imply(CompareOp.Ne, obj, ConstNull.Create(), block, atEntry: false);
                     }
                 }
             }
+        }
 
-            // Adds an assertion that implies a true condition.
-            void Imply(CompareOp op, Value left, Value right)
+        private static Value? GetNullCheckedValue(Instruction inst)
+        {
+            // Taking a field address through a byref, calling a value-type
+            // method, or accessing empty value-type storage need not check for
+            // null. Only operations with an actual object null check qualify.
+            var value = inst switch {
+                FieldAddrInst { IsInstance: true } address => address.Obj,
+                CallInst { IsVirtual: true, IsStatic: false, Constraint: null } call => call.Args[0],
+                FuncAddrInst { IsVirtual: true } address => address.Object,
+                ArrayAddrInst address => address.Array,
+                CilIntrinsic.ArrayLen length => length.Args[0],
+                CilIntrinsic.NullCheck check => check.Args[0],
+                _ => null
+            };
+            return value?.ResultType.StackType == StackType.Object ? value : null;
+        }
+
+        private void ReplaceConditionUses(CompareInst compare, BasicBlock block, bool result)
+        {
+            var constant = ConstInt.CreateI(result ? 1 : 0);
+            foreach (var use in compare.Uses()) {
+                // Phi operands are consumed on their own incoming edges, not
+                // in the block containing the phi.
+                var useBlock = use.Parent is PhiInst phi ? phi.GetBlock(use.OperIndex / 2) : use.Parent.Block;
+                if (_domTree.Dominates(block, useBlock) ||
+                    use.Parent is PhiInst { Block: var target } && target == block) {
+                    use.Operand = constant;
+                }
+            }
+        }
+
+        private static bool TryGetEdgeComparison(BasicBlock pred, BasicBlock target, out CompareInst compare, out CompareOp op)
+        {
+            if (pred.Last is BranchInst { Cond: CompareInst cmp } branch &&
+                (branch.Then == target || branch.Else == target)) {
+                compare = cmp;
+                op = branch.Then == target ? cmp.Op : cmp.Op.GetNegated();
+                return true;
+            }
+            // A guard also creates CFG edges, but its handlers and filters do
+            // not imply anything about the block's terminating branch.
+            compare = null!;
+            op = default;
+            return false;
+        }
+
+        private bool? EvaluateOnEdge(CompareOp op, Value left, Value right, BasicBlock pred, BasicBlock target)
+        {
+            if (TryGetEdgeComparison(pred, target, out var compare, out var edgeOp)) {
+                var edgeLeft = compare.Left;
+                var edgeRight = compare.Right;
+                if (edgeLeft.Equals(right) && edgeRight.Equals(left)) {
+                    (edgeLeft, edgeRight) = (edgeRight, edgeLeft);
+                    edgeOp = edgeOp.GetSwapped();
+                }
+                if (edgeLeft.Equals(left) && edgeRight.Equals(right) && EvaluatePredicate(edgeOp, op) is bool result) {
+                    return result;
+                }
+            }
+            bool exceptional = pred.Guards().Any(g => g.HandlerBlock == target || g.FilterBlock == target);
+            return Evaluate(op, left, right, pred, atEntry: exceptional);
+        }
+
+        private void Imply(CompareOp op, Value left, Value right, BasicBlock block, bool atEntry)
+        {
+            Assert(op, left, right);
+            Assert(op.GetSwapped(), right, left);
+
+            void Assert(CompareOp predicate, Value value, Value other)
             {
-                Assert(op, left, right, block);
-                Assert(op.GetSwapped(), right, left, block);
+                if (value is not TrackedValue) return;
+                var list = _assertions.GetOrAddRef(value) ??= new();
+
+                // Bound lookup cost; forgetting a fact only loses optimization.
+                if (list.Count == 16) list.RemoveAt(0);
+                list.Add(new(predicate, other, block, atEntry));
             }
         }
 
-        private static void SetInBounds(Instruction inst)
+        private bool? Evaluate(CompareOp op, Value left, Value right, BasicBlock block, bool atEntry = false)
         {
-            switch (inst) {
-                case FieldAddrInst instC: instC.InBounds = true; break;
-                case CallInst instC: instC.InBounds = true; break;
-            }
-        }
+            return EvaluateRelated(left, right, op) ?? EvaluateRelated(right, left, op.GetSwapped()) ??
+                (ConstFolding.FoldCompare(op, left, right) is ConstInt constant ? constant.Value != 0 : null);
 
-        private void Assert(CompareOp op, Value left, Value right, BasicBlock activeBlock)
-        {
-            // Don't bother tracking asserts related to consts
-            if (left is not TrackedValue) return;
+            bool? EvaluateRelated(Value value, Value other, CompareOp predicate)
+            {
+                if (!_assertions.TryGetValue(value, out var assertions)) return null;
+                for (int i = assertions.Count - 1; i >= 0; i--) {
+                    var assertion = assertions[i];
+                    if (!assertion.Right.Equals(other) || !IsAvailable(assertion, block, atEntry)) continue;
 
-            var list = _activeAsserts.GetOrAddRef(left) ??= new();
-
-            // Limit list size to avoid exponential runtime
-            if (list.Count >= 16) {
-                list.RemoveAt(0);
-            }
-            list.Add((op, right, activeBlock));
-        }
-
-        private bool? Evaluate(CompareOp op, Value left, Value right, BasicBlock block)
-        {
-            bool? result = null;
-
-            if (result == null && _activeAsserts.TryGetValue(left, out var asserts)) {
-                result = EvaluateRelatedAsserts(asserts, (op, right, block));
-            }
-            if (result == null && _activeAsserts.TryGetValue(right, out asserts)) {
-                result = EvaluateRelatedAsserts(asserts, (op.GetSwapped(), left, block));
-            }
-            return result;
-        }
-
-        private bool? EvaluateRelatedAsserts(List<AssertFragment>? relatedAsserts, AssertFragment cond)
-        {
-            if (relatedAsserts == null) return null;
-
-            // Consider most recent asserts first
-            for (int i = relatedAsserts.Count - 1; i >= 0; i--) {
-                var assert = relatedAsserts[i];
-
-                if (assert.Right.Equals(cond.Right) && _domTree.Dominates(assert.ActiveBlock, cond.ActiveBlock)) {
-                    if (IsImpliedPredicate(assert.Op, cond.Op)) {
-                        return true;
-                    }
-                    if (IsImpliedPredicate(assert.Op, cond.Op.GetNegated())) {
-                        return false;
-                    }
+                    if (EvaluatePredicate(assertion.Op, predicate) is bool result) return result;
                 }
-
-                // TODO: evaluate relations, eg. x < 10  implies  x < 20
+                return null;
             }
-            return null;
         }
 
-        // Checks if predicate `a` implies `b`
-        private static bool IsImpliedPredicate(CompareOp a, CompareOp b)
+        private bool IsAvailable(Assertion assertion, BasicBlock block, bool atEntry)
         {
-            // x < y  implies  x <= y
-            if (a.IsStrict() && !b.IsStrict()) {
-                b = b.GetStrict();
+            if (!_domTree.Dominates(assertion.Block, block)) return false;
+            if (assertion.AtEntry) return true;
+            if (assertion.Block == block) return !atEntry;
+            if (assertion.Block.First is not GuardInst) return true;
+
+            if (!_exceptionalPaths.TryGetValue(assertion.Block, out var reachable)) {
+                reachable = new();
+                _exceptionalPaths.Add(assertion.Block, reachable);
+                var pending = new Stack<BasicBlock>();
+                foreach (var guard in assertion.Block.Guards()) {
+                    pending.Push(guard.HandlerBlock);
+                    if (guard.HasFilter) pending.Push(guard.FilterBlock);
+                }
+                while (pending.TryPop(out var current)) {
+                    // Re-entry executes the establishing instruction again.
+                    if (current == assertion.Block || !reachable.Add(current)) continue;
+                    foreach (var successor in current.Succs) pending.Push(successor);
+                }
             }
-            return a == b;
+            // Include finally/fault/filter paths and continuations after a
+            // caught exception, not just handler entry blocks.
+            return !reachable.Contains(block);
         }
 
+        private static bool? EvaluatePredicate(CompareOp known, CompareOp tested)
+        {
+            if (Implies(known, tested)) return true;
+            if (Implies(known, tested.GetNegated())) return false;
+            return null;
+
+            // Do not mix signed/unsigned or ordered/unordered predicates.
+            static bool Implies(CompareOp a, CompareOp b)
+                => a == b || a.IsStrict() && a == b.GetStrict();
+        }
     }
 }

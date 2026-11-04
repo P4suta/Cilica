@@ -89,8 +89,11 @@ public class InterferenceGraph : IMethodAnalysis
         var na = GetOrCreateNode(a);
         var nb = GetOrCreateNode(b);
 
-        if (na.Adjacent.Contains(nb.Id)) {
-            return false; // interference
+        // A phi may accept an implicit conversion, such as native zero to a
+        // null byref. Sharing its local would also change the stack type of
+        // the source's other uses, so keep an explicit copy across such edges.
+        if (na.RegisterType.StackType != nb.RegisterType.StackType || na.Adjacent.Contains(nb.Id)) {
+            return false;
         }
 
         if (na != nb) {

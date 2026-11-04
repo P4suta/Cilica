@@ -8,6 +8,24 @@ using Cilica.Attributes;
 public class GenericRuntimeTests
 {
     [Fact]
+    public void ConstrainedClassCallsReadTheReferencedInstance()
+    {
+        var node = new ConstrainedNode { Value = 42 };
+        Assert.Equal(42, ReadNode(ref node));
+        node = null!;
+        Assert.Throws<NullReferenceException>(() => ReadNode(ref node));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int ReadNode<T>(ref T node) where T : ConstrainedNode => node.Read();
+
+    class ConstrainedNode
+    {
+        public int Value;
+        public int Read() => Value;
+    }
+
+    [Fact]
     public void InlinedTypeTokensKeepGenericDefinitions()
     {
         Assert.Equal(typeof(Nullable<>), OpenGeneric<int>());

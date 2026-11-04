@@ -211,7 +211,7 @@ public class BasicBlock : TrackedValue
         }
 
         // Branch instructions cannot have duplicate block uses.
-        // This case should only be reachable from conditional branches and switches .
+        // Conditional branches, switches, and finally/filter resumes may merge targets.
         if (hasOldSucc && hasNewSucc) {
             if (Last is BranchInst br) {
                 Debug.Assert(br.IsConditional);
@@ -220,6 +220,8 @@ public class BasicBlock : TrackedValue
                 // Recreating the switch is kinda wasteful but this should be a relatively cold path.
                 var targets = Enumerable.Range(0, sw.NumTargets).Select(sw.GetTarget).ToArray();
                 SetBranch(new SwitchInst(sw.TargetIndex, sw.DefaultTarget, targets));
+            } else if (Last is ResumeInst resume) {
+                resume.SetExitTargets(resume.GetExitTargets().ToHashSet());
             } else {
                 throw new UnreachableException();
             }

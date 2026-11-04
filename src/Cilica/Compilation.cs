@@ -62,7 +62,10 @@ public class Compilation
         // CanInlineBody to avoid introducing references needing suppression.
         if (Module == Resolver.CoreLib) return;
 
+        var visitedTypes = new HashSet<TypeDesc>();
         foreach (var inst in body.Instructions()) {
+            VisitType(inst.ResultType);
+            foreach (var operand in inst.Operands) VisitType(operand.ResultType);
             MemberDesc? member = inst switch {
                 CallInst call => call.Method,
                 NewObjInst allocation => allocation.Constructor,
@@ -72,20 +75,62 @@ public class Compilation
                 FieldInsertInst field => field.Field,
                 _ => null
             };
+            if (member != null) VisitMember(member);
 
-            if (member?.DeclaringType is not TypeDefOrSpec type) {
-                continue;
+            if (inst is IntrinsicInst intrinsic) {
+                foreach (var entity in intrinsic.StaticArgs) {
+                    if (entity is TypeDesc type) VisitType(type);
+                    else if (entity is MemberDesc referenced) VisitMember(referenced);
+                }
             }
+            if (inst is CallInst { Constraint: { } constraint }) VisitType(constraint);
+            if (inst is GuardInst { CatchType: { } catchType }) VisitType(catchType);
+            if (inst is MemoryInst memory) VisitType(memory.ElemType);
+        }
 
+        void VisitMember(MemberDesc member)
+        {
+            VisitType(member.DeclaringType);
+            if (member is MethodDesc method) {
+                VisitSignature(method.ReturnSig);
+                foreach (var parameter in method.ParamSig) VisitSignature(parameter);
+                foreach (var argument in method.GenericParams) VisitType(argument);
+            } else if (member is FieldDesc field) {
+                VisitSignature(field.Sig);
+            }
+            if (member.DeclaringType is not TypeDefOrSpec owner) return;
             bool publicMember = member switch {
-                MethodDesc method => method.IsPublic,
-                FieldDesc field => (field.Attribs & FieldAttributes.FieldAccessMask) == FieldAttributes.Public,
+                MethodDesc m => m.IsPublic,
+                FieldDesc f => (f.Attribs & FieldAttributes.FieldAccessMask) == FieldAttributes.Public,
                 _ => false
             };
-            bool publicType = (type.Attribs & TypeAttributes.VisibilityMask) is TypeAttributes.Public or TypeAttributes.NestedPublic;
+            if (!publicMember && owner != body.Definition.DeclaringType) EnsureMembersAccessible(owner.Module);
+        }
 
-            if ((!publicMember && type != body.Definition.DeclaringType) || (!publicType && type.Module != Module)) {
-                EnsureMembersAccessible(type.Module);
+        void VisitSignature(TypeSig signature)
+        {
+            VisitType(signature.Type);
+            foreach (var modifier in signature.Modifiers) VisitType(modifier.Type);
+        }
+
+        void VisitType(TypeDesc type)
+        {
+            if (type is PrimType or GenericParamType || !visitedTypes.Add(type)) return;
+            if (type is CompoundType compound) {
+                VisitType(compound.ElemType);
+            } else if (type is FuncPtrType pointer) {
+                VisitSignature(pointer.Signature.ReturnType);
+                foreach (var parameter in pointer.Signature.ParamTypes) VisitSignature(parameter);
+            } else if (type is TypeDefOrSpec nominal) {
+                foreach (var argument in nominal.GenericParams) VisitType(argument);
+                for (var definition = nominal.Definition; definition != null; definition = definition.DeclaringType) {
+                    var visibility = definition.Attribs & TypeAttributes.VisibilityMask;
+                    if (visibility is TypeAttributes.Public or TypeAttributes.NestedPublic) continue;
+                    bool assemblyAccess = visibility is TypeAttributes.NotPublic or TypeAttributes.NestedAssembly or TypeAttributes.NestedFamORAssem;
+                    if (definition.Module != Module || !assemblyAccess && definition != body.Definition.DeclaringType) {
+                        EnsureMembersAccessible(definition.Module);
+                    }
+                }
             }
         }
     }

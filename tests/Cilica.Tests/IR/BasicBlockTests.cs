@@ -239,6 +239,17 @@ public class BasicBlockTests
         block.SetBranch(new ResumeInst(targets, filter ? ConstInt.CreateI(1) : null));
         Assert.Equal(count, block.NumSuccs);
         Assert.Equal(targets, block.Succs.ToList());
+
+        if (count >= 2) {
+            block.RedirectSucc(targets[0], targets[1]);
+            Assert.Equal(count - 1, block.NumSuccs);
+            Assert.Equal(targets.Skip(1), block.Succs.ToList());
+            Assert.Equal(0, targets[0].NumPreds);
+            Assert.Equal(new[] { block }, targets[1].Preds.ToList());
+            var resume = Assert.IsType<ResumeInst>(block.Last);
+            Assert.Equal(filter, resume.IsFromFilter);
+            if (filter) Assert.Equal(1, Assert.IsType<ConstInt>(resume.FilterResult).Value);
+        }
     }
 
     private List<Instruction> GetDummyInsts(int count)
