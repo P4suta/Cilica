@@ -73,6 +73,10 @@ public class IRCloner
                 }
             }
 
+            // Resume targets describe exits taken by leaves, not independent
+            // paths. Following them could keep a folded-away exit reachable.
+            if (block.Last is ResumeInst) continue;
+
             // If the cloned branch gets folded, we should only push reachable succs.
             var newSuccs = _foldConstants && ConstFolding.FoldBlockBranch(clonedBlock)
                 ? [..clonedBlock.Succs]
@@ -85,34 +89,12 @@ public class IRCloner
             }
         }
 
-        // Remove unreachable blocks
-        foreach (var block in _blocks) {
-            var clonedBlock = GetMapping(block);
-
-            if (!worklist.WasPushed(block)) {
-                clonedBlock.Remove();
-            } else if (clonedBlock.NumPreds != block.NumPreds) {
-                RemoveUnreachablePhiPreds(clonedBlock);
-            }
-        }
+        ControlFlowUtils.RemoveUnreachableBlocks(GetMapping(entry), _blocks.Select(GetMapping));
 
         // At this point the only pending values should be from phi uses for
         // unreachable pred blocks. Check that they're no longer used.
         foreach (var pending in _pendingClones) {
             Ensure.That(pending.NumUses == 0);
-        }
-    }
-
-    private void RemoveUnreachablePhiPreds(BasicBlock block)
-    {
-        HashSet<BasicBlock> actualPreds = [..block.Preds];
-
-        foreach (var phi in block.Phis()) {
-            for (int i = phi.NumArgs - 1; i >= 0; i--) {
-                if (actualPreds.Contains(phi.GetBlock(i))) continue;
-
-                phi.RemoveArg(i, removeTrivialPhi: true);
-            }
         }
     }
 

@@ -6,6 +6,43 @@ using Cilica.Attributes;
 public class EhRegionTests
 {
     [Theory]
+    [InlineData(0, 0)]
+    [InlineData(1, 42)]
+    [InlineData(2, 42)]
+    [CheckCodeGenAfterRun]
+    public void ScalarReplacedFieldsPreserveExceptionState(int failurePoint, int expected)
+    {
+        var holder = new ValueHolder();
+        try {
+            holder.Value = ComputeValue(failurePoint);
+            ThrowAfterStore(failurePoint);
+        } catch (InvalidOperationException) {
+        }
+        Assert.Equal(expected, holder.Value);
+
+        // CHECK: sroa.Value: int
+        // CHECK: store $sroa.Value, 0
+        // CHECK: try catch
+        // CHECK: store $sroa.Value,
+        // CHECK: load $sroa.Value
+    }
+
+    [Optimize]
+    sealed class ValueHolder
+    {
+        public int Value;
+    }
+
+    [DoNotOptimize]
+    static int ComputeValue(int failurePoint) => failurePoint == 0 ? throw new InvalidOperationException() : 42;
+
+    [DoNotOptimize]
+    static void ThrowAfterStore(int failurePoint)
+    {
+        if (failurePoint == 1) throw new InvalidOperationException();
+    }
+
+    [Theory]
     [InlineData(false)]
     [InlineData(true)]
     public void FailedArgumentAssignmentsKeepThePreviousValue(bool fail)

@@ -378,13 +378,7 @@ public class IRVerifier
                             : guard.Kind is GuardKind.Finally or GuardKind.Fault;
                     Check(isValid, block, "ResumeInst should not be used outside filter, finally, or fault handlers");
 
-                    var protectedRegion = regionAnalysis.GetBlockRegion(guard.Block);
-                    var succBlocks = new HashSet<BasicBlock>();
-                    
-                    foreach (var exitBlock in protectedRegion.GetExitBlocks()) {
-                        Debug.Assert(exitBlock.Last is LeaveInst);
-                        succBlocks.Add(exitBlock.Succs.First());
-                    }
+                    var succBlocks = regionAnalysis.GetResumeTargets(resume);
                     succBlocks.SymmetricExceptWith(resume.GetExitTargets());
 
                     Check(succBlocks.Count == 0, resume, "ResumeInst targets must be consistent with exits in sibling protected region");

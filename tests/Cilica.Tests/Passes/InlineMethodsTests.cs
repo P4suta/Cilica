@@ -13,6 +13,62 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    public void PruningConstantBranchesMaintainsFinallyExits(bool takeLeft, bool inline)
+    {
+        var action = _modResolver.Import(typeof(Action));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, action);
+        var callee = body.Definition.DeclaringType.CreateMethod("WithFinally", PrimType.Int32,
+            [new ParamDef(PrimType.Bool, "takeLeft"), new ParamDef(action, "cleanup")],
+            MethodAttributes.Public | MethodAttributes.Static);
+        callee.Body = new MethodBody(callee);
+        var entry = callee.Body.CreateBlock();
+        var guarded = callee.Body.CreateBlock();
+        var left = callee.Body.CreateBlock();
+        var right = callee.Body.CreateBlock();
+        var handler = callee.Body.CreateBlock();
+        var exitLeft = callee.Body.CreateBlock();
+        var exitRight = callee.Body.CreateBlock();
+        var exit = callee.Body.CreateBlock();
+        entry.SetBranch(guarded);
+        guarded.InsertLast(new GuardInst(GuardKind.Finally, handler));
+        guarded.SetBranch(new BranchInst(callee.Body.Args[0], left, right));
+        left.SetBranch(new LeaveInst(exitLeft));
+        right.SetBranch(new LeaveInst(exitRight));
+        new IRBuilder(handler).CreateCallVirt(action.FindMethod("Invoke"), callee.Body.Args[1]);
+        handler.SetBranch(new ResumeInst([exitLeft, exitRight]));
+        exitLeft.SetBranch(exit);
+        exitRight.SetBranch(exit);
+        var result = exit.InsertPhi(new PhiInst(PrimType.Int32,
+            (exitLeft, ConstInt.CreateI(17)), (exitRight, ConstInt.CreateI(29))));
+        exit.SetBranch(new ReturnInst(result));
+        IRVerifier.Verify(callee.Body);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.CreateCall(callee, ConstInt.CreateI(takeLeft ? 1 : 0), body.Args[0]));
+
+        MethodBody transformed;
+        if (inline) {
+            Run(body, new InlineMethods());
+            Assert.DoesNotContain(body.Instructions().OfType<CallInst>(), call => call.Method == callee);
+            transformed = body;
+        } else {
+            callee.Body.Args[0].ReplaceUses(ConstInt.CreateI(takeLeft ? 1 : 0));
+            Run(callee.Body, new DeadCodeElim());
+            transformed = callee.Body;
+        }
+        Assert.Single(Assert.Single(transformed.Instructions().OfType<ResumeInst>()).GetExitTargets());
+        var run = Utils.Compile<Func<Action, int>>(body);
+        int cleanups = 0;
+        Assert.Equal(takeLeft ? 17 : 29, run(() => cleanups++));
+        Assert.Equal(1, cleanups);
+        var error = new InvalidOperationException();
+        Assert.Same(error, Assert.Throws<InvalidOperationException>(() => run(() => throw error)));
+    }
+
     [Fact]
     public void InliningPreservesCallVirtNullChecks()
     {

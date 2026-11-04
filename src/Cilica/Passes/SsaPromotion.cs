@@ -64,7 +64,7 @@ public class SsaPromotion : IMethodPass
             }
         }
 
-        private static bool CheckPromoteableAndFindStores(LocalSlot slot, DiscreteStack<BasicBlock> definingBlocks, out bool isGlobal)
+        private bool CheckPromoteableAndFindStores(LocalSlot slot, DiscreteStack<BasicBlock> definingBlocks, out bool isGlobal)
         {
             isGlobal = false;
 
@@ -87,6 +87,27 @@ public class SsaPromotion : IMethodPass
                 }
             }
             isGlobal |= definingBlocks.UniqueCount >= 2;
+
+            // Block dominance does not model the point at which an exception
+            // interrupts a store sequence. Keep stores in one region and loads
+            // within that region or its children; crossing out requires memory.
+            // Decide from current IR, for imported and generated slots alike.
+            if (isGlobal && definingBlocks.UniqueCount != 0) {
+                var regions = ctx.GetAnalysis<ProtectedRegionAnalysis>();
+                var storeRegion = regions.GetBlockRegion(definingBlocks.Top);
+
+                foreach (var user in slot.Users()) {
+                    var region = regions.GetBlockRegion(user.Block);
+
+                    if (user is LoadInst) {
+                        // Values stored in a parent region can flow into its children.
+                        while (region != storeRegion && region.Parent != null) {
+                            region = region.Parent;
+                        }
+                    }
+                    if (region != storeRegion) return false;
+                }
+            }
 
             return true;
         }

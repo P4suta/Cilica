@@ -923,8 +923,6 @@ internal enum VarFlags
     OpMask = Loaded | Stored | AddrTaken,
 
 
-    CrossesBlock    = 1 << 5,
-
-    CrossesRegions  = 1 << 6
+    CrossesBlock    = 1 << 5
 
 }

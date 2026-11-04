@@ -24,6 +24,8 @@ public class SimplifyCFG : IMethodPass
             }
         }
 
+        if (everChanged) ControlFlowUtils.RemoveUnreachableBlocks(ctx.Method);
+
         return everChanged ? MethodInvalidations.ControlFlow : 0;
     }
 

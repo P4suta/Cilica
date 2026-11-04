@@ -8,15 +8,18 @@ public class ProtectedRegionAnalysis : IMethodAnalysis
 
     public ProtectedRegion Root { get; }
 
-    public ProtectedRegionAnalysis(MethodBody method)
+    public ProtectedRegionAnalysis(MethodBody method) : this(method.EntryBlock) { }
+
+    /// <summary> Analyzes a complete CFG, including a detached clone rooted at <paramref name="entry"/>. </summary>
+    public ProtectedRegionAnalysis(BasicBlock entry)
     {
-        Root = new ProtectedRegion() { StartBlock = method.EntryBlock };
+        Root = new ProtectedRegion() { StartBlock = entry };
 
         var visited = new RefSet<BasicBlock>();
         var worklist = new ArrayStack<(BasicBlock Block, ProtectedRegion Region)>();
 
-        worklist.Push((method.EntryBlock, Root));
-        visited.Add(method.EntryBlock);
+        worklist.Push((entry, Root));
+        visited.Add(entry);
 
         while (worklist.TryPop(out var node)) {
             var (block, region) = node;
@@ -38,7 +41,7 @@ public class ProtectedRegionAnalysis : IMethodAnalysis
             region.Blocks.Add(block);
             _regions.Add(block, region);
 
-            // Don't need to visit resume edges because they only exist only for consistency.
+            // Resume edges are derived from leaves and do not establish reachability.
             if (block.Last is ResumeInst) continue;
 
             // Add succs to worklist
@@ -69,6 +72,14 @@ public class ProtectedRegionAnalysis : IMethodAnalysis
     public ProtectedRegion GetBlockRegion(BasicBlock block)
         => _regions.TryGetValue(block, out var region) ? region
             : throw new InvalidOperationException("Block is not part of this region analysis");
+
+    /// <summary> Derives a handler's continuation targets from its reachable protected exits. </summary>
+    public HashSet<BasicBlock> GetResumeTargets(ResumeInst resume)
+    {
+        var guard = Ensure.NotNull(GetBlockRegion(resume.Block).GetHandlerGuard());
+        return GetBlockRegion(guard.Block).GetExitBlocks()
+            .Select(block => ((LeaveInst)block.Last).Target).ToHashSet();
+    }
 }
 public class ProtectedRegion
 {

@@ -19,17 +19,11 @@ public class DeadCodeElim : IMethodPass
 
     public static bool RemoveUnreachableBlocks(MethodBody method)
     {
-        bool changed = false;
-        var worklist = new DiscreteStack<BasicBlock>();
+        bool changed = ControlFlowUtils.RemoveUnreachableBlocks(method, foldBranches: true);
+        bool removedGuards = false;
 
-        // Mark reachable blocks with a depth first search
-        worklist.Push(method.EntryBlock);
-
-        while (worklist.TryPop(out var block)) {
-            // (goto 1 ? T : F)  ->  (goto T)
-            changed |= ConstFolding.FoldBlockBranch(block);
-
-            // Remove empty try-finally regions
+        // Remove empty try-finally regions.
+        foreach (var block in method) {
             if (block.First is GuardInst { Kind: GuardKind.Finally, Next: not GuardInst, HandlerBlock.First: ResumeInst } guard) {
                 var regionAnalysis = new ProtectedRegionAnalysis(method); // this is not ideal but this transform should be quite rare
 
@@ -37,27 +31,11 @@ public class DeadCodeElim : IMethodPass
                     exitBlock.SetBranch(exitBlock.Succs.First());
                 }
                 guard.Remove();
-            }
-            
-            foreach (var succ in block.Succs) {
-                worklist.Push(succ);
+                removedGuards = true;
             }
         }
-
-        // Sweep unreachable blocks
-        foreach (var block in method) {
-            if (worklist.WasPushed(block)) continue;
-
-            // Remove incomming args from phis in reachable blocks
-            foreach (var succ in block.Succs) {
-                if (worklist.WasPushed(succ)) {
-                    succ.RedirectPhis(block, newPred: null);
-                }
-            }
-            block.Remove();
-            changed = true;
-        }
-        return changed;
+        if (removedGuards) ControlFlowUtils.RemoveUnreachableBlocks(method);
+        return changed || removedGuards;
     }
 
     public static bool RemoveUselessCode(MethodBody method, GlobalFunctionEffects? funcInfo)

@@ -13,7 +13,7 @@ public class LocalSlot : TrackedValue
 
     /// <summary>
     /// Whether this slot should always be considered exposed.
-    /// This is currently used to control SSA promotion for slots crossing protected regions. 
+    /// Use this for slots that must remain materialized, independently of their current accesses.
     /// </summary>
     public bool IsHardExposed { get; set; }
 

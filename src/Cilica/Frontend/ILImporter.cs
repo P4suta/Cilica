@@ -182,8 +182,7 @@ public class ILImporter
             if (!Has(_varFlags[i], VarFlags.AddrTaken | VarFlags.Stored)) continue;
 
             var arg = _body.Args[i];
-            var slot = _varSlots[i] = _body.CreateVar(arg.ResultType, $"a_{arg.Name}",
-                hardExposed: Has(_varFlags[i], VarFlags.CrossesRegions));
+            var slot = _varSlots[i] = _body.CreateVar(arg.ResultType, $"a_{arg.Name}");
             entryBlock.InsertAnteLast(new StoreInst(slot, arg));
         }
 
@@ -215,7 +214,7 @@ public class ILImporter
     private void AnalyseVars(Span<ILInstruction> code, BitSet leaders)
     {
         int blockStartIdx = 0;
-        var lastInfos = new (int BlockIdx, int StoreRegionOffset, int LoadOffset)[_ilBody.Locals.Length];
+        var lastBlocks = new int[_ilBody.Locals.Length];
 
         foreach (int endOffset in leaders) {
             int blockEndIdx = FindIndex(code, endOffset);
@@ -225,64 +224,16 @@ public class ILImporter
                 if (op == VarFlags.None) continue;
 
                 if (Has(op, VarFlags.IsLocal)) {
-                    CalcLocalVarFlags(ref inst, ref op, varIdx);
+                    ref int lastBlock = ref lastBlocks[varIdx];
+                    if (lastBlock != 0 && lastBlock != blockStartIdx + 1) {
+                        op |= VarFlags.CrossesBlock;
+                    }
+                    lastBlock = blockStartIdx + 1;
                     varIdx += _body.Args.Length;
-                } else if (Has(op, VarFlags.Stored) && _regionTree?.FindEnclosing(inst.Offset) is { Kind: not RegionKind.Root }) {
-                    // A throwing expression may leave the old argument value in
-                    // place. Preserve its slot across the exceptional path.
-                    op |= VarFlags.CrossesRegions;
                 }
                 _varFlags[varIdx] |= op;
             }
             blockStartIdx = blockEndIdx;
-        }
-
-        void CalcLocalVarFlags(ref ILInstruction inst, ref VarFlags flags, int varIdx)
-        {
-            ref var lastInfo = ref lastInfos[varIdx];
-
-            if (lastInfo.BlockIdx != blockStartIdx + 1) {
-                if (lastInfo.BlockIdx != 0) {
-                    flags |= VarFlags.CrossesBlock;
-                }
-                lastInfo.BlockIdx = blockStartIdx + 1;
-            }
-            // When loading a var, we must mark it as exposed if there are stores in:
-            // - a neighbor region -- filter{store x}; catch{load x}
-            // - a child region -- guard{store x}; load x;
-            // Only the following is allowed:
-            // - a parent region -- store x; guard{load x}; store x;
-            //
-            // There's also no guarantee for block ordering, these conds must be checked on both ops.
-            if (_regionTree != null && Has(flags, VarFlags.Stored | VarFlags.Loaded)) {
-                if (Has(flags, VarFlags.Stored)) {
-                    ref int lastRegion = ref lastInfo.StoreRegionOffset;
-                    var currRegion = _regionTree.FindEnclosing(inst.Offset).StartOffset + 1;
-
-                    if (lastRegion == 0) {
-                        lastRegion = currRegion;
-                    } else if (lastRegion != currRegion) {
-                        lastRegion = -1; // multiple stores in different regions
-                    }
-                } else {
-                    lastInfo.LoadOffset = inst.Offset + 1;
-                }
-                
-                if (CrossesRegions(lastInfo.StoreRegionOffset, lastInfo.LoadOffset)) {
-                    flags |= VarFlags.CrossesRegions;
-                }
-            }
-        }
-        bool CrossesRegions(int storeRegionOffset, int loadOffset)
-        {
-            if (storeRegionOffset < 0 || (storeRegionOffset == 0 && loadOffset != 0)) {
-                return true; // multiple stores on different regions or load before store (be conservative for bad block order)
-            }
-            if (loadOffset != 0) {
-                var storeRegion = _regionTree.FindEnclosing(storeRegionOffset - 1);
-                return !storeRegion.Contains(loadOffset - 1);
-            }
-            return false;
         }
     }
 
@@ -367,10 +318,7 @@ public class ILImporter
             ? (Has(op, VarFlags.Loaded) ? (_body.InitLocals
                 ? new IR.Utils.IRBuilder(_body.EntryBlock, IR.Utils.InsertionDir.Before).CreateDefaultOf(localVar.Type)
                 : new Undef(localVar.Type)) : null)
-            : _body.CreateVar(
-                    localVar.Type,
-                    pinned: localVar.IsPinned,
-                    hardExposed: Has(flags, VarFlags.CrossesRegions));
+            : _body.CreateVar(localVar.Type, pinned: localVar.IsPinned);
 
         return (slot!, flags, isBlockLocal);
     }
