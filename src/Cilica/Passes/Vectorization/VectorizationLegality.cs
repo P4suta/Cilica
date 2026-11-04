@@ -4,8 +4,9 @@ using Cilica.Analysis;
 
 internal static class VectorizationLegality
 {
-    public static bool Check(CountingLoopInfo loop, MethodTransformContext context, out string? reason)
+    public static bool Check(CountingLoopInfo loop, MethodTransformContext context, out List<Value> boundsChecks, out string? reason)
     {
+        boundsChecks = new();
         reason = null;
 
         if (loop.Loop.NumBlocks != 2 || !loop.IsInvariant(loop.End)) {
@@ -34,7 +35,7 @@ internal static class VectorizationLegality
                 update.BasePtr != loop.Counter || !TryGetStorage(loop.Start, loop, out var storage) ||
                 update.Stride != storage.Element.Kind.Size() ||
                 loop.End is not PtrOffsetInst end || end.BasePtr != loop.Start ||
-                end.Stride != update.Stride || !IsBounded(end.Index, storage, loop, dominators)) {
+                end.Stride != update.Stride || !IsBounded(end.Index, storage, loop, dominators, requireExactArrayLength: true)) {
                 reason = "pointer induction requires a proven storage extent";
 
                 return false;
@@ -70,9 +71,18 @@ internal static class VectorizationLegality
                 return false;
             }
 
+            if (inst is ArrayAddrInst address &&
+                (!TryGetArrayStorage(loop, address, out var arrayStorage) ||
+                 !ProveOrGuardBound(loop, arrayStorage, dominators, boundsChecks))) {
+                reason = "array accesses require invariant storage and the loop index without casts or variance checks";
+
+                return false;
+            }
+
             if (inst is MemoryInst memory) {
-                if (memory.IsVolatile || !TryGetAccess(loop, memory, dominators, out var storage)) {
-                    reason = "memory accesses require nonvolatile unit-stride, bounded storage";
+                if (memory.IsVolatile || !TryGetAccess(loop, memory, out var storage) ||
+                    !pointerCounter && !ProveOrGuardBound(loop, storage, dominators, boundsChecks)) {
+                    reason = "memory accesses require nonvolatile unit-stride storage with a proven or guardable extent";
 
                     return false;
                 }
@@ -106,7 +116,7 @@ internal static class VectorizationLegality
         return true;
     }
 
-    private static bool TryGetAccess(CountingLoopInfo loop, MemoryInst access, DominatorTree dominators, out Storage storage)
+    private static bool TryGetAccess(CountingLoopInfo loop, MemoryInst access, out Storage storage)
     {
         storage = default;
         Value address = access.Address;
@@ -115,13 +125,42 @@ internal static class VectorizationLegality
             return TryGetStorage(loop.Start, loop, out storage) && access.ElemType == storage.Element;
         }
 
+        if (address is ArrayAddrInst arrayAddress) {
+            return TryGetArrayStorage(loop, arrayAddress, out storage) && access.ElemType == storage.Element;
+        }
+
         if (address is not PtrOffsetInst offset || offset.Index != loop.Counter ||
             loop.Counter.ResultType.IsPointerLike() || !loop.IsInvariant(offset.BasePtr) ||
             !TryGetStorage(offset.BasePtr, loop, out storage)) {
             return false;
         }
 
-        return offset.Stride == storage.Element.Kind.Size() && access.ElemType == storage.Element && IsBounded(loop.End, storage, loop, dominators);
+        return offset.Stride == storage.Element.Kind.Size() && access.ElemType == storage.Element;
+    }
+
+    private static bool TryGetArrayStorage(CountingLoopInfo loop, ArrayAddrInst address, out Storage storage)
+    {
+        storage = default;
+
+        if (address.Array.ResultType is not ArrayType array || !loop.IsInvariant(address.Array) ||
+            address.Index != loop.Counter || loop.Counter.ResultType.IsPointerLike() ||
+            address.IsCasting || address.RequiresVarianceCheck) {
+            return false;
+        }
+
+        storage = new(address.Array, array.ElemType);
+        return true;
+    }
+
+    private static bool ProveOrGuardBound(CountingLoopInfo loop, Storage storage, DominatorTree dominators, List<Value> boundsChecks)
+    {
+        if (IsBounded(loop.End, storage, loop, dominators)) return true;
+        if (storage.Source.ResultType is not ArrayType) return false;
+
+        // Array identity and extent cannot change. Check each unknown extent once
+        // before entering the vector loop, retaining checked scalar accesses on failure.
+        if (!boundsChecks.Contains(storage.Source)) boundsChecks.Add(storage.Source);
+        return true;
     }
 
     private static bool TryGetStorage(Value pointer, CountingLoopInfo loop, out Storage storage)
@@ -172,9 +211,12 @@ internal static class VectorizationLegality
         return false;
     }
 
-    private static bool IsBounded(Value bound, Storage storage, CountingLoopInfo loop, DominatorTree dominators)
+    private static bool IsBounded(Value bound, Storage storage, CountingLoopInfo loop, DominatorTree dominators, bool requireExactArrayLength = false)
     {
-        if (storage.Source.ResultType is ArrayType && ArrayBoundsFacts.IsLengthBound(bound, storage.Source, loop.PreHeader, dominators)) return true;
+        // Signed upper bounds alone may be negative. Integer induction then skips
+        // the loop, but pointer induction needs a nonnegative storage extent.
+        if (storage.Source.ResultType is ArrayType &&
+            ArrayBoundsFacts.IsLengthBound(bound, storage.Source, loop.PreHeader, dominators, exact: requireExactArrayLength)) return true;
         while (bound is ConvertInst { CheckOverflow: false } conversion) {
             bound = conversion.Value;
         }

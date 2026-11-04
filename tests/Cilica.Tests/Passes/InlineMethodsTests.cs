@@ -14,6 +14,37 @@ using MethodBody = Cilica.IR.MethodBody;
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void CoreLibInliningPreservesTypeAccessBoundaries(bool corelib, bool sameType)
+    {
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var module = corelib ? resolver.CoreLib : resolver.Create("AccessBoundaries");
+        var callerType = module.CreateType("CilicaTests", "Caller");
+        var calleeType = sameType ? callerType : module.CreateType("CilicaTests", "Callee");
+        var field = calleeType.CreateField("Value", PrimType.Int32, FieldAttributes.Private | FieldAttributes.Static);
+        var callee = calleeType.CreateMethod("Read", PrimType.Int32, [], MethodAttributes.Public | MethodAttributes.Static);
+        callee.Body = new MethodBody(callee);
+        var reader = new IRBuilder(callee.Body.CreateBlock());
+        reader.CreateReturn(reader.CreateFieldLoad(field));
+        var caller = callerType.CreateMethod("Run", PrimType.Int32, [], MethodAttributes.Public | MethodAttributes.Static);
+        caller.Body = new MethodBody(caller);
+        var builder = new IRBuilder(caller.Body.CreateBlock());
+        var call = builder.CreateCall(callee);
+        builder.CreateReturn(call);
+        var compilation = new Compilation(module, new VoidLogger(), new() { VerifyEachPass = true });
+        PassRunner.Run(new InlineMethods(), new MethodTransformContext(compilation, caller.Body));
+        compilation.EnsureReferencedMembersAccessible(caller.Body);
+
+        Assert.Equal(corelib && !sameType, call.Block != null);
+        Assert.Equal(!corelib && !sameType, module.GetCustomAttribs(forAssembly: true)
+            .Any(attribute => attribute.Type.Name == "IgnoresAccessChecksToAttribute"));
+    }
+
+    [Theory]
     [InlineData(false, true)]
     [InlineData(true, true)]
     [InlineData(false, false)]

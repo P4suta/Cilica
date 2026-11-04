@@ -204,4 +204,56 @@ public class EhRegionTests
         }
         Assert.Equal(123 * 1000 * 2, x);
     }
+
+    [Theory]
+    [InlineData(0, -1)]
+    [InlineData(33, -1)]
+    [InlineData(33, 0)]
+    [InlineData(33, 9)]
+    [InlineData(33, 33)]
+    [InlineData(33, 40)]
+    [CheckCodeGenAfterRun]
+    public void GuardedArrayMapsPreserveExceptionRegions(int count, int destinationLength)
+    {
+        var source = Utils.DoNotOptimize(new int[count]);
+        var destination = Utils.DoNotOptimize(destinationLength < 0 ? null : new int[destinationLength]);
+        Exception? failure = null;
+        int finallyCount = 0;
+
+        try {
+            for (int i = 0; i < source.Length; i++) {
+                source[i] = i + 7;
+                destination![i] = source[i] * 3;
+            }
+        } catch (Exception error) {
+            failure = error;
+        } finally {
+            finallyCount++;
+        }
+
+        CheckArrayMapResult(source, destination, failure, finallyCount);
+
+        // CHECK: Vector256
+    }
+
+    [DoNotOptimize]
+    static void CheckArrayMapResult(int[] source, int[]? destination, Exception? failure, int finallyCount)
+    {
+        Assert.Equal(1, finallyCount);
+        int completed = Math.Min(source.Length, destination?.Length ?? 0);
+        if (completed == source.Length) {
+            Assert.Null(failure);
+        } else if (destination == null) {
+            Assert.IsType<NullReferenceException>(failure);
+        } else {
+            Assert.IsType<IndexOutOfRangeException>(failure);
+        }
+
+        // The source store precedes the destination access in each iteration.
+        int sourceStores = failure == null ? completed : completed + 1;
+        Assert.Equal(Enumerable.Range(0, source.Length).Select(i => i < sourceStores ? i + 7 : 0), source);
+        if (destination != null) {
+            Assert.Equal(Enumerable.Range(0, destination.Length).Select(i => i < completed ? (i + 7) * 3 : 0), destination);
+        }
+    }
 }

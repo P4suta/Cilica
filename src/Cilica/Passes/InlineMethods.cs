@@ -45,7 +45,8 @@ public class InlineMethods : IMethodPass
                 continue;
             }
 
-            var target = ResolveTarget(ctx, advisor, call);
+            var inlinee = ResolveTarget(ctx, advisor, call);
+            var target = inlinee?.Definition;
 
             if (target == null || ancestors.Contains(target)) {
                 continue;
@@ -67,7 +68,7 @@ public class InlineMethods : IMethodPass
             ctx.Logger.Trace($"Inlining '{target}' into '{ctx.Method}'. RemBudget={budget} Cost={cost}");
 
             var chain = ancestors.Add(target);
-            var result = Inline(call, (MethodDefOrSpec)call.Method, call.Args, ctx.Compilation,
+            var result = Inline(call, inlinee!, call.Args, ctx.Compilation,
                 onNewCall: nested => worklist.Enqueue((nested, chain)));
 
             if (result != null) {
@@ -85,18 +86,15 @@ public class InlineMethods : IMethodPass
         return MethodInvalidations.None;
     }
 
-    private static MethodDef? ResolveTarget(MethodTransformContext ctx, InliningAdvisor advisor, CallInst call)
+    private static MethodDefOrSpec? ResolveTarget(MethodTransformContext ctx, InliningAdvisor advisor, CallInst call)
     {
         // Must be a non-recursive MethodDef
         var parent = ctx.Method.Definition;
 
-        if (call.Method is not MethodDefOrSpec { Definition: var target } || target == parent) {
+        if (call.Method is not MethodDefOrSpec inlinee || inlinee.Definition == parent) {
             return null;
         }
-
-        if (ctx.Compilation.HasFailed(target)) {
-            return null;
-        }
+        var target = inlinee.Definition;
 
         // TODO: support for static virtuals
         if (target.Attribs.HasFlag(MethodAttributes.Static | MethodAttributes.Virtual)) {
@@ -108,8 +106,18 @@ public class InlineMethods : IMethodPass
             if (TypeUtils.ResolveVirtualMethod(call.Method, call.Args[0]) is not MethodDefOrSpec actualTarget || actualTarget == parent) {
                 return null;
             }
-            call.Method = actualTarget;
+            // CoreLib cannot persist a devirtualization that needs access-check
+            // suppression. It can still inline the target if its body is safe.
+            if (ctx.Compilation.Module != ctx.Compilation.Resolver.CoreLib ||
+                new InliningAccess(parent.DeclaringType).CanUseMember(actualTarget)) {
+                call.Method = actualTarget;
+            }
+            inlinee = actualTarget;
             target = actualTarget.Definition;
+        }
+
+        if (ctx.Compilation.HasFailed(target)) {
+            return null;
         }
 
         if (advisor.EarlyCheck(target) != InlineRejectReason.Accepted) {
@@ -120,6 +128,9 @@ public class InlineMethods : IMethodPass
         if (target.Body == null && !advisor.ImportBodyForInlining(target)) {
             return null;
         }
+        if (!ctx.Compilation.CanInlineBody(parent, inlinee)) {
+            return null;
+        }
         // CIL filters cannot contain nested exception regions. Keep a call to an
         // EH-bearing method here instead of cloning its try/handler into a filter.
         if (target.Body!.Instructions().Any(inst => inst is GuardInst)) {
@@ -128,7 +139,7 @@ public class InlineMethods : IMethodPass
                 return null;
             }
         }
-        return target;
+        return inlinee;
     }
 
     public static Value? Inline(Instruction call, MethodDefOrSpec target, ReadOnlySpan<Value> args, Compilation comp, Action<CallInst>? onNewCall = null)

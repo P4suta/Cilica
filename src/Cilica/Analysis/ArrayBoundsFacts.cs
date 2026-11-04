@@ -1,9 +1,9 @@
 namespace Cilica.Analysis;
 
-/// <summary> Fixed array lengths established by dominating equality guards. </summary>
+/// <summary> Array extent bounds established by dominating comparison guards. </summary>
 internal static class ArrayBoundsFacts
 {
-    public static bool IsLengthBound(Value bound, Value array, BasicBlock block, DominatorTree dominators)
+    public static bool IsLengthBound(Value bound, Value array, BasicBlock block, DominatorTree dominators, bool exact = false)
     {
         if (LengthSource(bound) == array) return true;
 
@@ -16,9 +16,12 @@ internal static class ArrayBoundsFacts
                 parent.Last is BranchInst { Cond: CompareInst compare } branch &&
                 (branch.Then == current || branch.Else == current)) {
                 var op = branch.Then == current ? compare.Op : compare.Op.GetNegated();
-                if (op == CompareOp.Eq &&
-                    (SameBound(bound, compare.Left) && LengthSource(compare.Right) == array ||
-                     SameBound(bound, compare.Right) && LengthSource(compare.Left) == array)) return true;
+                if (!exact || op == CompareOp.Eq) {
+                    if (SameBound(bound, compare.Left) && LengthSource(compare.Right) == array &&
+                        op is CompareOp.Eq or CompareOp.Sle or CompareOp.Slt or CompareOp.Ule or CompareOp.Ult) return true;
+                    if (SameBound(bound, compare.Right) && LengthSource(compare.Left) == array &&
+                        op is CompareOp.Eq or CompareOp.Sge or CompareOp.Sgt or CompareOp.Uge or CompareOp.Ugt) return true;
+                }
             }
             current = parent;
         }

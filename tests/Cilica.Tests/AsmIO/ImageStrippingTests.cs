@@ -100,6 +100,25 @@ public class ImageStrippingTests(ModuleResolverFixture fixture)
         AssertExecutable(output.ToArray());
     }
 
+    [Fact]
+    public void ReadyToRunRemovalPreservesRuntimeGeneratedUnsafeAccessors()
+    {
+        using var directory = new TemporaryDirectory();
+        string input = CreateImage(directory.Path, strongName: false, readyToRun: true, authenticode: false, unsafeAccessor: true);
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var module = resolver.Load(input);
+        using var output = new MemoryStream();
+        module.Save(output, null, "output.dll", StripBoth);
+        using var pe = new PEReader(new MemoryStream(output.ToArray()));
+        var metadata = pe.GetMetadataReader();
+        var accessor = metadata.MethodDefinitions.Select(metadata.GetMethodDefinition)
+            .Single(method => metadata.GetString(method.Name) == "Abs");
+        Assert.Equal(0, accessor.RelativeVirtualAddress);
+        Assert.Single(accessor.GetCustomAttributes());
+        AssertExecutable(output.ToArray());
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(0x4644)]
@@ -195,9 +214,22 @@ public class ImageStrippingTests(ModuleResolverFixture fixture)
         return body.Definition.Module;
     }
 
-    string CreateImage(string directory, bool strongName, bool readyToRun, bool authenticode, bool missingIL = false)
+    string CreateImage(string directory, bool strongName, bool readyToRun, bool authenticode, bool missingIL = false, bool unsafeAccessor = false)
     {
         var module = CreateModule();
+        if (unsafeAccessor) {
+            var run = module.MethodDefs().Single();
+            var accessor = run.DeclaringType.CreateMethod("Abs", PrimType.Int32,
+                [new ParamDef(fixture.Resolver.Import(typeof(Math)), "target"), new ParamDef(PrimType.Int32, "value")],
+                MethodAttributes.Private | MethodAttributes.Static);
+            var attribute = fixture.Resolver.Import(typeof(System.Runtime.CompilerServices.UnsafeAccessorAttribute));
+            accessor.GetCustomAttribs(readOnly: false).Add(new CustomAttrib(attribute.FindMethod(".ctor"),
+                [(int)System.Runtime.CompilerServices.UnsafeAccessorKind.StaticMethod]));
+            run.Body = new Cilica.IR.MethodBody(run);
+            var builder = new Cilica.IR.Utils.IRBuilder(run.Body.CreateBlock());
+            builder.CreateReturn(builder.CreateCall(accessor, ConstNull.Create(), ConstInt.CreateI(-42)));
+            run.ILBody = ILGenerator.GenerateCode(run.Body);
+        }
         if (strongName) module.AsmName.SetPublicKey(typeof(object).Assembly.GetName().GetPublicKey());
         if (missingIL) module.MethodDefs().Single().ILBody = null;
         if (readyToRun) {
