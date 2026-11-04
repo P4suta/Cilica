@@ -1,8 +1,8 @@
-namespace DistIL.PracticeTests;
+namespace Cilica.PracticeTests;
 
 using System.Runtime.CompilerServices;
 
-using DistIL.Attributes;
+using Cilica.Attributes;
 
 [Optimize, CheckCodeGenAfterRun]
 public class PresizeListsTests

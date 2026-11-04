@@ -9,11 +9,11 @@
 - [Method Inlining](#method-inlining)
 - [Pipeline and Compiler Benchmarks](#pipeline-and-compiler-benchmarks)
 
-DistIL also implements canonicalization, SSA promotion, control-flow simplification, and dead-code elimination. This list describes the larger transformations. The default pipeline is defined by `CompilationPipeline.CreateDefault()`.
+Cilica also implements canonicalization, SSA promotion, control-flow simplification, and dead-code elimination. This list describes the larger transformations. The default pipeline is defined by `CompilationPipeline.CreateDefault()`.
 
 Code examples show source and representative equivalent output, with compiler-generated delegate setup and temporary names simplified for readability. Decompiled unsafe operations correspond to lifted IL instructions; exact output depends on the surrounding method and subsequent simplification.
 
-The benchmark tables use .NET 10.0.14, BenchmarkDotNet 0.15.8, and an Intel Core i7-13700K on Windows 11 x64. Each job uses one launch, three warmup iterations, and ten measured iterations targeting 200 ms each. Error is half the 99.9% confidence interval; ratios compare DistIL with the baseline for the same workload. Ratios above one indicate a slowdown.
+The benchmark tables use .NET 10.0.14, BenchmarkDotNet 0.15.8, and an Intel Core i7-13700K on Windows 11 x64. Each job uses one launch, three warmup iterations, and ten measured iterations targeting 200 ms each. Error is half the 99.9% confidence interval; ratios compare Cilica with the baseline for the same workload. Ratios above one indicate a slowdown.
 
 ## LINQ Expansion
 
@@ -61,19 +61,19 @@ For a mutable `List<T>` source, the optimizer retains the relevant library stage
 | Method         | Toolchain          | ElemCount | Mean         | Error       | StdDev      | Ratio | RatioSD |
 |--------------- |------------------- |---------- |-------------:|------------:|------------:|------:|--------:|
 | FilterObjects  | .NET 10.0          | 4096      |    19.002 μs |   0.9627 μs |   0.5729 μs |  1.00 |    0.04 |
-| FilterObjects  | .NET 10.0 + DistIL | 4096      |    15.508 μs |   0.2175 μs |   0.1295 μs |  0.82 |    0.02 |
+| FilterObjects  | .NET 10.0 + Cilica | 4096      |    15.508 μs |   0.2175 μs |   0.1295 μs |  0.82 |    0.02 |
 |                |                    |           |              |             |             |       |         |
 | FirstPredicate | .NET 10.0          | 4096      |     6.876 μs |   0.1994 μs |   0.1319 μs |  1.00 |    0.03 |
-| FirstPredicate | .NET 10.0 + DistIL | 4096      |     6.752 μs |   0.0674 μs |   0.0446 μs |  0.98 |    0.02 |
+| FirstPredicate | .NET 10.0 + Cilica | 4096      |     6.752 μs |   0.0674 μs |   0.0446 μs |  0.98 |    0.02 |
 |                |                    |           |              |             |             |       |         |
 | Aggregate      | .NET 10.0          | 4096      |    30.459 μs |   0.7505 μs |   0.4466 μs |  1.00 |    0.02 |
-| Aggregate      | .NET 10.0 + DistIL | 4096      |    11.128 μs |   0.4271 μs |   0.2542 μs |  0.37 |    0.01 |
+| Aggregate      | .NET 10.0 + Cilica | 4096      |    11.128 μs |   0.4271 μs |   0.2542 μs |  0.37 |    0.01 |
 |                |                    |           |              |             |             |       |         |
 | CountLetters   | .NET 10.0          | 4096      |     3.278 μs |   0.0448 μs |   0.0296 μs |  1.00 |    0.01 |
-| CountLetters   | .NET 10.0 + DistIL | 4096      |     2.477 μs |   0.0310 μs |   0.0185 μs |  0.76 |    0.01 |
+| CountLetters   | .NET 10.0 + Cilica | 4096      |     2.477 μs |   0.0310 μs |   0.0185 μs |  0.76 |    0.01 |
 |                |                    |           |              |             |             |       |         |
 | RayTracer      | .NET 10.0          | 4096      | 8,940.111 μs | 200.9677 μs | 132.9277 μs |  1.00 |    0.02 |
-| RayTracer      | .NET 10.0 + DistIL | 4096      | 5,019.279 μs |  80.5863 μs |  42.1482 μs |  0.56 |    0.01 |
+| RayTracer      | .NET 10.0 + Cilica | 4096      | 5,019.279 μs |  80.5863 μs |  42.1482 μs |  0.56 |    0.01 |
 
 ### Features
 
@@ -204,16 +204,16 @@ public static void GenerateInts(Span<int> destination, int bias)
 | Method          | Toolchain          | ElemCount | Mean        | Error     | StdDev   | Ratio | Code Size |
 |---------------- |------------------- |---------- |------------:|----------:|---------:|------:|----------:|
 | CountLetters    | .NET 10.0          | 4096      |  3,243.1 ns |  33.03 ns | 21.85 ns |  1.00 |     450 B |
-| CountLetters    | .NET 10.0 + DistIL | 4096      |  2,477.5 ns |  19.86 ns | 13.14 ns |  0.76 |     211 B |
+| CountLetters    | .NET 10.0 + Cilica | 4096      |  2,477.5 ns |  19.86 ns | 13.14 ns |  0.76 |     211 B |
 |                 |                    |           |             |           |          |       |           |
 | GenerateInts    | .NET 10.0          | 4096      |  1,171.3 ns |  17.27 ns | 11.42 ns |  1.00 |      84 B |
-| GenerateInts    | .NET 10.0 + DistIL | 4096      |  1,177.9 ns |  12.14 ns |  7.23 ns |  1.01 |      84 B |
+| GenerateInts    | .NET 10.0 + Cilica | 4096      |  1,177.9 ns |  12.14 ns |  7.23 ns |  1.01 |      84 B |
 |                 |                    |           |             |           |          |       |           |
 | GenerateFloats  | .NET 10.0          | 4096      |  2,747.0 ns |  26.91 ns | 17.80 ns |  1.00 |   1,724 B |
-| GenerateFloats  | .NET 10.0 + DistIL | 4096      |    606.8 ns |   3.27 ns |  2.17 ns |  0.22 |   1,861 B |
+| GenerateFloats  | .NET 10.0 + Cilica | 4096      |    606.8 ns |   3.27 ns |  2.17 ns |  0.22 |   1,861 B |
 |                 |                    |           |             |           |          |       |           |
 | NormalizeFloats | .NET 10.0          | 4096      | 11,142.0 ns |  32.92 ns | 19.59 ns |  1.00 |   1,798 B |
-| NormalizeFloats | .NET 10.0 + DistIL | 4096      | 10,595.0 ns | 115.48 ns | 76.38 ns |  0.95 |   1,868 B |
+| NormalizeFloats | .NET 10.0 + Cilica | 4096      | 10,595.0 ns | 115.48 ns | 76.38 ns |  0.95 |   1,868 B |
 
 ### Features
 
@@ -296,22 +296,22 @@ An `IReadOnlyList<T>` parameter alone does not establish the same contract: its 
 | Method             | Toolchain          | Count | Mean         | Error       | StdDev      | Ratio | RatioSD | Gen0   | Gen1   | Allocated | Alloc Ratio |
 |------------------- |------------------- |------ |-------------:|------------:|------------:|------:|--------:|-------:|-------:|----------:|------------:|
 | DirectArray_Gen    | .NET 10.0          | 4     |     4.250 ns |   0.2812 ns |   0.1860 ns |  1.00 |    0.06 | 0.0025 |      - |      40 B |        1.00 |
-| DirectArray_Gen    | .NET 10.0 + DistIL | 4     |     3.835 ns |   0.0960 ns |   0.0635 ns |  0.90 |    0.04 | 0.0025 |      - |      40 B |        1.00 |
+| DirectArray_Gen    | .NET 10.0 + Cilica | 4     |     3.835 ns |   0.0960 ns |   0.0635 ns |  0.90 |    0.04 | 0.0025 |      - |      40 B |        1.00 |
 |                    |                    |       |              |             |             |       |         |        |        |           |             |
 | DirectArray_Gen    | .NET 10.0          | 1024  | 2,967.018 ns |  24.1653 ns |  15.9839 ns |  1.00 |    0.01 | 0.2485 |      - |    4120 B |        1.00 |
-| DirectArray_Gen    | .NET 10.0 + DistIL | 1024  | 2,983.729 ns |  52.3547 ns |  34.6294 ns |  1.01 |    0.01 | 0.2513 |      - |    4120 B |        1.00 |
+| DirectArray_Gen    | .NET 10.0 + Cilica | 1024  | 2,983.729 ns |  52.3547 ns |  34.6294 ns |  1.01 |    0.01 | 0.2513 |      - |    4120 B |        1.00 |
 |                    |                    |       |              |             |             |       |         |        |        |           |             |
 | DynamicList_Gen    | .NET 10.0          | 4     |    12.103 ns |   0.2076 ns |   0.1086 ns |  1.00 |    0.01 | 0.0071 |      - |     112 B |        1.00 |
-| DynamicList_Gen    | .NET 10.0 + DistIL | 4     |     3.963 ns |   0.0811 ns |   0.0537 ns |  0.33 |    0.01 | 0.0025 |      - |      40 B |        0.36 |
+| DynamicList_Gen    | .NET 10.0 + Cilica | 4     |     3.963 ns |   0.0811 ns |   0.0537 ns |  0.33 |    0.01 | 0.0025 |      - |      40 B |        0.36 |
 |                    |                    |       |              |             |             |       |         |        |        |           |             |
 | DynamicList_Gen    | .NET 10.0          | 1024  | 3,356.179 ns | 220.0201 ns | 145.5297 ns |  1.00 |    0.06 | 0.7861 |      - |   12544 B |        1.00 |
-| DynamicList_Gen    | .NET 10.0 + DistIL | 1024  | 3,024.206 ns |  59.5000 ns |  39.3556 ns |  0.90 |    0.04 | 0.2523 |      - |    4120 B |        0.33 |
+| DynamicList_Gen    | .NET 10.0 + Cilica | 1024  | 3,024.206 ns |  59.5000 ns |  39.3556 ns |  0.90 |    0.04 | 0.2523 |      - |    4120 B |        0.33 |
 |                    |                    |       |              |             |             |       |         |        |        |           |             |
 | DynamicList_Enumer | .NET 10.0          | 4     |    12.642 ns |   0.4448 ns |   0.2942 ns |  1.00 |    0.03 | 0.0071 |      - |     112 B |        1.00 |
-| DynamicList_Enumer | .NET 10.0 + DistIL | 4     |    12.248 ns |   0.2347 ns |   0.1552 ns |  0.97 |    0.02 | 0.0071 |      - |     112 B |        1.00 |
+| DynamicList_Enumer | .NET 10.0 + Cilica | 4     |    12.248 ns |   0.2347 ns |   0.1552 ns |  0.97 |    0.02 | 0.0071 |      - |     112 B |        1.00 |
 |                    |                    |       |              |             |             |       |         |        |        |           |             |
 | DynamicList_Enumer | .NET 10.0          | 1024  | 1,306.597 ns |  19.9740 ns |  13.2116 ns |  1.00 |    0.01 | 0.7956 | 0.0132 |   12544 B |        1.00 |
-| DynamicList_Enumer | .NET 10.0 + DistIL | 1024  | 1,347.235 ns |  55.7880 ns |  36.9003 ns |  1.03 |    0.03 | 0.7946 | 0.0129 |   12544 B |        1.00 |
+| DynamicList_Enumer | .NET 10.0 + Cilica | 1024  | 1,347.235 ns |  55.7880 ns |  36.9003 ns |  1.03 |    0.03 | 0.7946 | 0.0129 |   12544 B |        1.00 |
 
 ## Scalar Replacement
 
@@ -404,7 +404,7 @@ Instruction simplification coalesces an explicit null check with a following der
 
 The default pipeline runs CFG simplification, SSA promotion, LINQ expansion, instruction simplification, inlining, dead-code elimination, scalar replacement, value numbering, list presizing, loop strength reduction, and loop vectorization. Bounded simplification iterations follow transformations that expose more work. `AssertionProp` and `ExtractThrows` are also available for custom pipelines.
 
-Runtime benchmark pairs compare .NET 10 with the same runtime plus DistIL. The optimizer runs with strict failure handling and per-pass verification before the optimized executable is measured. Compiler benchmarks are selected separately:
+Runtime benchmark pairs compare .NET 10 with the same runtime plus Cilica. The optimizer runs with strict failure handling and per-pass verification before the optimized executable is measured. Compiler benchmarks are selected separately:
 
 ```sh
 dotnet run --project tests/Benchmarks -c Release -- --filter '*'

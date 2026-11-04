@@ -2,7 +2,7 @@ global using Xunit;
 
 using System.Runtime.CompilerServices;
 
-using DistIL.Attributes;
+using Cilica.Attributes;
 
 public static class Utils
 {

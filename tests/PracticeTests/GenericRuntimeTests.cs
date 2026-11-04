@@ -1,8 +1,8 @@
-namespace DistIL.PracticeTests;
+namespace Cilica.PracticeTests;
 
 using System.Numerics;
 using System.Runtime.CompilerServices;
-using DistIL.Attributes;
+using Cilica.Attributes;
 
 [Optimize]
 public class GenericRuntimeTests

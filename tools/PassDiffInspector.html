@@ -29,8 +29,8 @@
                 }
             );
 
-            monaco.languages.register({ id: "distil-ir" });
-            monaco.languages.setMonarchTokensProvider("distil-ir", getIrLangSyntax());
+            monaco.languages.register({ id: "cilica-ir" });
+            monaco.languages.setMonarchTokensProvider("cilica-ir", getIrLangSyntax());
         });
 
         if (history.state?.lastFile != null) {
@@ -92,8 +92,8 @@
                     row.setAttribute("active", true);
 
                     diffEditor.setModel({
-                        original: monaco.editor.createModel(prevSnapshot.plainCode, "distil-ir"),
-                        modified: monaco.editor.createModel(currSnapshot.plainCode, "distil-ir"),
+                        original: monaco.editor.createModel(prevSnapshot.plainCode, "cilica-ir"),
+                        modified: monaco.editor.createModel(currSnapshot.plainCode, "cilica-ir"),
                     });
                     
                     /*Viz.instance().then(function (viz) {

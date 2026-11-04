@@ -4,8 +4,8 @@
     <IsPackable>false</IsPackable>
     <IsTestProject>true</IsTestProject>
     
-    <RunDistil>true</RunDistil>
-    <DistilExtraArgs>--strict --verify-each --dump-dir $(OutputPath)ir_dumps/ --purge-dumps --dump-fmts plaintext</DistilExtraArgs>
+    <RunCilica>true</RunCilica>
+    <CilicaExtraArgs>--strict --verify-each --dump-dir $(OutputPath)ir_dumps/ --purge-dumps --dump-fmts plaintext</CilicaExtraArgs>
   </PropertyGroup>
 
   <ItemGroup>
@@ -22,10 +22,10 @@
   </ItemGroup>
 
   <ItemGroup>
-    <ProjectReference Include="../../src/DistIL/DistIL.csproj" />
-    <ProjectReference Include="../../src/DistIL.OptimizerTask/DistIL.OptimizerTask.csproj" />
+    <ProjectReference Include="../../src/Cilica/Cilica.csproj" />
+    <ProjectReference Include="../../src/Cilica.OptimizerTask/Cilica.OptimizerTask.csproj" />
   </ItemGroup>
   
-  <Import Project="../../src/DistIL.OptimizerTask/DistIL.OptimizerTask.targets" />
+  <Import Project="../../src/Cilica.OptimizerTask/Cilica.OptimizerTask.targets" />
 
 </Project>

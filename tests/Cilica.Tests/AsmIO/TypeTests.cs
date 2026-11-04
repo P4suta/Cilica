@@ -1,0 +1,154 @@
+namespace Cilica.Tests.AsmIO;
+
+using Cilica.AsmIO;
+
+[Collection("ModuleResolver")]
+public class TypeTests
+{
+    public interface IMixed<out T, U> { }
+
+    public interface IConsumer<in T> { }
+
+    public interface IDerived : IMixed<string, string> { }
+
+    public class Mixed : IDerived, IConsumer<object> { }
+
+    [Theory]
+    [InlineData(typeof(Mixed), typeof(IMixed<object, string>))]
+    [InlineData(typeof(Mixed), typeof(IMixed<object, object>))]
+    [InlineData(typeof(Mixed), typeof(IConsumer<string>))]
+    [InlineData(typeof(IDerived), typeof(IMixed<object, string>))]
+    [InlineData(typeof(IMixed<string, int>), typeof(IMixed<object, int>))]
+    [InlineData(typeof(IMixed<int, string>), typeof(IMixed<object, string>))]
+    [InlineData(typeof(Func<string>), typeof(Func<object>))]
+    [InlineData(typeof(Action<object>), typeof(Action<string>))]
+    [InlineData(typeof(Action<string>), typeof(Action<object>))]
+    [InlineData(typeof(List<string>), typeof(List<object>))]
+    public void GenericAssignabilityMatchesRuntime(Type source, Type destination)
+    {
+        Assert.Equal(destination.IsAssignableFrom(source), _modResolver.Import(source).IsAssignableTo(_modResolver.Import(destination)));
+    }
+
+    readonly ModuleResolver _modResolver;
+
+    public TypeTests(ModuleResolverFixture mrf)
+    {
+        _modResolver = mrf.Resolver;
+    }
+
+    [Theory]
+    [InlineData(typeof(int), false)]
+    [InlineData(typeof(ValueTuple<int>), false)]
+    [InlineData(typeof(ValueTuple<object>), true)]
+    [InlineData(typeof(ValueTuple<ValueTuple<object>>), true)]
+    [InlineData(typeof(string), true)]
+    public void ReferenceContainment(Type type, bool expected)
+    {
+        Assert.Equal(expected, _modResolver.Import(type).IsRefOrContainsRefs());
+    }
+
+    [Fact]
+    public void ReferenceContainmentPreservesGenericUncertainty()
+    {
+        var parameter = GenericParamType.GetUnboundT(0);
+        var tuple = _modResolver.Import(typeof(ValueTuple<>)).GetSpec([parameter]);
+        Assert.Null(parameter.IsRefOrContainsRefs());
+        Assert.Null(tuple.IsRefOrContainsRefs());
+        Assert.False(PrimType.Int32.CreatePointer().IsRefOrContainsRefs());
+        Assert.True(PrimType.Int32.CreateByref().IsRefOrContainsRefs());
+    }
+
+    [Fact]
+    public void Test_GetCommonAncestor()
+    {
+        var t_String = _modResolver.Import(typeof(string));
+
+        var t_FileStream = _modResolver.Import(typeof(FileStream));
+        var t_MemoryStream = _modResolver.Import(typeof(MemoryStream));
+        var t_Stream = _modResolver.Import(typeof(Stream));
+
+        Assert.Equal(PrimType.String, TypeDesc.GetCommonAncestor(PrimType.String, t_String));
+
+        Assert.Equal(PrimType.Object, TypeDesc.GetCommonAncestor(PrimType.String, PrimType.Object));
+        Assert.Equal(PrimType.Object, TypeDesc.GetCommonAncestor(PrimType.String, PrimType.Array));
+
+        Assert.Equal(t_Stream, TypeDesc.GetCommonAncestor(t_FileStream, t_MemoryStream));
+        Assert.Equal(t_Stream, TypeDesc.GetCommonAncestor(t_FileStream, t_Stream));
+
+        Assert.Throws<InvalidOperationException>(() => TypeDesc.GetCommonAncestor(PrimType.Int32, PrimType.Int64));
+    }
+
+    [Fact]
+    public void Test_IsAssignableTo()
+    {
+        Assert.True(PrimType.String.CreateArray().IsAssignableTo(PrimType.Object.CreateArray()));
+        Assert.False(PrimType.Int32.CreateArray().IsAssignableTo(PrimType.Object.CreateArray()));
+        Assert.False(PrimType.Byte.CreateArray().IsAssignableTo(_modResolver.Import(typeof(IList<int>))));
+
+        var t_ListInt = _modResolver.Import(typeof(List<int>));
+        var t_HashSetInt = _modResolver.Import(typeof(HashSet<int>));
+        var t_ICollectionInt = _modResolver.Import(typeof(ICollection<int>));
+        var t_String = _modResolver.Import(typeof(string));
+
+        var t_ListString = _modResolver.Import(typeof(List<string>));
+        var t_IROListObject = _modResolver.Import(typeof(IReadOnlyList<object>));
+
+        Assert.True(t_ListInt.IsAssignableTo(t_ICollectionInt));
+        Assert.False(t_ListInt.IsAssignableTo(t_HashSetInt));
+
+        Assert.True(PrimType.String.IsAssignableTo(PrimType.Object));
+        Assert.True(t_String.IsAssignableTo(PrimType.String));
+        Assert.False(t_String.IsAssignableTo(PrimType.Int32));
+
+        Assert.True(PrimType.UInt32.IsAssignableTo(PrimType.Int32));
+        Assert.True(PrimType.Int16.IsAssignableTo(PrimType.Int32));
+        Assert.False(PrimType.Int32.IsAssignableTo(PrimType.Int16));
+
+        Assert.True(PrimType.Single.IsAssignableTo(PrimType.Double));
+        Assert.False(PrimType.Double.IsAssignableTo(PrimType.Single));
+
+        Assert.True(PrimType.Byte.CreatePointer().IsAssignableTo(PrimType.Byte.CreateByref()));
+        Assert.True(PrimType.Byte.CreatePointer().IsAssignableTo(PrimType.IntPtr));
+
+        Assert.True(PrimType.Int32.CreateArray().IsAssignableTo(t_ICollectionInt));
+        Assert.False(t_ICollectionInt.IsAssignableTo(PrimType.Int32.CreateArray()));
+
+        Assert.False(t_ICollectionInt.IsAssignableTo(PrimType.Int32.CreateArray()));
+
+        Assert.True(t_ListString.IsAssignableTo(t_IROListObject));
+        Assert.False(t_ListString.IsAssignableTo(t_ICollectionInt));
+        Assert.False(t_ListInt.IsAssignableTo(t_IROListObject));
+    }
+
+    [Fact]
+    public void FindMethod_InGenericHierarchy()
+    {
+        var t_Derived3 = _modResolver.Resolve("TestAsm").FindType("TestAsm.TypeSys.Generics", "DerivedC`1");
+        var derivedSpec = t_Derived3.GetSpec([PrimType.String]);
+
+        var t_TupleStrInt = _modResolver.Import(typeof(ValueTuple<string, int>));
+
+        var t_T0 = GenericParamType.GetUnboundT(0);
+        var t_MT0 = GenericParamType.GetUnboundM(0);
+        var sig = new MethodSig(t_T0, new TypeSig[] { t_MT0 }, numGenPars: 1);
+
+        var method = derivedSpec.FindMethod("GetFoo", sig, searchBaseAndItfs: true);
+
+        Assert.Equal("DerivedA`1", method.DeclaringType.Name);
+        Assert.Equal(t_TupleStrInt, method.ReturnType);
+        Assert.Equal(t_MT0, method.GenericParams[0]);
+    }
+
+    [Fact]
+    public void Test_GenericTypeRefWithMethodParam()
+    {
+        var t_GenericConv = _modResolver.Resolve("TestAsm").FindType("TestAsm.TypeSys.Generics", "GenericConv`1");
+        var instr = t_GenericConv.Methods.First(m => m.Name == "To").ILBody.Instructions.First(n => n.OpCode == ILCode.Call);
+        var method = (MethodSpec)instr.Operand;
+
+        // call GenericConv<TDest>.From<T>(src, dest);
+        // GenericConv<T> { void From<TSrc>(ReadOnlySpan<TSrc> src, Span<T> dest) }
+        Assert.Equal(GenericParamType.GetUnboundT(0), method.ParamSig[0].Type.GenericParams[0]); // ROSpan<T>
+        Assert.Equal(GenericParamType.GetUnboundM(0), method.ParamSig[1].Type.GenericParams[0]); // Span<M>
+    }
+}

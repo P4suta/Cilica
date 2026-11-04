@@ -1,6 +1,6 @@
-namespace DistIL.PracticeTests;
+namespace Cilica.PracticeTests;
 
-using DistIL.Attributes;
+using Cilica.Attributes;
 using System.Collections;
 using System.Runtime.CompilerServices;
 

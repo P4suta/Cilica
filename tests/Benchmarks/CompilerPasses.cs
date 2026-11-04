@@ -1,12 +1,12 @@
-namespace DistIL.Benchmarks;
+namespace Cilica.Benchmarks;
 
 using System.Reflection;
 using BenchmarkDotNet.Attributes;
-using DistIL.AsmIO;
-using DistIL.IR;
-using DistIL.IR.Utils;
-using DistIL.Passes;
-using MethodBody = DistIL.IR.MethodBody;
+using Cilica.AsmIO;
+using Cilica.IR;
+using Cilica.IR.Utils;
+using Cilica.Passes;
+using MethodBody = Cilica.IR.MethodBody;
 
 [MemoryDiagnoser]
 public class CompilerPasses

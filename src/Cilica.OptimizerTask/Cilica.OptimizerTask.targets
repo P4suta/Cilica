@@ -1,0 +1,45 @@
+<Project>
+  <PropertyGroup>
+    <RunCilica Condition="'$(Configuration)|$(RunCilica)' == 'Release|'">true</RunCilica>
+
+    <!-- If set to false, only methods and classes annotated with `Cilica.Attributes.OptimizeAttribute` will be transformed. -->
+    <CilicaAllMethods Condition="'$(CilicaAllMethods)' == ''">false</CilicaAllMethods>
+  </PropertyGroup>
+
+  <!-- Specifying Inputs and Outputs will enable support for incremental builds. -->
+  <Target Name="_DoRunCilica" AfterTargets="Compile" Condition="'$(RunCilica)' == 'true'"
+          Inputs="@(IntermediateAssembly)" Outputs="@(IntermediateAssembly -> '%(Identity).bak')"
+  >
+    <RemoveDuplicates Inputs="@(ReferencePath -> '%(RootDir)%(Directory)')">
+      <Output TaskParameter="Filtered" ItemName="AsmRefPaths"/>
+    </RemoveDuplicates>
+
+    <PropertyGroup>
+      <CliOptimizerPath>$(MSBuildThisFileDirectory)../tools/net10.0/Cilica.Cli.dll</CliOptimizerPath>
+      <InputAsmPath>%(IntermediateAssembly.FullPath)</InputAsmPath>
+
+      <!-- Trailing slashes are removed to prevent issues with argument splitting. -->
+      <JoinedAsmRefPaths>@(AsmRefPaths -> '"%(Identity)"', ' ')</JoinedAsmRefPaths>
+      <ResolverPathsArg>-r $(JoinedAsmRefPaths.Replace('\"', '"')) --no-resolver-fallback</ResolverPathsArg>
+
+      <FilterUnmarkedArg Condition="'$(CilicaAllMethods)' != 'true'">--filter-unmarked</FilterUnmarkedArg>
+    </PropertyGroup>
+
+    <!-- If the CLI isn't on the NuGet tools path, try to find it from referenced assemblies.
+         This allows the task to work properly when this project is referenced directly. -->
+    <ResolveAssemblyReference
+        Condition="!Exists('$(CliOptimizerPath)')"
+        Assemblies="Cilica.Cli"
+        SearchPaths="@(AsmRefPaths)"
+        FindDependencies="False"
+    >
+      <Output TaskParameter="ResolvedFiles" PropertyName="CliOptimizerPath" />
+    </ResolveAssemblyReference>
+
+    <Exec
+      WorkingDirectory="$(TargetDir)"
+      Command='dotnet "$(CliOptimizerPath)" -i "$(InputAsmPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)'
+    />
+    <Touch Files="@(IntermediateAssembly -> '%(Identity).bak')" />
+  </Target>
+</Project>

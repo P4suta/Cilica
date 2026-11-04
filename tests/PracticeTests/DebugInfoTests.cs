@@ -1,9 +1,9 @@
-namespace DistIL.PracticeTests;
+namespace Cilica.PracticeTests;
 
 using System.Diagnostics;
 using System.Runtime.CompilerServices;
 
-using DistIL.Attributes;
+using Cilica.Attributes;
 
 public class DebugInfoTests
 {

@@ -7,7 +7,7 @@
             "type": "process",
             "args": [
                 "build",
-                "${workspaceFolder}/src/DistIL.Cli/DistIL.Cli.csproj",
+                "${workspaceFolder}/src/Cilica.Cli/Cilica.Cli.csproj",
                 "/property:GenerateFullPaths=true",
                 "/consoleloggerparameters:NoSummary"
             ],
@@ -21,7 +21,7 @@
                 "watch",
                 "run",
                 "--project",
-                "${workspaceFolder}/src/DistIL.Cli/DistIL.Cli.csproj"
+                "${workspaceFolder}/src/Cilica.Cli/Cilica.Cli.csproj"
             ],
             "problemMatcher": "$msCompile"
         }

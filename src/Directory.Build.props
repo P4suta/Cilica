@@ -1,10 +1,11 @@
 <Project>
   <PropertyGroup>
     <Version>0.0.0-dev</Version>
-    <Product>DistIL</Product>
-    <PackageProjectUrl>https://github.com/dubiousconst282/DistIL</PackageProjectUrl>
+    <Product>Cilica</Product>
+    <PackageProjectUrl>https://github.com/hez2010/Cilica</PackageProjectUrl>
+    <RepositoryUrl>https://github.com/hez2010/Cilica</RepositoryUrl>
     <PackageLicenseExpression>MIT</PackageLicenseExpression>
-    <Authors>dubiousconst282</Authors>
+    <Authors>hez2010;dubiousconst282</Authors>
 
     <PackageOutputPath>$(SolutionDir)artifacts</PackageOutputPath>
   </PropertyGroup>

@@ -1,6 +1,6 @@
 using BenchmarkDotNet.Attributes;
 
-using DistIL.Attributes;
+using Cilica.Attributes;
 
 using System.Runtime.Intrinsics;
 using System.Runtime.InteropServices;

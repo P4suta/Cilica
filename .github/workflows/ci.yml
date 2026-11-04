@@ -23,9 +23,9 @@ jobs:
       - uses: actions/setup-dotnet@v4
         with:
           dotnet-version: 10.0.x
-      - run: dotnet restore DistIL.sln
-      - run: dotnet build DistIL.sln --no-restore -c ${{ matrix.configuration }} -p:InvariantGlobalization=${{ matrix.invariant }}
-      - run: dotnet test DistIL.sln --no-build --no-restore -c ${{ matrix.configuration }} -p:InvariantGlobalization=${{ matrix.invariant }} --logger trx --results-directory artifacts/test-results
+      - run: dotnet restore Cilica.sln
+      - run: dotnet build Cilica.sln --no-restore -c ${{ matrix.configuration }} -p:InvariantGlobalization=${{ matrix.invariant }}
+      - run: dotnet test Cilica.sln --no-build --no-restore -c ${{ matrix.configuration }} -p:InvariantGlobalization=${{ matrix.invariant }} --logger trx --results-directory artifacts/test-results
       - uses: actions/upload-artifact@v4
         if: always()
         with:

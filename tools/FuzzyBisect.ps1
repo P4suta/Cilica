@@ -6,7 +6,7 @@ for ($step = 1; $step -le $args[0]; $step++) {
     foreach ($p in @(50, 25, 12, 4, 0)) {
         Write-Host "Attempt #$step - $bisectStr$p"
 
-        & dotnet "../src/DistIL.Cli/bin/Debug/DistIL.Cli.dll" `
+        & dotnet "../src/Cilica.Cli/bin/Debug/Cilica.Cli.dll" `
                 -i $args[1] -o $args[2] `
                 -r "C:/Program Files/dotnet/shared/Microsoft.NETCore.App/6.0.22" `
                 --bisect "$bisectStr$p" `

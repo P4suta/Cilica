@@ -1,9 +1,9 @@
-namespace DistIL.PracticeTests;
+namespace Cilica.PracticeTests;
 
 using System.Reflection;
 using System.Runtime.CompilerServices;
 
-using DistIL.Util;
+using Cilica.Util;
 
 using Xunit.Sdk;
 

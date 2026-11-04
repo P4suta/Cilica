@@ -21,7 +21,7 @@ var config = compilerBenchmarks ? DefaultConfig.Instance.AddJob(Job.ShortRun.Wit
     .AddJob(defaultJob.AsBaseline())
     .AddJob(defaultJob.WithToolchain(new OptToolchain(toolchain)));
 
-var benchmarks = compilerBenchmarks ? BenchmarkSwitcher.FromTypes([typeof(DistIL.Benchmarks.CompilerPasses)])
+var benchmarks = compilerBenchmarks ? BenchmarkSwitcher.FromTypes([typeof(Cilica.Benchmarks.CompilerPasses)])
     : BenchmarkSwitcher.FromTypes([typeof(LinqExpansion), typeof(AutoVectorization), typeof(ListArrayBuilding)]);
 benchmarks.Run(args, config);
 
@@ -29,7 +29,7 @@ class OptToolchain : Toolchain
 {
     public OptToolchain(IToolchain baseToolchain)
         : base(
-            baseToolchain + " + DistIL",
+            baseToolchain + " + Cilica",
             baseToolchain.Generator,
             baseToolchain.Builder,
             new OptExecutor() { Base = baseToolchain.Executor })
@@ -50,7 +50,7 @@ class OptExecutor : IExecutor
             using var proc = Process.Start(new ProcessStartInfo() {
                 FileName = "dotnet",
                 ArgumentList = {
-                    Path.Combine(AppContext.BaseDirectory, "DistIL.Cli.dll"),
+                    Path.Combine(AppContext.BaseDirectory, "Cilica.Cli.dll"),
                     "-i", Path.Combine(binaryDir, benchAsmExe),
                     "--strict", "--verify-each"
                 },

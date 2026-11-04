@@ -1,6 +1,6 @@
 using BenchmarkDotNet.Attributes;
 
-using DistIL.Attributes;
+using Cilica.Attributes;
 
 public class LinqExpansion
 {

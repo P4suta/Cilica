@@ -1,5 +1,5 @@
-# DistIL IR and API walkthrough
-The [DistIL.Core](https://www.nuget.org/packages/DistIL.Core) package contains the complete IR infrastructure and optimization passes. It is to be considered experimental and under heavy development, APIs may change without notice.
+# Cilica IR and API walkthrough
+The [Cilica.Core](../src/Cilica/Cilica.csproj) package contains the complete IR infrastructure and optimization passes. It is to be considered experimental and under heavy development, APIs may change without notice.
 
 ## Loading and saving modules
 A module (synonymous with _assembly_) is the entry point of the type system. Loading a module from disk can be done through the `ModuleResolver` class:
@@ -16,7 +16,7 @@ module.Save("Foo_out.dll", savePdb: true);
 Assembly resolution follows configured search-path order and caches bindings by assembly name. Assembly and type references are resolved when used; looking up one forwarded type does not resolve unrelated forwarders. Keep the resolver alive while accessing lazy metadata or saving its modules.
 
 ## Parsing and generating IL
-Extracting and maintaining data-flow information from raw IL code is difficult and borderline impossible due to its stack-machine model, making it an unfeasible target for any reasonably complex transformation. DistIL instead works over a traditional [SSA-based intermediate representation](https://en.wikipedia.org/wiki/Static_single-assignment_form), giving it a flexible and intuitive model over the IL.
+Extracting and maintaining data-flow information from raw IL code is difficult and borderline impossible due to its stack-machine model, making it an unfeasible target for any reasonably complex transformation. Cilica instead works over a traditional [SSA-based intermediate representation](https://en.wikipedia.org/wiki/Static_single-assignment_form), giving it a flexible and intuitive model over the IL.
 
 Much of the IR follows a very similar design to that of [LLVM](https://llvm.org/docs/LangRef.html), but ours have a weaker typing model and higher level semantics, matching CIL.
 
@@ -56,7 +56,7 @@ Instruction edits advance method revisions. `MethodTransformContext.GetAnalysis<
 Use `SetBranch()` while constructing a graph. For connected CFG edits, `ReplaceTerminator()` and `RedirectEdge()` maintain phi inputs and require values for new edges into phi blocks. Instruction ownership and links are maintained by the IR insertion and removal APIs.
 
 ## Dumping the IR
-Taking easily readable snapshots of the IR is essential for development. DistIL supports a variety of flavors for IR dumps:
+Taking easily readable snapshots of the IR is essential for development. Cilica supports a variety of flavors for IR dumps:
 
 ```cs
 // Dump the IR into linear form to the console,
