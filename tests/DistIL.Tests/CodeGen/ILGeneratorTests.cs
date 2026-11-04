@@ -14,6 +14,114 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
     [Fact]
     public void Test_ILGenerator() => CheckCIL("CodeGen/StructFieldInsertExtract.ethil");
 
+    public enum SmallFlags : ushort { None = 0, One = 1, High = 0x8000 }
+
+    [Fact]
+    public void CloningKeepsTheNarrowTypeOfRewrittenBitwiseOperands()
+    {
+        var type = _modResolver.Import(typeof(SmallFlags));
+        var body = Utils.CreateTestMethod(_modResolver, type, type, PrimType.Bool);
+        var entry = body.CreateBlock();
+        var left = body.CreateBlock();
+        var right = body.CreateBlock();
+        var merge = body.CreateBlock();
+        var value = new BinaryInst(BinaryOp.Or, body.Args[0], body.Args[0]);
+        entry.InsertLast(value);
+        value.Right = ConstInt.CreateI(1);
+        entry.SetBranch(new BranchInst(body.Args[1], left, right));
+        left.SetBranch(merge);
+        right.SetBranch(merge);
+        var phi = merge.InsertPhi(new PhiInst(type, (left, value), (right, body.Args[0])));
+        merge.SetBranch(new ReturnInst(phi));
+        var run = Utils.Compile<Func<SmallFlags, bool, SmallFlags>>(body);
+        Assert.Equal(SmallFlags.High | SmallFlags.One, run(SmallFlags.High, true));
+        Assert.Equal(SmallFlags.High, run(SmallFlags.High, false));
+    }
+
+    [Fact]
+    public void TypedReferenceTypeTokensRoundTrip()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, _modResolver.SysTypes.RuntimeTypeHandle, PrimType.TypedRef);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.Emit(new CilIntrinsic.RefAnyType(_modResolver, body.Args[0])));
+        body.Definition.ILBody = ILGenerator.GenerateCode(body);
+        var imported = DistIL.Frontend.ILImporter.ParseCode(body.Definition);
+        body.Definition.Body = imported;
+        var run = Utils.Compile<TypeToken>(imported);
+        int number = 42;
+        Assert.Equal(typeof(int).TypeHandle, run(__makeref(number)));
+        string text = "text";
+        Assert.Equal(typeof(string).TypeHandle, run(__makeref(text)));
+    }
+
+    delegate RuntimeTypeHandle TypeToken(TypedReference reference);
+
+    [Fact]
+    public void PreparingPhiInputsDoesNotMoveAnExceptionGuard()
+    {
+        var exceptionType = _modResolver.Import(typeof(Exception));
+        var callbackType = _modResolver.Import(typeof(Action));
+        var body = Utils.CreateTestMethod(_modResolver, exceptionType, callbackType);
+        var entry = body.CreateBlock();
+        var guarded = body.CreateBlock();
+        var normal = body.CreateBlock();
+        var handler = body.CreateBlock();
+        var exit = body.CreateBlock();
+        entry.SetBranch(guarded);
+        var guard = new GuardInst(GuardKind.Catch, handler, exceptionType);
+        guarded.InsertLast(guard);
+        new IRBuilder(guarded, InsertionDir.After).CreateCallVirt(callbackType.FindMethod("Invoke"), body.Args[0]);
+        guarded.SetBranch(normal);
+        normal.SetBranch(new LeaveInst(exit));
+        handler.SetBranch(new LeaveInst(exit));
+        var phi = exit.InsertPhi(new PhiInst(exceptionType, (normal, ConstNull.Create()), (handler, guard)));
+        exit.SetBranch(new ReturnInst(phi));
+        var run = Utils.Compile<Func<Action, Exception?>>(body);
+        Assert.Null(run(() => { }));
+        var exception = new InvalidOperationException();
+        Assert.Same(exception, run(() => throw exception));
+        Assert.Same(guard, guarded.First);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FinallyResumesWithMultiplePhiTargetsRemainExecutable(bool fromFinally)
+    {
+        var callbackType = _modResolver.Import(typeof(Func<int>));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool, callbackType);
+        var entry = body.CreateBlock();
+        var guarded = body.CreateBlock();
+        var left = body.CreateBlock();
+        var right = body.CreateBlock();
+        var handler = body.CreateBlock();
+        var exitLeft = body.CreateBlock();
+        var exitRight = body.CreateBlock();
+        entry.SetBranch(guarded);
+        guarded.InsertLast(new GuardInst(GuardKind.Finally, handler));
+        guarded.SetBranch(new BranchInst(body.Args[0], left, right));
+        left.SetBranch(new LeaveInst(exitLeft));
+        right.SetBranch(new LeaveInst(exitRight));
+        var hb = new IRBuilder(handler);
+        var result = hb.CreateCallVirt(callbackType.FindMethod("Invoke"), body.Args[1]);
+        handler.SetBranch(new ResumeInst([exitLeft, exitRight]));
+        var a = exitLeft.InsertPhi(new PhiInst(PrimType.Int32,
+            (left, fromFinally ? new Undef(PrimType.Int32) : ConstInt.CreateI(17)),
+            (handler, fromFinally ? result : ConstInt.CreateI(17))));
+        var b = exitRight.InsertPhi(new PhiInst(PrimType.Int32,
+            (right, fromFinally ? new Undef(PrimType.Int32) : ConstInt.CreateI(29)),
+            (handler, fromFinally ? result : ConstInt.CreateI(29))));
+        exitLeft.SetBranch(new ReturnInst(a));
+        exitRight.SetBranch(new ReturnInst(b));
+        IRVerifier.Verify(body);
+        var run = Utils.Compile<Func<bool, Func<int>, int>>(body);
+        int calls = 0;
+        int Callback() { calls++; return 42; }
+        Assert.Equal(fromFinally ? 42 : 17, run(true, Callback));
+        Assert.Equal(fromFinally ? 42 : 29, run(false, Callback));
+        Assert.Equal(2, calls);
+    }
+
     [Fact]
     public void ForestPreservesExceptionOrderWithStores()
     {

@@ -48,6 +48,23 @@ internal sealed class CilPreparation
 
     private static void PreparePhiEdges(MethodBody method)
     {
+        // Resume edges describe exceptional control flow; they are not branches
+        // that can be split into executable edge blocks. Materialize their phis
+        // in slots, with stores on leaves and at the end of the handler.
+        foreach (var block in method) {
+            if (!block.HasPhis || !block.Preds.Any(pred => pred.Last is ResumeInst)) continue;
+            var position = block.FirstNonHeader;
+            foreach (var phi in block.Phis().ToArray()) {
+                var slot = method.CreateVar(phi.ResultType, "eh_phi", hardExposed: true);
+                foreach (var (predecessor, value) in phi) {
+                    if (value is not Undef) new StoreInst(slot, value).InsertBefore(predecessor.Last);
+                }
+                var load = new LoadInst(slot);
+                load.InsertBefore(position);
+                phi.ReplaceWith(load);
+            }
+        }
+
         foreach (var block in method) {
             if (!block.HasPhis) {
                 continue;
@@ -175,7 +192,7 @@ internal sealed class CilPreparation
             }
 
             foreach (var phi in block.Succs.First().Phis()) {
-                if (phi.GetValue(block) is Instruction { NumUses: 1, HasSideEffects: false, MayReadFromMemory: false } definition &&
+                if (phi.GetValue(block) is Instruction { NumUses: 1, SafeToRemove: true, MayReadFromMemory: false } definition &&
                     RootObservableLeaves(definition, forest) != definition) {
                     definition.MoveBefore(definition.Block.Last);
                 }

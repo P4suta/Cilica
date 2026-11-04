@@ -26,9 +26,13 @@ public class FuncPtrType : TypeDesc
 
     public override TypeDesc GetSpec(GenericContext context)
     {
-        throw new NotImplementedException();
+        if (context.IsNull || !IsUnboundGeneric) return this;
+        var signature = Signature.GetSpec(context);
+        return signature.Equals(Signature) ? this : new FuncPtrType(signature);
     }
 
     public override bool Equals(TypeDesc? other)
         => other is FuncPtrType o && o.Signature.Equals(Signature);
+
+    public override int GetHashCode() => Signature.GetHashCode();
 }

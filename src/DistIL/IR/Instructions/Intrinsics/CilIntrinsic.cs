@@ -2,6 +2,41 @@ namespace DistIL.IR;
 
 public abstract class CilIntrinsic : IntrinsicInst
 {
+    /// <summary> Retrieves the runtime type handle carried by a typed reference. </summary>
+    public class RefAnyType(ModuleResolver resolver, Value value) : CilIntrinsic(resolver.SysTypes.RuntimeTypeHandle, [value])
+    {
+        public override ILCode Opcode => ILCode.Refanytype;
+    }
+
+    /// <summary> Gives an object reference the type assumed by an unverifiable CIL use, without a runtime check. </summary>
+    public class RefCast(TypeDesc type, Value value) : CilIntrinsic(type, [value])
+    {
+        public override ILCode Opcode => ILCode.Nop;
+    }
+
+    /// <summary> Invokes a function pointer using its standalone CIL signature. </summary>
+    public class CallIndirect : CilIntrinsic
+    {
+        public FuncPtrType FunctionType => (FuncPtrType)StaticArgs[0];
+        public Value Function => Args[^1];
+        public ReadOnlySpan<Value> CallArgs => Args[..^1];
+        public bool IsTailCall { get => _isTailCall; set => SetProperty(ref _isTailCall, value); }
+        private bool _isTailCall;
+
+        public override ILCode Opcode => ILCode.Calli;
+        public override bool HasSideEffects => true;
+        public override bool MayThrow => true;
+        public override bool MayReadFromMemory => true;
+        public override bool MayWriteToMemory => true;
+        public override bool IsMemoryBarrier => true;
+
+        public CallIndirect(FuncPtrType type, Value function, Value[] args)
+            : base(type.Signature.ReturnType.Type, [type], [..args, function])
+        {
+            Ensure.That(args.Length == type.Signature.NumCallArgs);
+        }
+    }
+
     /// <summary> Throws NullReferenceException if the object reference is null. </summary>
     public class NullCheck(Value value) : CilIntrinsic(PrimType.Void, [value])
     {

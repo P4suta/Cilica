@@ -121,23 +121,29 @@ public class ModuleDef : EntityDesc
     /// If non-null, specifies the stream where the PDB data should be serialized into.
     /// If the module does not have debug symbols, nothing will be written to this stream.
     /// </param>
-    public void Save(Stream stream, Stream? pdbStream, string path)
+    public void Save(Stream stream, Stream? pdbStream, string path) => Save(stream, pdbStream, path, publicSign: false);
+
+    /// <summary> Writes the module, optionally keeping its public key with an empty strong-name signature. </summary>
+    public void Save(Stream stream, Stream? pdbStream, string path, bool publicSign)
     {
         Resolver.ThrowIfDisposed();
-        Image?.ValidateForWriting(AsmName);
+        Image?.ValidateForWriting(AsmName, publicSign);
         var writer = new ModuleWriter(this);
         writer.BuildTables();
-        writer.Serialize(stream, pdbStream, path);
+        writer.Serialize(stream, pdbStream, path, publicSign);
     }
 
-    public void Save(string path, bool savePdb, string? backupPath = null)
+    public void Save(string path, bool savePdb, string? backupPath = null) => Save(path, savePdb, publicSign: false, backupPath);
+
+    /// <summary> Atomically writes the module, optionally public-signing it without a private key. </summary>
+    public void Save(string path, bool savePdb, bool publicSign, string? backupPath = null)
     {
         using var output = new AtomicOutput();
         string pdbPath = Path.ChangeExtension(path, ".pdb");
         var pdbStream = savePdb && GetDebugSymbols() != null
             ? output.Create(pdbPath, backupPath == null ? null : pdbPath + ".bak") : null;
         var stream = output.Create(path, backupPath);
-        Save(stream, pdbStream, path);
+        Save(stream, pdbStream, path, publicSign);
         output.Commit();
     }
 

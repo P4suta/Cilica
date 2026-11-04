@@ -224,6 +224,14 @@ partial class ILGenerator
         }
         
         switch (op) {
+            case ILCode.Nop when inst is CilIntrinsic.RefCast:
+                break; // the reference is already on the stack
+            case ILCode.Calli: {
+                var call = (CilIntrinsic.CallIndirect)inst;
+                if (call.IsTailCall) _asm.Emit(ILCode.Tail_);
+                _asm.Emit(ILCode.Calli, call.FunctionType);
+                break;
+            }
             case ILCode.Nop when inst is CilIntrinsic.NullCheck: {
                 var nonNull = _asm.DefineLabel();
                 _asm.Emit(ILCode.Brtrue, nonNull);
@@ -251,6 +259,7 @@ partial class ILGenerator
             }
             case ILCode.Nop:
             case ILCode.Ldlen:
+            case ILCode.Refanytype:
             case ILCode.Localloc:
             case ILCode.Ckfinite: {
                 _asm.Emit(op);

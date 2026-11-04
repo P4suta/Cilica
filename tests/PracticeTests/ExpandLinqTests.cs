@@ -9,6 +9,60 @@ public class ExpandLinqTests
 {
     [Theory]
     [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void ForeachNestedEarlyExitsDisposeEveryEnumerator(int mode)
+    {
+        var outer = new TrackingEnumerable([1, 2]);
+        var inner = new TrackingEnumerable([10, 20]);
+        int sum = 0;
+        try {
+            foreach (int value in outer.SelectMany(_ => inner)) {
+                sum += value;
+                if (mode == 1) break;
+                if (mode == 2) return;
+                if (mode == 3) throw new InvalidOperationException();
+            }
+        } catch (InvalidOperationException) {
+            Assert.Equal(3, mode);
+        } finally {
+            Assert.Equal(1, outer.Disposals);
+            Assert.Equal(mode == 0 ? 2 : 1, inner.Disposals);
+            Assert.Equal(mode == 0 ? 60 : 10, sum);
+        }
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable::SelectMany
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(2)]
+    [InlineData(3)]
+    public void ForeachEarlyExitsDisposeExpandedEnumerators(int mode)
+    {
+        var source = new TrackingEnumerable([1, 2, 3]);
+        int sum = 0;
+        try {
+            foreach (int value in source.OfType<int>()) {
+                sum += value;
+                if (mode == 1) break;
+                if (mode == 2) return;
+                if (mode == 3) throw new InvalidOperationException();
+            }
+        } catch (InvalidOperationException) {
+            Assert.Equal(3, mode);
+        } finally {
+            Assert.Equal(1, source.Disposals);
+            Assert.Equal(mode == 0 ? 6 : 1, sum);
+        }
+        // CHECK: try finally
+        // CHECK-NOT: call Enumerable::OfType
+    }
+
+    [Theory]
+    [InlineData(0)]
     [InlineData(15)]
     [InlineData(16)]
     [InlineData(17)]

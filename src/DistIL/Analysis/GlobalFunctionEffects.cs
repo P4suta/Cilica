@@ -71,7 +71,10 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         }
 
         if (!_cache.TryGetValue(method, out var entry)) {
-            return false;
+            // Recursive edges were deliberately evaluated as unknown. An active
+            // ancestor has not published its cache entry yet, but its body has
+            // not changed. Invalidating here repeatedly rebuilds the same graph.
+            return _building.Any(item => item.Method == method);
         }
 
         return entry.Body == method.Body && entry.Revision == (method.Body?.Revision ?? 0) &&
@@ -150,6 +153,11 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         foreach (var block in body) {
             foreach (var inst in block.NonPhis()) {
                 switch (inst) {
+                    case CilIntrinsic.CallIndirect: {
+                        memEffects |= FunctionEffects.Unknown.MemEffects;
+                        traits |= FunctionTraits.CallTransferMask;
+                        break;
+                    }
                     case CallInst call: {
                         var callEffects = GetEffects(call);
                         memEffects |= callEffects.MemEffects;

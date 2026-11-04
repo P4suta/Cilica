@@ -9,6 +9,30 @@ using DistIL.Passes;
 public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Fact]
+    public void UnsignedReductionsCanConsumeSignedLanesOfTheSameWidth()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.UInt64, PrimType.Int64.CreateArray());
+        var entry = body.CreateBlock();
+        var loop = new LoopBuilder(entry);
+        entry.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        Value result = null!;
+        loop.Build(header => header.CreateSlt(index, header.CreateConvert(header.CreateArrayLen(body.Args[0]), PrimType.Int32)), builder => {
+            var item = builder.CreateArrayLoad(body.Args[0], index);
+            result = loop.CreateAccum(ConstInt.Create(PrimType.UInt64, 1), current => builder.CreateMul(current, item));
+        });
+        loop.Exit.CreateReturn(result);
+        Vectorize(body, expected: true);
+        var run = Utils.Compile<Func<long[], ulong>>(body);
+        foreach (int length in new[] { 0, 1, 4, 5, 17 }) {
+            var values = Enumerable.Range(0, length).Select(i => i % 2 == 0 ? -3L : 7L).ToArray();
+            ulong expected = 1;
+            foreach (long item in values) expected = unchecked(expected * (ulong)item);
+            Assert.Equal(expected, run(values));
+        }
+    }
+
+    [Fact]
     public void IntegerArrayLoopsVectorizeWithScalarTails()
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray());

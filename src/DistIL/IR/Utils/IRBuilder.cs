@@ -306,10 +306,13 @@ public class IRBuilder
     /// <summary> Creates the <see langword="default"/> value for the given type. </summary>
     public Value CreateDefaultOf(TypeDesc type)
     {
-        if (type.Kind == TypeKind.Struct) {
+        if (type.StackType == StackType.Struct || type is GenericParamType) {
             var slot = Method.CreateVar(type, "tmpZeroInit");
             Emit(new CilIntrinsic.MemSet(slot, type));
             return CreateLoad(slot);
+        }
+        if (type.IsPointerLike()) {
+            return Emit(new ConvertInst(ConstInt.CreateI(0), PrimType.IntPtr));
         }
         return Const.CreateZero(type);
     }

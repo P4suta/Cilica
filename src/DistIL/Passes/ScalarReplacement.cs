@@ -65,10 +65,10 @@ public class ScalarReplacement : IMethodPass
 
     private static bool IsSimpleCtor(MethodTransformContext ctx, NewObjInst alloc)
     {
-        if (alloc.ResultType.IsValueType || HasFinalizer(alloc.ResultType)) {
+        if (alloc.Constructor is not MethodDefOrSpec { Definition: var ctor }) {
             return false;
         }
-        if (alloc.Constructor is not MethodDefOrSpec { Definition: var ctor }) {
+        if (alloc.ResultType.IsValueType || HasFinalizer(alloc.ResultType)) {
             return false;
         }
 
@@ -103,7 +103,7 @@ public class ScalarReplacement : IMethodPass
 
     private static bool HasFinalizer(TypeDesc type)
     {
-        for (TypeDesc? curr = type; curr != null && !curr.IsCorelibType(typeof(object)); curr = curr.BaseType) {
+        for (TypeDesc? curr = type; curr != null && curr != PrimType.Object && !curr.IsCorelibType(typeof(object)); curr = curr.BaseType) {
             if (curr.Methods.Any(m => m.Name == "Finalize" && m.IsInstance && m.ParamSig.Count == 1 &&
                 m.Attribs.HasFlag(System.Reflection.MethodAttributes.Virtual))) return true;
         }

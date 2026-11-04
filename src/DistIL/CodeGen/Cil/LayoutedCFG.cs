@@ -46,6 +46,15 @@ public class LayoutedCFG
         var regionAnalysis = new ProtectedRegionAnalysis(method);
         LayoutRegion(regionAnalysis.Root);
 
+        // A handler can itself contain protected regions. Those clauses
+        // must precede the enclosing clause too, not just children of its try.
+        var orderedClauses = clauses.OrderByDescending(clause => {
+            int depth = 0;
+            for (var region = regionAnalysis.GetBlockRegion(clause.Guard.Block); region.Parent != null; region = region.Parent) depth++;
+            return depth;
+        }).ToArray();
+        orderedClauses.CopyTo(clauses, 0);
+
         AbsRange LayoutRegion(ProtectedRegion node)
         {
             int startIdx = blockIdx;

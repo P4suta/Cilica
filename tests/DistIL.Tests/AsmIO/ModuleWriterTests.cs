@@ -164,6 +164,48 @@ public class ModuleWriterTests(ModuleResolverFixture fixture)
     }
 
     [Fact]
+    public void PublicSigningPreservesIdentityAndReservesAnEmptySignature()
+    {
+        using var directory = new TemporaryDirectory();
+        var module = CreateModule();
+        module.AsmName.SetPublicKey(typeof(object).Assembly.GetName().GetPublicKey());
+        module.AsmName.CultureName = "";
+        module.Image = new(PEHeaderBuilder.CreateLibraryHeader(), CorFlags.ILOnly | CorFlags.StrongNameSigned);
+        string expectedIdentity = module.AsmName.FullName;
+        string path = Path.Combine(directory.Path, "output.dll");
+
+        Assert.Throws<NotSupportedException>(() => module.Save(path, false));
+        Assert.False(File.Exists(path));
+
+        module.Save(path, false, publicSign: true);
+        Assert.Equal(expectedIdentity, System.Reflection.AssemblyName.GetAssemblyName(path).FullName);
+        using var pe = new PEReader(File.OpenRead(path));
+        var header = pe.PEHeaders.CorHeader!;
+        Assert.True(header.Flags.HasFlag(CorFlags.StrongNameSigned));
+        Assert.Equal(module.AsmName.GetPublicKey()!.Length - 32, header.StrongNameSignatureDirectory.Size);
+        var signature = pe.GetSectionData(header.StrongNameSignatureDirectory.RelativeVirtualAddress)
+            .GetContent(0, header.StrongNameSignatureDirectory.Size);
+        Assert.All(signature, value => Assert.Equal((byte)0, value));
+
+        var loaded = System.Reflection.Assembly.Load(File.ReadAllBytes(path));
+        Assert.Equal(42, loaded.GetType("TestMethods")!.GetMethod("Run")!.Invoke(null, null));
+    }
+
+    [Fact]
+    public void PublicSigningRequiresAKeyAndDoesNotDiscardAuthenticode()
+    {
+        var module = CreateModule();
+        using var stream = new MemoryStream();
+        Assert.Throws<NotSupportedException>(() => module.Save(stream, null, "output.dll", publicSign: true));
+        Assert.Equal(0, stream.Length);
+
+        module.AsmName.SetPublicKey(typeof(object).Assembly.GetName().GetPublicKey());
+        module.Image = new(PEHeaderBuilder.CreateLibraryHeader()) { HasAuthenticodeSignature = true };
+        Assert.Throws<NotSupportedException>(() => module.Save(stream, null, "output.dll", publicSign: true));
+        Assert.Equal(0, stream.Length);
+    }
+
+    [Fact]
     public void PublicationRollsBackEarlierFilesWhenALaterDestinationFails()
     {
         using var directory = new TemporaryDirectory();

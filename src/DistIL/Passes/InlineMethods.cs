@@ -120,6 +120,14 @@ public class InlineMethods : IMethodPass
         if (target.Body == null && !advisor.ImportBodyForInlining(target)) {
             return null;
         }
+        // CIL filters cannot contain nested exception regions. Keep a call to an
+        // EH-bearing method here instead of cloning its try/handler into a filter.
+        if (target.Body!.Instructions().Any(inst => inst is GuardInst)) {
+            var region = new ProtectedRegionAnalysis(ctx.Method).GetBlockRegion(call.Block);
+            if (region.GetHandlerGuard() is { HasFilter: true } guard && guard.FilterBlock == region.StartBlock) {
+                return null;
+            }
+        }
         return target;
     }
 

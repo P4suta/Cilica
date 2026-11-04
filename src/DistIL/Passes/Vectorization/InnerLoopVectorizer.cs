@@ -244,7 +244,11 @@ internal sealed class InnerLoopVectorizer
                 exitValue = data.NewPhi;
             }
 
-            data.NewPhi.SetValue(newLoop.Latch.Block, _mappings.GetRef(data.IterOut).ClonedDef!);
+            var next = _mappings.GetRef(data.IterOut).ClonedDef!;
+            if (_trans.IsVectorShape(next.ResultType) && next.ResultType != data.NewPhi.ResultType) {
+                next = _trans.EmitBitcast(newLoop.Latch, new VectorShape(next.ResultType.GenericParams[0], _width), phi.ResultType.Kind, next);
+            }
+            data.NewPhi.SetValue(newLoop.Latch.Block, next);
             phi.RedirectArg(_loop.PreHeader, newLoop.Exit.Block, exitValue);
         }
 
@@ -306,7 +310,10 @@ internal sealed class InnerLoopVectorizer
         }
 
         if (scalar is PhiInst phi && _reductionPhis.ContainsKey(phi)) {
-            return _reductionPhis.GetRef(phi).NewPhi;
+            var value = _reductionPhis.GetRef(phi).NewPhi;
+            return _trans.IsVectorShape(value.ResultType)
+                ? _trans.EmitBitcast(builder, new VectorShape(phi.ResultType, _width), vecType.ElemKind, value)
+                : value;
         }
 
         if (scalar == _loop.Counter && scalar.ResultType.IsInt()) {

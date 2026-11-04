@@ -240,7 +240,7 @@ public class IRCloner
             var left = Remap(inst.Left);
             var right = Remap(inst.Right);
             Out((_ctx._foldConstants ? ConstFolding.FoldBinary(inst.Op, left, right) : null)
-                ?? new BinaryInst(inst.Op, left, right));
+                ?? new BinaryInst(inst.Op, left, right, Remap(inst.ResultType)));
         }
 
         public void Visit(UnaryInst inst)
@@ -293,7 +293,11 @@ public class IRCloner
 
         public void Visit(IntrinsicInst inst)
         {
-            var cloned = inst.CloneWith(Remap(inst.ResultType), RemapEntities(inst.StaticArgs), RemapArgs(inst.Args));
+            // ldtoken of a generic definition means typeof(G<>), even when
+            // cloning into a generic context. Only constructed tokens substitute.
+            var staticArgs = inst is CilIntrinsic.LoadHandle { StaticArgs: [TypeDef] }
+                ? inst.StaticArgs.ToArray() : RemapEntities(inst.StaticArgs);
+            var cloned = inst.CloneWith(Remap(inst.ResultType), staticArgs, RemapArgs(inst.Args));
             var folded = _ctx._foldConstants ? ConstFolding.FoldIntrinsic(cloned) : null;
 
             if (folded != null) {

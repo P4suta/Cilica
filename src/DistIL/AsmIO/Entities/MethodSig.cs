@@ -4,7 +4,7 @@ using System.Collections.Generic;
 using System.Reflection.Metadata;
 
 /// <summary> Represents the signature of a method declared in a type. </summary>
-public readonly struct MethodSig : IPrintable
+public readonly struct MethodSig : IPrintable, IEquatable<MethodSig>
 {
     const SignatureAttributes kMaybeInstance = (SignatureAttributes)0x80;
 
@@ -16,6 +16,9 @@ public readonly struct MethodSig : IPrintable
     public bool? IsInstance => (_header.RawValue & (byte)kMaybeInstance) != 0 ? null : _header.IsInstance;
     public bool IsGeneric => _header.IsGeneric;
     public CallConvention CallConv => (CallConvention)_header.CallingConvention;
+    public bool HasExplicitThis => _header.HasExplicitThis;
+    public int NumCallArgs => ParamTypes.Count + (IsInstance == true && !HasExplicitThis ? 1 : 0);
+    internal SignatureHeader Header => _header;
 
     readonly SignatureHeader _header;
 
@@ -31,6 +34,7 @@ public readonly struct MethodSig : IPrintable
         var attrs = isInstance == null ? kMaybeInstance : 
                     isInstance.Value ? SignatureAttributes.Instance : 
                     0;
+        if (numGenPars != 0) attrs |= SignatureAttributes.Generic;
         _header = new(SignatureKind.Method, default, attrs);
     }
 
@@ -50,6 +54,27 @@ public readonly struct MethodSig : IPrintable
             (IsInstance == null || IsInstance == method.IsInstance) &&
             method.ReturnSig == ReturnType &&
             CompareParams(method);
+    }
+
+    public MethodSig GetSpec(GenericContext context)
+        => new(ReturnType.GetSpec(context), ParamTypes.Select(p => p.GetSpec(context)).ToArray(), _header, NumGenericParams);
+
+    public bool Equals(MethodSig other)
+        => IsNull || other.IsNull ? IsNull && other.IsNull :
+            _header == other._header && NumGenericParams == other.NumGenericParams &&
+            ReturnType == other.ReturnType && ParamTypes.SequenceEqual(other.ParamTypes);
+
+    public override bool Equals(object? other) => other is MethodSig signature && Equals(signature);
+
+    public override int GetHashCode()
+    {
+        if (IsNull) return 0;
+        var hash = new HashCode();
+        hash.Add(_header);
+        hash.Add(NumGenericParams);
+        hash.Add(ReturnType);
+        foreach (var parameter in ParamTypes) hash.Add(parameter);
+        return hash.ToHashCode();
     }
 
     private bool CompareParams(MethodDesc method)

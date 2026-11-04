@@ -12,11 +12,17 @@ public class SimplifyCFG : IMethodPass
         everChanged |= SinkReturnsAndJumpThreads(ctx.Compilation, ctx.Method);
 
         // Simplification
-        ctx.Method.TraverseDepthFirst(postVisit: block => {
+        // Jump threading can rewrite an ancestor's terminator, invalidating a
+        // suspended successor iterator. Finish the traversal before editing edges.
+        var postOrder = new List<BasicBlock>(ctx.Method.NumBlocks);
+        ctx.Method.TraverseDepthFirst(postVisit: postOrder.Add);
+        foreach (var block in postOrder) {
+            if (block.Method == null) continue;
+
             while (SimplifyBlock(ctx, block)) {
                 everChanged = true;
             }
-        });
+        }
 
         return everChanged ? MethodInvalidations.ControlFlow : 0;
     }
@@ -187,6 +193,9 @@ public class SimplifyCFG : IMethodPass
                             cond.Op = cond.Op.GetNegated();
                         }
                         var op = x.Value != 0 ? BinaryOp.Or : BinaryOp.And;
+                        if (y is ConstInt constant) {
+                            y = ConstInt.Create(PrimType.Bool, constant.Value);
+                        }
                         return new BinaryInst(op, cond, y);
                     }
                 }
@@ -218,7 +227,7 @@ public class SimplifyCFG : IMethodPass
         singleExit.SetBranch(new ReturnInst(phi));
 
         foreach (var block in exitBlocks) {
-            var value = ((ReturnInst)block.Last).Value!;
+            var value = StoreInst.Coerce(method.ReturnType, ((ReturnInst)block.Last).Value!, block.Last);
             phi.AddArg(block, value);
             block.SetBranch(singleExit);
 

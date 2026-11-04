@@ -48,9 +48,45 @@ public class ILImporter
         CreateGuards(ehRegions);
         ImportBlocks(code, leaders);
 
+        NormalizeReferenceTypes();
+
         AddFinallyResumeEdges(ehRegions);
 
         return _body;
+    }
+
+    private void NormalizeReferenceTypes()
+    {
+        // Generated CIL can pass a broadly typed reference directly to
+        // a more specific reference parameter or store, without castclass. Make
+        // that unchecked typing assumption explicit in IR, preserving the IL.
+        foreach (var inst in _body.Instructions().ToArray()) {
+            switch (inst) {
+                case CallInst call:
+                    for (int i = 0; i < call.NumArgs; i++) ConvertOperand(i, call.Method.ParamSig[i].Type);
+                    break;
+                case NewObjInst allocation:
+                    for (int i = 0; i < allocation.NumArgs; i++) ConvertOperand(i, allocation.Constructor.ParamSig[i + 1].Type);
+                    break;
+                case StoreInst store:
+                    ConvertOperand(1, store.ElemType);
+                    break;
+                case ReturnInst { HasValue: true }:
+                    ConvertOperand(0, _body.ReturnType);
+                    break;
+            }
+
+            void ConvertOperand(int index, TypeDesc target)
+            {
+                var value = inst.Operands[index];
+                var source = value.ResultType;
+                if (!source.IsManagedObject() || value is ConstNull or CilIntrinsic.Box || source is GenericParamType ||
+                    !target.IsManagedObject() || target is GenericParamType || source.IsAssignableTo(target)) return;
+                var cast = new CilIntrinsic.RefCast(target, value) { DebugLocation = inst.DebugLocation };
+                cast.InsertBefore(inst);
+                inst.ReplaceOperand(index, cast);
+            }
+        }
     }
 
     private void CreateBlocks(BitSet leaders)
@@ -146,7 +182,8 @@ public class ILImporter
             if (!Has(_varFlags[i], VarFlags.AddrTaken | VarFlags.Stored)) continue;
 
             var arg = _body.Args[i];
-            var slot = _varSlots[i] = _body.CreateVar(arg.ResultType, $"a_{arg.Name}");
+            var slot = _varSlots[i] = _body.CreateVar(arg.ResultType, $"a_{arg.Name}",
+                hardExposed: Has(_varFlags[i], VarFlags.CrossesRegions));
             entryBlock.InsertAnteLast(new StoreInst(slot, arg));
         }
 
@@ -190,6 +227,10 @@ public class ILImporter
                 if (Has(op, VarFlags.IsLocal)) {
                     CalcLocalVarFlags(ref inst, ref op, varIdx);
                     varIdx += _body.Args.Length;
+                } else if (Has(op, VarFlags.Stored) && _regionTree?.FindEnclosing(inst.Offset) is { Kind: not RegionKind.Root }) {
+                    // A throwing expression may leave the old argument value in
+                    // place. Preserve its slot across the exceptional path.
+                    op |= VarFlags.CrossesRegions;
                 }
                 _varFlags[varIdx] |= op;
             }
@@ -323,7 +364,9 @@ public class ILImporter
         bool isBlockLocal = flags == kBlockLocalFlags && !localVar.IsPinned;
 
         slot ??= isBlockLocal
-            ? (Has(op, VarFlags.Loaded) ? new Undef(localVar.Type) : null)
+            ? (Has(op, VarFlags.Loaded) ? (_body.InitLocals
+                ? new IR.Utils.IRBuilder(_body.EntryBlock, IR.Utils.InsertionDir.Before).CreateDefaultOf(localVar.Type)
+                : new Undef(localVar.Type)) : null)
             : _body.CreateVar(
                     localVar.Type,
                     pinned: localVar.IsPinned,

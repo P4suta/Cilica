@@ -1,6 +1,7 @@
 namespace DistIL.Passes.Linq;
 
 using DistIL.IR.Utils;
+using DistIL.Analysis;
 
 //Represents a sink for a query which is immediately consumed by a loop.
 //
@@ -29,6 +30,7 @@ internal class LoopSink : LinqSink
     CallInst _getCurrent, _moveNext;
     CallInst? _dispose;
     CompareInst? _nullCheck;
+    BasicBlock[] _earlyExits = [];
 
 #pragma warning disable CS8618 // uninitialized non-nullable members
     private LoopSink(CallInst getEnumerCall)
@@ -45,6 +47,27 @@ internal class LoopSink : LinqSink
         _regionEntry.RedirectSucc(_header, loopData.SourceLoop.EntryBlock);
 
         loopData.Exit.SetBranch(_exit);
+
+        // A break can share the normal exit block. Keep those branches inside
+        // the new loop's protected region and leave it through its own exit.
+        foreach (var pred in _exit.Preds.AsEnumerable().ToArray()) {
+            if (pred != _header && pred != loopData.Exit.Block) {
+                pred.RedirectSucc(_exit, loopData.GetExitTarget(loopData.Exit.Block));
+            }
+        }
+
+        if (loopData.Enumeration is { } enumeration) {
+            // The original body now sits inside the generated disposal regions.
+            // Its break/return leaves still need to exit the original foreach
+            // region, after disposing every newly introduced enumerator.
+            foreach (var exit in _earlyExits) {
+                var target = exit.Succs.First();
+                var bridge = exit.Method.CreateBlock(insertAfter: _exit);
+                bridge.SetBranch(new LeaveInst(target));
+                target.RedirectPhis(exit, bridge);
+                exit.SetBranch(enumeration.GetExitTarget(bridge, exitRoot: true));
+            }
+        }
 
         // Old header should now be unreachable and can be removed
         Debug.Assert(_header.NumPreds == 0);
@@ -108,7 +131,7 @@ internal class LoopSink : LinqSink
                 numLatches = 1000; // conditional/special backedge; must be merged
             }
         }
-        return _regionEntry != null &&
+        bool matched = _regionEntry != null &&
                // Match `Header: goto enumer.MoveNext() ? Body : Latch`
                _header.First == _moveNext && _header.Last is BranchInst br && br.Cond == _moveNext &&
                // Match `Body: T curr = enumer.get_Current()`
@@ -116,6 +139,11 @@ internal class LoopSink : LinqSink
                // Match `Exit: leave RegionSucc`
                (_exit = br.Else!).First is LeaveInst &&
                (numLatches == 1 || (numLatches >= 2 && MergeBackedges()));
+        if (matched) {
+            var regions = new ProtectedRegionAnalysis(_header.Method);
+            _earlyExits = regions.GetBlockRegion(_regionEntry!).GetExitBlocks().Where(block => block != _exit).ToArray();
+        }
+        return matched;
     }
 
     private bool MergeBackedges()

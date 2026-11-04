@@ -344,7 +344,7 @@ internal partial class ModuleWriter
         }
     }
 
-    public void Serialize(Stream peStream, Stream? pdbStream, string pePath)
+    public void Serialize(Stream peStream, Stream? pdbStream, string pePath, bool publicSign = false)
     {
         var imageChars = 
             Characteristics.LargeAddressAware |
@@ -352,7 +352,7 @@ internal partial class ModuleWriter
             (_mod.EntryPoint == null ? Characteristics.Dll : 0);
 
         var image = _mod.Image ?? new ModuleImage(new PEHeaderBuilder(imageCharacteristics: imageChars));
-        image.ValidateForWriting(_mod.AsmName);
+        image.ValidateForWriting(_mod.AsmName, publicSign);
         var header = image.Header;
         var entryPoint = _mod.EntryPoint == null ? default : (MethodDefinitionHandle)_handleMap[_mod.EntryPoint];
 
@@ -381,7 +381,8 @@ internal partial class ModuleWriter
             nativeResources: image.CreateResources(),
             entryPoint: entryPoint,
             debugDirectoryBuilder: debugDirBuilder,
-            flags: image.Flags,
+            flags: publicSign ? image.Flags | CorFlags.StrongNameSigned : image.Flags,
+            strongNameSignatureSize: publicSign ? ModuleImage.GetSignatureSize(_mod.AsmName) : 128,
             deterministicIdProvider: ComputeContentId
         );
         var blob = new BlobBuilder();

@@ -308,6 +308,10 @@ public class ConstFolding
 
     public static Value? FoldIntrinsic(IntrinsicInst intrin)
     {
+        if (intrin is CilIntrinsic.RefCast reference &&
+            (reference.Args[0] is ConstNull || reference.Args[0].ResultType.IsAssignableTo(reference.ResultType))) {
+            return reference.Args[0];
+        }
         if (intrin is CilIntrinsic.SizeOf { ObjType.Kind: >= TypeKind.Bool and <= TypeKind.Double and var type }) {
             return ConstInt.CreateI(type.BitSize() / 8);
         }

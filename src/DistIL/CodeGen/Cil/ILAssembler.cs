@@ -11,6 +11,7 @@ public class ILAssembler
     Dictionary<ILLabel, int> _labelStarts = new();
     List<ILVariable> _usedVars = new();
     int _stackDepth = 0, _maxStackDepth = 0;
+    int _lastLabelStart = 0;
 
     /// <summary> Number of instructions emitted so far. </summary>
     public int Count => _index;
@@ -19,6 +20,7 @@ public class ILAssembler
     public void StartBlock(BasicBlock block, bool isCatchEntry)
     {
         _labelStarts.Add(block, _index);
+        _lastLabelStart = _index;
 
         if (isCatchEntry) {
             _stackDepth++;
@@ -36,6 +38,7 @@ public class ILAssembler
     {
         Debug.Assert(_labelStarts[label] < 0, "Label already marked");
         _labelStarts[label] = _index;
+        _lastLabelStart = _index;
     }
 
     public void Emit(ILCode op, object? operand = null)
@@ -46,6 +49,12 @@ public class ILAssembler
         _insts[_index++] = new ILInstruction(op, operand);
 
         switch (op) {
+            case ILCode.Calli: {
+                var signature = ((FuncPtrType)operand!).Signature;
+                _stackDepth -= signature.NumCallArgs + 1; // arguments and function pointer
+                _stackDepth += signature.ReturnType.Type != PrimType.Void ? 1 : 0;
+                break;
+            }
             case ILCode.Call or ILCode.Callvirt or ILCode.Newobj: {
                 var method = (MethodDesc)operand!;
                 _stackDepth -= method.ParamSig.Count;
@@ -87,8 +96,11 @@ public class ILAssembler
     {
         // Peephole: delete nop copies like "ldloc x; stloc x"
         // These usually appear when lowering FieldInsertInst.
-        if (code == ILCode.Stloc && _index > 0 && _insts[_index - 1].OpCode == ILCode.Ldloc && _insts[_index - 1].Operand == var) {
+        // A label between the load and store may also be reached with a different
+        // value on the stack (for example, the other arm of a select).
+        if (code == ILCode.Stloc && _index > _lastLabelStart && _insts[_index - 1].OpCode == ILCode.Ldloc && _insts[_index - 1].Operand == var) {
             _index--;
+            _stackDepth--;
             return;
         }
         // ILVariable.Index above this value is reserved for the use counter

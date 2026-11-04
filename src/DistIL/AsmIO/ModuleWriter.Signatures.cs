@@ -76,16 +76,16 @@ partial class ModuleWriter
         var pars = sig.ParamTypes;
         bool isInstance = sig.IsInstance ?? throw new InvalidOperationException();
 
-        var sigEnc = isPropSig
-            ? b.PropertySignature(isInstance)
-            : b.MethodSignature((SignatureCallingConvention)sig.CallConv, sig.NumGenericParams, isInstance);
-
-        sigEnc.Parameters(pars.Count, out var retTypeEnc, out var parsEnc);
-
-        EncodeType(retTypeEnc.Type(), sig.ReturnType);
-
+        // Preserve the complete call-site header, including explicit-this, and
+        // parameter modifiers used by unmanaged function pointer signatures.
+        b.Builder.WriteByte(isPropSig
+            ? new SignatureHeader(SignatureKind.Property, default, isInstance ? SignatureAttributes.Instance : 0).RawValue
+            : sig.Header.RawValue);
+        if (sig.IsGeneric) b.Builder.WriteCompressedInteger(sig.NumGenericParams);
+        b.Builder.WriteCompressedInteger(pars.Count);
+        EncodeType(new SignatureTypeEncoder(b.Builder), sig.ReturnType);
         foreach (var par in pars) {
-            EncodeType(parsEnc.AddParameter().Type(), par.Type);
+            EncodeType(new SignatureTypeEncoder(b.Builder), par);
         }
     }
 

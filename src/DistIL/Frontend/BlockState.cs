@@ -436,6 +436,9 @@ internal class BlockState
                 case ILCode.Callvirt:
                     ImportCall((MethodDesc)inst.Operand!, opcode == ILCode.Callvirt);
                     break;
+                case ILCode.Calli:
+                    ImportCallIndirect((FuncPtrType)inst.Operand!);
+                    break;
                 case ILCode.Ldftn:
                 case ILCode.Ldvirtftn:
                     ImportLoadFuncPtr((MethodDesc)inst.Operand!, opcode == ILCode.Ldvirtftn);
@@ -465,6 +468,9 @@ internal class BlockState
                     break;
                 case ILCode.Ldtoken:
                     Push(new CilIntrinsic.LoadHandle(_mod.Resolver, (EntityDesc)inst.Operand!));
+                    break;
+                case ILCode.Refanytype:
+                    Push(new CilIntrinsic.RefAnyType(_mod.Resolver, Pop()));
                     break;
                 case ILCode.Initobj:
                     Emit(new CilIntrinsic.MemSet(Pop(), (TypeDesc)inst.Operand!, PopPointerFlags()));
@@ -717,7 +723,7 @@ internal class BlockState
     {
         if (type == null) {
             // ld/st .ref variants get null type. Infer from storage type or fallback to `object`.
-            type = actualArrayOrPtrType.ElemType ?? PrimType.Object;
+            type = actualArrayOrPtrType.ElemType is { StackType: StackType.Object } element ? element : PrimType.Object;
         }
         // Primitive type definitions (from CoreLib) and aliases (PrimTypes) can be
         // used interchangeably. The only difference between them is that the
@@ -743,8 +749,12 @@ internal class BlockState
     private void ImportLoadField(FieldDesc field, bool isStatic)
     {
         var obj = isStatic ? null : Pop();
+        // ldfld may legally name a static field; its receiver is consumed but ignored.
+        if (!field.IsInstance) obj = null;
 
-        if (obj != null && obj.ResultType.IsValueType) {
+        // A native integer loaded from memory is an address, not a struct value.
+        // Removing that load would access the pointer's storage instead of its target.
+        if (obj != null && obj.ResultType.IsValueType && !obj.ResultType.IsPointerLike()) {
             if (obj is LoadInst load) {
                 obj = load.Address;
             } else {
@@ -769,8 +779,9 @@ internal class BlockState
     private FieldAddrInst EmitFieldAddr(FieldDesc field, bool isStatic)
     {
         var obj = isStatic ? null : Pop();
+        if (!field.IsInstance) obj = null;
         
-        if (obj is LoadInst ld && ld.ResultType.IsValueType) {
+        if (obj is LoadInst ld && ld.ResultType.IsValueType && !ld.ResultType.IsPointerLike()) {
             obj = ld.Address;
         }
         var inst = new FieldAddrInst(field, obj);
@@ -790,6 +801,17 @@ internal class BlockState
     {
         var obj = isVirt ? Pop() : null;
         Push(new FuncAddrInst(method, obj));
+    }
+
+    private void ImportCallIndirect(FuncPtrType type)
+    {
+        if (type.Signature.CallConv == CallConvention.VarArgs || type.Signature.IsGeneric) {
+            throw new NotSupportedException("Vararg and generic calli signatures are not supported");
+        }
+        var function = Pop();
+        var args = new Value[type.Signature.NumCallArgs];
+        for (int i = args.Length - 1; i >= 0; i--) args[i] = Pop();
+        Push(new CilIntrinsic.CallIndirect(type, function, args) { IsTailCall = HasPrefix(InstFlags.Tailcall) });
     }
 
     private void ImportNewObj(MethodDesc ctor)
@@ -820,24 +842,27 @@ internal class BlockState
         var destRegion = _importer._regionTree!.FindEnclosing(targetOffset);
         var targetBlock = _importer.GetBlock(targetOffset).Block;
 
-        currRegion.ExitTargets.Add(targetBlock);
-
-        // Create a chain of blocks leaving all nested regions until target (in reverse order)
-        while (currRegion.Parent! != destRegion) {
-            currRegion = currRegion.Parent!;
-
-            currRegion.LeavingBlocks ??= new();
-
-            if (currRegion.LeavingBlocks.TryGetValue(targetBlock, out var exitBlock)) {
-                targetBlock = exitBlock;
-                break;
-            }
-            var nextBlock = _body.CreateBlock(insertAfter: Block);
-            nextBlock.InsertLast(new LeaveInst(targetBlock!));
-
-            currRegion.LeavingBlocks.Add(targetBlock, nextBlock);
-            targetBlock = nextBlock;
+        // Build the continuation from the outermost region inward, so each leave
+        // exits exactly one region. Finally resumes must name these immediate
+        // continuations, including those introduced for enclosing regions.
+        var parents = new List<RegionNode>();
+        for (var parent = currRegion.Parent; parent != destRegion; parent = parent.Parent) {
+            if (parent == null) throw Error("Leave target is not in an enclosing region.");
+            parents.Add(parent);
         }
+        for (int i = parents.Count - 1; i >= 0; i--) {
+            var parent = parents[i];
+            parent.LeavingBlocks ??= new();
+
+            if (!parent.LeavingBlocks.TryGetValue(targetBlock, out var exitBlock)) {
+                exitBlock = _body.CreateBlock(insertAfter: Block);
+                exitBlock.InsertLast(new LeaveInst(targetBlock));
+                parent.LeavingBlocks.Add(targetBlock, exitBlock);
+                parent.ExitTargets.Add(targetBlock);
+            }
+            targetBlock = exitBlock;
+        }
+        currRegion.ExitTargets.Add(targetBlock);
         TerminateBlock(new LeaveInst(targetBlock), clearStack: true);
     }
     private void ImportResume(bool isFromFilter)

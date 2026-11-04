@@ -134,6 +134,31 @@ public class IRVerifier
                     CheckArguments(allocation, allocation.Constructor, allocation.Args, 1);
                     break;
                 }
+            case CilIntrinsic.CallIndirect call: {
+                    var signature = call.FunctionType.Signature;
+                    Check(call.Function.ResultType.StackType == StackType.NInt, call, "Indirect call target must be a function pointer");
+                    Check(call.CallArgs.Length == signature.NumCallArgs, call, "Indirect call argument count must match its signature");
+                    int offset = signature.IsInstance == true && !signature.HasExplicitThis ? 1 : 0;
+                    if (offset != 0 && call.CallArgs.Length != 0) {
+                        Check(call.CallArgs[0].ResultType.IsPointerOrObject(), call, "Indirect call receiver must be an object or managed reference");
+                    }
+                    for (int i = 0; i < signature.ParamTypes.Count && i + offset < call.CallArgs.Length; i++) {
+                        Check(IsCompatible(call.CallArgs[i + offset], signature.ParamTypes[i].Type), call,
+                            $"Indirect call argument {i} must match its signature");
+                    }
+                    Check(call.ResultType == signature.ReturnType.Type, call, "Indirect call result must match its signature");
+                    if (call.IsTailCall) Check(call.Next is ReturnInst, call, "Next instruction after tail call must be a return.");
+                    break;
+                }
+            case CilIntrinsic.RefCast cast: {
+                    Check(cast.Args[0].ResultType.IsManagedObject() && cast.ResultType.IsManagedObject(), cast,
+                        "Unchecked reference conversion requires object references");
+                    break;
+                }
+            case CilIntrinsic.RefAnyType typedReference: {
+                    Check(typedReference.Args[0].ResultType == PrimType.TypedRef, typedReference, "refanytype requires a typed reference");
+                    break;
+                }
             case StoreInst store: {
                     Check(store.Address.ResultType.IsPointerLike(), store, "Store address must be a pointer or managed reference");
                     Check(IsCompatible(store.Value, store.ElemType), store, "Stored value must match the element stack type");
@@ -183,7 +208,7 @@ public class IRVerifier
                     argTypesMatch &= val switch {
                         ConstNull => type.StackType == StackType.Object,
                         ConstInt ci when type.Kind.IsSmallInt() => ci.FitsInType(type),
-                        _ => val.ResultType.IsAssignableTo(type)
+                        _ => val.ResultType.IsAssignableTo(type) || type.IsManagedObject() && IsCompatible(val, type)
                     };
                 }
                 preds.SymmetricExceptWith(phi.Block.Preds.AsEnumerable());
@@ -212,7 +237,7 @@ public class IRVerifier
         Check(args.Length + offset == target.ParamSig.Count, inst, "Argument count must match the method signature");
 
         for (int i = 0; i < args.Length && i + offset < target.ParamSig.Count; i++) {
-            if (i == 0 && inst is CallInst { Constraint: not null }) {
+            if (i == 0 && inst is CallInst { Constraint: not null, IsStatic: false }) {
                 Check(args[i].ResultType.IsPointerLike(), inst, "Constrained receiver must be a managed reference");
             } else {
                 Check(IsCompatible(args[i], target.ParamSig[i + offset].Type), inst, $"Argument {i} must match the parameter type");
@@ -223,7 +248,7 @@ public class IRVerifier
     private static bool IsCondition(Value value)
         => value.ResultType.StackType is StackType.Int or StackType.Long or StackType.NInt or StackType.ByRef or StackType.Object;
 
-    private static bool IsCompatible(Value value, TypeDesc target)
+    private bool IsCompatible(Value value, TypeDesc target, HashSet<Value>? visiting = null)
     {
         if (value is ConstNull) {
             return target.StackType == StackType.Object;
@@ -236,10 +261,84 @@ public class IRVerifier
         }
 
         if (value is CilIntrinsic.Box box) {
-            return target == PrimType.Object || box.SourceType.Inherits(target);
+            return IsBoxAssignable(box.SourceType, target, new());
         }
 
-        return source is GenericParamType || target is GenericParamType || source.IsAssignableTo(target);
+        if (source is GenericParamType || target is GenericParamType || IsReferenceAssignable(source, target, new())) {
+            return true;
+        }
+
+        // A stack merge can lose a common interface when its inputs have different
+        // class ancestors. Check all incoming values before rejecting that use.
+        if (value is PhiInst or SelectInst) {
+            visiting ??= new();
+            if (!visiting.Add(value)) return true;
+            bool compatible = value is PhiInst phi
+                ? Enumerable.Range(0, phi.NumArgs).All(i => IsCompatible(phi.GetValue(i), target, visiting))
+                : value is SelectInst select && IsCompatible(select.IfTrue, target, visiting) && IsCompatible(select.IfFalse, target, visiting);
+            visiting.Remove(value);
+            return compatible;
+        }
+        return false;
+    }
+
+    private bool IsBoxAssignable(TypeDesc source, TypeDesc target, HashSet<TypeDesc> visiting)
+    {
+        source = source.GetSpec(new GenericContext(_method.Definition));
+        if (source.IsCorelibType(typeof(Nullable<>))) return IsBoxAssignable(source.GenericParams[0], target, visiting);
+        if (target == PrimType.Object || source.Inherits(target)) return true;
+        if (!visiting.Add(source)) return false;
+
+        // IL tokens carry unbound parameters. Recover their constraints from the
+        // containing method/type, including constraints through another parameter.
+        return source is GenericParamType parameter &&
+            parameter.Constraints.Any(constraint => IsBoxAssignable(constraint.Sig.Type, target, visiting));
+    }
+
+    private bool IsReferenceAssignable(TypeDesc source, TypeDesc target, HashSet<(TypeDesc, TypeDesc)> visiting)
+    {
+        if (source.IsAssignableTo(target)) return true;
+        if (!visiting.Add((source, target))) return false;
+
+        if (source is GenericParamType parameter) {
+            parameter = ResolveParameter(parameter);
+            return target == PrimType.Object || parameter.Constraints.Any(c => IsReferenceAssignable(c.Sig.Type, target, visiting));
+        }
+        if (source is ArrayType sourceArray && target is ArrayType targetArray) {
+            return IsKnownReference(sourceArray.ElemType, new()) && IsKnownReference(targetArray.ElemType, new()) &&
+                IsReferenceAssignable(sourceArray.ElemType, targetArray.ElemType, visiting);
+        }
+        if (source is TypeDefOrSpec from && target is TypeDefOrSpec to && from.Definition == to.Definition &&
+            (from.IsInterface || from.BaseType is { Name: "MulticastDelegate" } parent && parent.IsCorelibType())) {
+            for (int i = 0; i < from.GenericParams.Count; i++) {
+                var a = from.GenericParams[i];
+                var b = to.GenericParams[i];
+                if (a == b) continue;
+                if (!IsKnownReference(a, new()) || !IsKnownReference(b, new())) return false;
+
+                var variance = from.Definition.GenericParams[i];
+                if (!(variance.IsCovariant ? IsReferenceAssignable(a, b, new(visiting))
+                    : variance.IsContravariant && IsReferenceAssignable(b, a, new(visiting)))) return false;
+            }
+            return true;
+        }
+        return source.Interfaces.Any(itf => IsReferenceAssignable(itf, target, visiting)) ||
+            source.BaseType is { } baseType && IsReferenceAssignable(baseType, target, visiting);
+    }
+
+    private GenericParamType ResolveParameter(GenericParamType parameter)
+        => new GenericContext(_method.Definition).GetArgument(parameter.Index, parameter.IsMethodParam) as GenericParamType ?? parameter;
+
+    private bool IsKnownReference(TypeDesc type, HashSet<TypeDesc> visiting)
+    {
+        if (type is not GenericParamType parameter) return type.IsManagedObject();
+        if (!visiting.Add(type)) return false;
+        parameter = ResolveParameter(parameter);
+        return parameter.Attribs.HasFlag(System.Reflection.GenericParameterAttributes.ReferenceTypeConstraint) ||
+            parameter.Constraints.Any(c => c.Sig.Type is GenericParamType
+                ? IsKnownReference(c.Sig.Type, visiting)
+                : c.Sig.Type.IsClass && c.Sig.Type.IsManagedObject() && c.Sig.Type != PrimType.Object && !c.Sig.Type.IsCorelibType(typeof(object)) &&
+                    !c.Sig.Type.IsCorelibType(typeof(ValueType)) && !c.Sig.Type.IsCorelibType(typeof(Enum)));
     }
 
     private void CheckTerminator(BasicBlock block, ProtectedRegionAnalysis regionAnalysis)
@@ -325,6 +424,7 @@ public class IRVerifier
     {
         Dictionary<TrackedValue, HashSet<UseRef>> _expectedUsers = new();
         Dictionary<Instruction, int> _blockIndices = new();
+        Dictionary<BasicBlock, HashSet<BasicBlock>> _exceptionalPaths = new();
 
         public void AddInst(IRVerifier verifier, Instruction inst, int blockIndex)
         {
@@ -376,8 +476,6 @@ public class IRVerifier
 
                 // Check users
                 if (val is Instruction def && verifier._reachable.Contains(def.Block)) {
-                    var defRegion = regionAnalysis.GetBlockRegion(def.Block);
-                    
                     foreach (var use in expUsers) {
                         var user = use.Parent;
 
@@ -389,15 +487,36 @@ public class IRVerifier
                             verifier.Error(user, $"Using non-dominating instruction '{def}'");
                         }
 
-                        if (def is not GuardInst && def.Block != user.Block && 
-                            defRegion.StartBlock.Guards().Any(g => g.Kind != GuardKind.Finally) && 
-                            defRegion.FindInnermostParent(user.Block) == null
+                        if (def is not GuardInst && def.Block != user.Block &&
+                            def.Block.Guards().Any(g => g.Kind != GuardKind.Finally) &&
+                            (user is PhiInst phi
+                                ? Enumerable.Range(0, phi.NumArgs).Any(i => phi.GetValue(i) == def && ExceptionalPaths(def.Block).Contains(phi.GetBlock(i)))
+                                : ExceptionalPaths(def.Block).Contains(user.Block))
                         ) {
                             verifier.Error(user, $"Using instruction defined inside a child region '{def}'");
                         }
                     }
                 }
             }
+        }
+
+        private HashSet<BasicBlock> ExceptionalPaths(BasicBlock definitionBlock)
+        {
+            if (_exceptionalPaths.TryGetValue(definitionBlock, out var reachable)) return reachable;
+            reachable = new();
+            _exceptionalPaths.Add(definitionBlock, reachable);
+            var pending = new Stack<BasicBlock>();
+            foreach (var guard in definitionBlock.Guards()) {
+                if (guard.Kind == GuardKind.Finally) continue;
+                pending.Push(guard.HandlerBlock);
+                if (guard.HasFilter) pending.Push(guard.FilterBlock);
+            }
+            while (pending.TryPop(out var block)) {
+                // Re-entering the definition's block executes its normal code again.
+                if (block == definitionBlock || !reachable.Add(block)) continue;
+                foreach (var successor in block.Succs) pending.Push(successor);
+            }
+            return reachable;
         }
 
         private bool IsDominatedByDef(DominatorTree domTree, Instruction def, Instruction user)

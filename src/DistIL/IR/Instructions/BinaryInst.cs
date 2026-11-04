@@ -33,6 +33,13 @@ public class BinaryInst : Instruction
         Op = op;
     }
 
+    internal BinaryInst(BinaryOp op, Value left, Value right, TypeDesc resultType)
+        : this(op, left, right)
+    {
+        Ensure.That(ResultType.IsStackAssignableTo(resultType));
+        ResultType = resultType;
+    }
+
     internal static TypeDesc? GetResultType(BinaryOp op, TypeDesc a, TypeDesc b)
     {
         // Return original type for bit ops that never overflow (useful for bools)

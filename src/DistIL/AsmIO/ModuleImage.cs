@@ -36,15 +36,38 @@ public sealed record ModuleImage(PEHeaderBuilder Header, CorFlags Flags = CorFla
         };
     }
 
-    internal void ValidateForWriting(AssemblyName name)
+    internal void ValidateForWriting(AssemblyName name, bool publicSign = false)
     {
         if (!Flags.HasFlag(CorFlags.ILOnly) || Flags.HasFlag(CorFlags.NativeEntryPoint) || HasNativePayload) {
             throw new NotSupportedException("Writing mixed-mode, native-entry-point, or precompiled native images is not supported");
         }
 
-        if (Flags.HasFlag(CorFlags.StrongNameSigned) || name.GetPublicKey() is { Length: > 0 } || HasAuthenticodeSignature) {
-            throw new NotSupportedException("Rewriting signed images requires a signing provider; unsigned managed images are supported");
+        if (HasAuthenticodeSignature) {
+            throw new NotSupportedException("Rewriting Authenticode-signed images requires a signing provider");
         }
+        if (publicSign) {
+            if (name.GetPublicKey() is not { Length: > 0 }) {
+                throw new NotSupportedException("Public signing requires an assembly public key");
+            }
+            GetSignatureSize(name);
+        } else if (Flags.HasFlag(CorFlags.StrongNameSigned) || name.GetPublicKey() is { Length: > 0 }) {
+            throw new NotSupportedException("Rewriting strong-name signed images requires a signing provider or explicit public signing (--public-sign)");
+        }
+    }
+
+    internal static int GetSignatureSize(AssemblyName name)
+    {
+        // A strong-name key has a 12-byte header followed by a PUBLICKEYBLOB
+        // (20-byte header and RSA modulus). The special ECMA key is 16 bytes.
+        ReadOnlySpan<byte> key = name.GetPublicKey();
+        if (key.SequenceEqual(new byte[] { 0, 0, 0, 0, 0, 0, 0, 0, 4, 0, 0, 0, 0, 0, 0, 0 })) return 128;
+        if (key.Length <= 32 || key[12] != 6 || key[13] != 2 ||
+            BinaryPrimitives.ReadUInt32LittleEndian(key[8..]) != key.Length - 12 ||
+            BinaryPrimitives.ReadUInt32LittleEndian(key[20..]) != 0x31415352 ||
+            BinaryPrimitives.ReadUInt32LittleEndian(key[24..]) != (uint)(key.Length - 32) * 8) {
+            throw new BadImageFormatException("Invalid strong-name public key");
+        }
+        return key.Length - 32;
     }
 
     internal ResourceSectionBuilder? CreateResources() => Resources.Length == 0 ? null : new NativeResources(Resources, ResourceRva);

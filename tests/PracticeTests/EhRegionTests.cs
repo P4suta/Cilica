@@ -5,6 +5,24 @@ using DistIL.Attributes;
 [Optimize]
 public class EhRegionTests
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FailedArgumentAssignmentsKeepThePreviousValue(bool fail)
+    {
+        Assert.Equal(fail ? "old" : "new", AssignInTry("old", fail));
+    }
+
+    static string AssignInTry(string input, bool fail)
+    {
+        try { input = Normalize(fail); }
+        catch (FormatException) { }
+        return input;
+    }
+
+    [DoNotOptimize]
+    static string Normalize(bool fail) => fail ? throw new FormatException() : "new";
+
     [Theory, InlineData(0), InlineData(1)]
     [CheckCodeGenAfterRun]
     public void MultiExit_Finally1(int path)

@@ -59,10 +59,10 @@ internal sealed class EnumeratorLoop
     private Value Receiver(IRBuilder builder)
         => _enumerator.Type.IsValueType ? _enumerator : builder.CreateLoad(_enumerator);
 
-    public BasicBlock GetExitTarget(BasicBlock target)
+    public BasicBlock GetExitTarget(BasicBlock target, bool exitRoot = false)
     {
-        if (_isRoot) return target;
-        var destination = _parent?.GetExitTarget(target) ?? target;
+        if (_isRoot && !exitRoot) return target;
+        var destination = _parent?.GetExitTarget(target, exitRoot) ?? target;
         var bridge = _loop.Header.Method.CreateBlock(insertAfter: _loop.Exit.Block).SetName("LQ_Leave");
         bridge.SetBranch(new LeaveInst(destination));
         _exitTargets.Add(destination);

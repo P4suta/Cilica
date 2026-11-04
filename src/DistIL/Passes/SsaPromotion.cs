@@ -13,6 +13,7 @@ public class SsaPromotion : IMethodPass
     {
         Dictionary<PhiInst, LocalSlot> _phiDefs = new(); // phi -> variable
         Dictionary<LocalSlot, NameStack> _slotNameStacks = new();
+        Dictionary<LocalSlot, Value> _initialValues = new();
         DominatorTree _domTree = null!;
 
         public MethodPassResult Run()
@@ -27,6 +28,7 @@ public class SsaPromotion : IMethodPass
             _domTree = ctx.GetAnalysis<DominatorTree>();
             _domTree.Traverse(preVisit: RenameBlock, postVisit: LeaveBlock);
 
+            RemoveDeadPhis();
             RemovePromotedSlots();
 
             return MethodInvalidations.DataFlow;
@@ -146,6 +148,26 @@ public class SsaPromotion : IMethodPass
             }
         }
 
+        private void RemoveDeadPhis()
+        {
+            // Dominance frontiers can place unused phis on exceptional exits.
+            // Remove entire dead phi webs, including cycles, before verification.
+            var live = new DiscreteStack<PhiInst>();
+            foreach (var phi in _phiDefs.Keys) {
+                if (phi.Block != null && phi.Users().Any(user => user is not PhiInst other || !_phiDefs.ContainsKey(other))) {
+                    live.Push(phi);
+                }
+            }
+            while (live.TryPop(out var phi)) {
+                foreach (var (_, value) in phi) {
+                    if (value is PhiInst input && _phiDefs.ContainsKey(input)) live.Push(input);
+                }
+            }
+            foreach (var phi in _phiDefs.Keys) {
+                if (phi.Block != null && !live.WasPushed(phi)) phi.Remove();
+            }
+        }
+
         private void WriteDef(NameStack stack, BasicBlock block, Value value)
         {
             // Avoid pushing duplicate defs for the same block
@@ -163,7 +185,13 @@ public class SsaPromotion : IMethodPass
                 }
                 stack.Pop();
             }
-            return new Undef(slot.Type);
+            if (!_initialValues.TryGetValue(slot, out var initial)) {
+                initial = ctx.Method.InitLocals
+                    ? new IR.Utils.IRBuilder(ctx.Method.EntryBlock, IR.Utils.InsertionDir.Before).CreateDefaultOf(slot.Type)
+                    : new Undef(slot.Type);
+                _initialValues.Add(slot, initial);
+            }
+            return initial;
         }
         }
 }

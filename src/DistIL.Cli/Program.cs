@@ -54,7 +54,8 @@ static void RunOptimizer(OptimizerOptions options)
 
     string outputPath = options.OutputPath ?? options.InputPath;
     module.Save(outputPath, savePdb: !options.DisablePdbGeneration,
-        backupPath: options.OutputPath == null ? options.InputPath + ".bak" : null);
+        backupPath: options.OutputPath == null ? options.InputPath + ".bak" : null,
+        publicSign: options.PublicSign);
 }
 static CompilationResult RunPasses(OptimizerOptions options, Compilation comp)
 {
