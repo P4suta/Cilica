@@ -14,6 +14,49 @@ using MethodBody = Cilica.IR.MethodBody;
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void PublicGenericCallsAccountForNonPublicTypeArguments(bool nested)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Bool);
+        var library = _modResolver.Create("PrivateGeneric_" + Guid.NewGuid().ToString("N"));
+        var hidden = library.CreateType("Tests", "Hidden", TypeAttributes.NotPublic);
+        if (nested) hidden = hidden.CreateNestedType("Nested", TypeAttributes.NestedPublic);
+        var helper = _modResolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers))
+            .FindMethod("IsReferenceOrContainsReferences").GetSpec([hidden]);
+        var ib = new IRBuilder(body.CreateBlock());
+        ib.CreateReturn(ib.Emit(new CallInst(helper, [])));
+
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new());
+        compilation.EnsureReferencedMembersAccessible(body);
+        var attribute = Assert.Single(body.Definition.Module.GetCustomAttribs(forAssembly: true)
+            .Where(attribute => attribute.Type.Name == "IgnoresAccessChecksToAttribute"));
+        Assert.Equal(library.AsmName.Name, attribute.Args[0]);
+    }
+
+    [Fact]
+    public void ConstrainedReferenceCallsRetainTheirReceiverIndirection()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var node = body.Definition.Module.CreateType("CilicaTests", "Node");
+        var field = node.CreateField("Value", PrimType.Int32, FieldAttributes.Public);
+        var reader = node.CreateMethod("Read", PrimType.Int32, [new ParamDef(node, "this")], MethodAttributes.Public);
+        reader.Body = new MethodBody(reader);
+        var rb = new IRBuilder(reader.Body.CreateBlock());
+        rb.CreateReturn(rb.CreateFieldLoad(field, reader.Body.Args[0]));
+        var caller = body.Definition.DeclaringType.CreateMethod("ReadNode", PrimType.Int32,
+            [new ParamDef(node.CreateByref(), "node")], MethodAttributes.Public | MethodAttributes.Static);
+        caller.Body = new MethodBody(caller);
+        var ib = new IRBuilder(caller.Body.CreateBlock());
+        var call = ib.Emit(new CallInst(reader, [caller.Body.Args[0]], isVirtual: true, constraint: node));
+        ib.CreateReturn(call);
+
+        Run(caller.Body, new InlineMethods());
+        Assert.Contains(call, caller.Body.Instructions());
+        Assert.Same(node, call.Constraint);
+    }
+
+    [Theory]
     [InlineData(false, false)]
     [InlineData(false, true)]
     [InlineData(true, false)]

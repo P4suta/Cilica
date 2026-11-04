@@ -18,7 +18,7 @@ public static class CompilationPipeline
             .RepeatUntilFixedPoint(3);
         manager.AddPasses().Apply<ScalarReplacement>()
             .IfChanged(child => child.Apply<SsaPromotion>().Apply<InlineMethods>()).RepeatUntilFixedPoint(3);
-        manager.AddPasses().Apply<ValueNumbering>().Apply<PresizeLists>().Apply<LoopStrengthReduction>().IfChanged(simplify);
+        manager.AddPasses().Apply<ValueNumbering>().Apply<AssertionProp>().Apply<PresizeLists>().Apply<LoopStrengthReduction>().IfChanged(simplify);
         manager.AddPasses().Apply<LoopVectorizer>().IfChanged(simplify);
 
         return manager;

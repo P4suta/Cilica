@@ -122,6 +122,44 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
     delegate RuntimeTypeHandle TypeToken(TypedReference reference);
 
     [Fact]
+    public void NativeZeroKeepsItsStackTypeWhenAlsoUsedByAByrefPhi()
+    {
+        var byref = PrimType.Int32.CreateByref();
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.IntPtr, PrimType.IntPtr, PrimType.Bool, byref);
+        var entry = body.CreateBlock();
+        var choose = body.CreateBlock();
+        var nullPath = body.CreateBlock();
+        var refPath = body.CreateBlock();
+        var merge = body.CreateBlock();
+        var earlyExit = body.CreateBlock();
+        var ib = new IRBuilder(entry);
+        var zero = ib.CreateConvert(ConstInt.CreateI(0), PrimType.IntPtr);
+        ib.SetBranch(ib.CreateUgt(body.Args[0], zero), choose, earlyExit);
+        choose.SetBranch(new BranchInst(body.Args[1], nullPath, refPath));
+        nullPath.SetBranch(merge);
+        refPath.SetBranch(merge);
+        var phi = merge.InsertPhi(new PhiInst(byref, (nullPath, zero), (refPath, body.Args[2])));
+        var mb = new IRBuilder(merge, InsertionDir.After);
+        mb.CreateReturn(mb.CreateConvert(phi, PrimType.IntPtr));
+        var eb = new IRBuilder(earlyExit);
+        eb.CreateReturn(eb.CreateConvert(ConstInt.CreateI(0), PrimType.IntPtr));
+
+        for (int pass = 0; pass < 2; pass++) {
+            body.Definition.ILBody = ILGenerator.GenerateCode(body);
+            body = Cilica.Frontend.ILImporter.ParseCode(body.Definition);
+            body.Definition.Body = body;
+            Run(body, new SimplifyCFG(), new SsaPromotion(), new AssertionProp());
+        }
+        var run = Utils.Compile<NativeZeroPhi>(body);
+        int value = 42;
+        Assert.Equal((nint)0, run(0, false, ref value));
+        Assert.Equal((nint)0, run(1, true, ref value));
+        Assert.NotEqual((nint)0, run(1, false, ref value));
+    }
+
+    delegate nint NativeZeroPhi(nint number, bool useNull, ref int value);
+
+    [Fact]
     public void PreparingPhiInputsDoesNotMoveAnExceptionGuard()
     {
         var exceptionType = _modResolver.Import(typeof(Exception));
@@ -199,6 +237,65 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
         var il = ILGenerator.GenerateCode(body).Instructions.ToList();
 
         Assert.True(il.FindIndex(i => i.OpCode == ILCode.Div) < il.FindIndex(i => i.OpCode == ILCode.Stsfld));
+    }
+
+    [Fact]
+    public void BranchCallsExecuteBeforeReadingTheirOutArguments()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.String);
+        var writer = body.Definition.DeclaringType.CreateMethod("Write", PrimType.Bool,
+            [new ParamDef(PrimType.String.CreateByref(), "value")], MethodAttributes.Public | MethodAttributes.Static);
+        writer.Body = new Cilica.IR.MethodBody(writer);
+        var wb = new IRBuilder(writer.Body.CreateBlock());
+        wb.CreateStore(writer.Body.Args[0], ConstString.Create("assigned"));
+        wb.CreateReturn(ConstInt.CreateI(1));
+        var entry = body.CreateBlock();
+        var success = body.CreateBlock();
+        var failure = body.CreateBlock();
+        var slot = body.CreateVar(PrimType.String);
+        var ib = new IRBuilder(entry);
+        var result = ib.CreateCall(writer, slot);
+        var value = ib.CreateLoad(slot);
+        ib.SetBranch(result, success, failure);
+        success.SetBranch(new ReturnInst(value));
+        failure.SetBranch(new ReturnInst(ConstNull.Create()));
+
+        Assert.Equal("assigned", Utils.Compile<Func<string>>(body)());
+    }
+
+    [Fact]
+    public void FinallyKeepsTheLockObjectLiveThroughoutTheProtectedBody()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Bool);
+        var entry = body.CreateBlock();
+        var guarded = body.CreateBlock();
+        var work = body.CreateBlock();
+        var left = body.CreateBlock();
+        var right = body.CreateBlock();
+        var handler = body.CreateBlock();
+        var exit = body.CreateBlock();
+        var constructor = _modResolver.Import(typeof(object)).FindMethod(".ctor");
+        var gate = new IRBuilder(entry).Emit(new NewObjInst(constructor, []));
+        entry.SetBranch(guarded);
+        guarded.InsertLast(new GuardInst(GuardKind.Finally, handler));
+        var gb = new IRBuilder(guarded, InsertionDir.After);
+        gb.CreateCall(_modResolver.Import(typeof(Monitor)).FindMethod("Enter", new MethodSig(PrimType.Void, [PrimType.Object])), gate);
+        guarded.SetBranch(work);
+        var wb = new IRBuilder(work);
+        var temporary = wb.Emit(new NewObjInst(constructor, []));
+        wb.SetBranch(body.Args[0], left, right);
+        foreach (var block in new[] { left, right }) {
+            new IRBuilder(block).CreateCall(_modResolver.Import(typeof(GC)).FindMethod("KeepAlive"), temporary);
+            block.SetBranch(new LeaveInst(exit));
+        }
+        new IRBuilder(handler).CreateCall(_modResolver.Import(typeof(Monitor)).FindMethod("Exit"), gate);
+        handler.SetBranch(new ResumeInst([exit]));
+        exit.SetBranch(new ReturnInst());
+
+        Assert.True(new Cilica.Analysis.LivenessAnalysis(body).IsLiveOut(work, gate));
+        var run = Utils.Compile<Action<bool>>(body);
+        run(false);
+        run(true);
     }
 
     [Theory]

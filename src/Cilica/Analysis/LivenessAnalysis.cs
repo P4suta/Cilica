@@ -19,6 +19,8 @@ public class LivenessAnalysis : IMethodAnalysis, IPrintDecorator
     {
         // TODO: This might be actually slower than an iterative data-flow analysis
         var worklist = new ArrayStack<BasicBlock>();
+        ProtectedRegionAnalysis? regions = null;
+        var protectedBlocks = new Dictionary<BasicBlock, BasicBlock[]>();
 
         // Visit all instructions defining a value
         foreach (var inst in method.Instructions()) {
@@ -29,9 +31,12 @@ public class LivenessAnalysis : IMethodAnalysis, IPrintDecorator
                     // Enqueue predecessors for source blocks of this phi
                     foreach (var (pred, val) in phi) {
                         if (val == inst) {
+                            // Phi inputs are consumed on the incoming edge.
+                            // Marking the merge live-in here would also mark
+                            // it visited, suppressing backward propagation for
+                            // an ordinary use of this value in the same block.
                             worklist.Push(pred);
                             AddLiveOut(pred, inst);
-                            AddLiveIn(user.Block, inst);
                         }
                     }
                 } else if (user.Block != inst.Block) {
@@ -46,6 +51,15 @@ public class LivenessAnalysis : IMethodAnalysis, IPrintDecorator
                         AddLiveOut(pred, inst);
                         worklist.Push(pred);
                     }
+                    if (userBlock.IsHandlerEntry) {
+                        // Guard edges summarize an entire protected region.
+                        // A handler can run after any of its blocks, so values
+                        // used there must survive the body and nested regions.
+                        foreach (var pred in GetProtectedBlocks(userBlock)) {
+                            AddLiveOut(pred, inst);
+                            worklist.Push(pred);
+                        }
+                    }
                 }
             }
         }
@@ -57,6 +71,22 @@ public class LivenessAnalysis : IMethodAnalysis, IPrintDecorator
 
         bool AddLiveOut(BasicBlock block, Instruction inst)
             => (_liveSets.GetOrAddRef(block).Out ??= new()).Add(inst);
+
+        BasicBlock[] GetProtectedBlocks(BasicBlock handler)
+        {
+            var guard = handler.Users().OfType<GuardInst>().First();
+            if (protectedBlocks.TryGetValue(guard.Block, out var blocks)) return blocks;
+
+            regions ??= new ProtectedRegionAnalysis(method);
+            var pending = new Stack<ProtectedRegion>();
+            var result = new List<BasicBlock>();
+            pending.Push(regions.GetBlockRegion(guard.Block));
+            while (pending.TryPop(out var region)) {
+                foreach (var block in region.Blocks) result.Add(block);
+                foreach (var child in region.Children) pending.Push(child);
+            }
+            return protectedBlocks[guard.Block] = result.ToArray();
+        }
     }
 
     static IMethodAnalysis IMethodAnalysis.Create(IMethodAnalysisManager mgr)

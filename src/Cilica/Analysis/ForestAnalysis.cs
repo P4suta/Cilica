@@ -74,7 +74,10 @@ public class ForestAnalysis : IMethodAnalysis
             // we can safely skip over leafs because they will be evaluated later than `def`.
             if (_leafs.Contains(inst)) continue;
 
-            if (inst.HasSideEffects && !AreInterchangeableHazards(def, inst, aa)) {
+            // Moving a call into a later expression must not move its writes
+            // past intervening reads, including loads of its out arguments.
+            bool ordersRead = inst.MayReadFromMemory && (def.MayWriteToMemory || def.IsMemoryBarrier);
+            if ((inst.HasSideEffects || ordersRead) && !AreInterchangeableHazards(def, inst, aa)) {
                 return true;
             }
         }
