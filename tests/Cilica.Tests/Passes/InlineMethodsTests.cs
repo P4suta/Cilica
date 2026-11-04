@@ -108,6 +108,90 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
         Assert.Equal(50, Utils.Compile<Func<int>>(body)());
     }
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    public void InliningPreservesBaseConstructorTypeInitialization(bool genericBase, bool throwingInitializer)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var module = body.Definition.Module;
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var baseDefinition = module.CreateType(null, genericBase ? "Base`1" : "Base",
+            genericParams: genericBase ? [new GenericParamType(0, false)] : []);
+        TypeDefOrSpec baseType = genericBase ? baseDefinition.GetSpec([PrimType.Int32]) : baseDefinition;
+        var cctor = baseDefinition.CreateMethod(".cctor", PrimType.Void, [],
+            MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        cctor.Body = new MethodBody(cctor);
+        var init = new IRBuilder(cctor.Body.CreateBlock());
+        init.CreateFieldStore(effect, null, ConstInt.CreateI(50));
+        if (throwingInitializer) {
+            init.Emit(new ThrowInst(init.CreateNewObj(_modResolver.Import(typeof(InvalidOperationException)).FindMethod(".ctor", new MethodSig(PrimType.Void, [])))));
+        } else {
+            init.CreateReturn();
+        }
+        var baseCtor = baseDefinition.CreateMethod(".ctor", PrimType.Void, [new ParamDef(baseDefinition.GetUnboundSpec(), "this")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        baseCtor.Body = new MethodBody(baseCtor);
+        var baseBuilder = new IRBuilder(baseCtor.Body.CreateBlock());
+        baseBuilder.CreateCall(_modResolver.Import(typeof(object)).FindMethod(".ctor"), baseCtor.Body.Args[0]);
+        baseBuilder.CreateReturn();
+        var derived = module.CreateType(null, "Derived", baseType: baseType);
+        var ctor = derived.CreateMethod(".ctor", PrimType.Void, [new ParamDef(derived, "this")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        ctor.Body = new MethodBody(ctor);
+        var constructor = new IRBuilder(ctor.Body.CreateBlock());
+        var call = constructor.CreateCall(baseType.FindMethod(".ctor"), ctor.Body.Args[0]);
+        constructor.CreateReturn();
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateNewObj(ctor);
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+
+        CheckBehavior(Utils.Compile<Func<int>>(body));
+        Run(ctor.Body, new InlineMethods(), new DeadCodeElim());
+        Assert.Null(call.Block);
+        CheckBehavior(Utils.Compile<Func<int>>(body));
+
+        void CheckBehavior(Func<int> run)
+        {
+            if (throwingInitializer) {
+                Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(() => run()).InnerException);
+            } else {
+                Assert.Equal(50, run());
+            }
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void EliminatingValueTypeCallsPreservesTypeInitialization(bool inline)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var type = body.Definition.Module.CreateType(null, "Value", TypeAttributes.Public | TypeAttributes.Sealed | TypeAttributes.SequentialLayout,
+            baseType: (TypeDefOrSpec)_modResolver.Import(typeof(ValueType)));
+        var cctor = type.CreateMethod(".cctor", PrimType.Void, [],
+            MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        cctor.Body = new MethodBody(cctor);
+        var init = new IRBuilder(cctor.Body.CreateBlock());
+        init.CreateFieldStore(effect, null, ConstInt.CreateI(50));
+        init.CreateReturn();
+        var method = type.CreateMethod("Noop", PrimType.Void, [new ParamDef(type.CreateByref(), "this")], MethodAttributes.Public);
+        method.Body = new MethodBody(method);
+        method.Body.CreateBlock().SetBranch(new ReturnInst());
+        var builder = new IRBuilder(body.CreateBlock());
+        var value = body.CreateVar(type);
+        builder.CreateInitObj(value);
+        builder.CreateCall(method, value);
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+
+        Assert.Equal(50, Utils.Compile<Func<int>>(body)());
+        Run(body, inline ? new InlineMethods() : new DeadCodeElim());
+        Assert.Equal(50, Utils.Compile<Func<int>>(body)());
+    }
+
     [Fact]
     public void InliningBoundsMutualRecursionWithProfitableArguments()
     {

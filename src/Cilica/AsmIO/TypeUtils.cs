@@ -11,6 +11,12 @@ public static class TypeUtils
            (fieldAccess || !def.Attribs.HasFlag(TypeAttributes.BeforeFieldInit)) &&
            def.Methods.Any(m => m.Name == ".cctor");
 
+    /// <summary> Whether invoking this method can run its declaring type's initializer. </summary>
+    /// <remarks> Constructors (including base constructor calls), static methods, and value-type instance methods trigger precise initialization. </remarks>
+    public static bool RequiresTypeInitialization(this MethodDesc method)
+        => (method.IsStatic || method.IsConstructor || method.DeclaringType.IsValueType) &&
+           method.DeclaringType.RequiresTypeInitialization();
+
     /// <summary> Checks if this type is defined in <c>System.Private.CoreLib</c>. </summary>
     public static bool IsCorelibType(this TypeDesc desc)
     {

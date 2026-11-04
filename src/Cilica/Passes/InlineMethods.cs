@@ -141,7 +141,7 @@ public class InlineMethods : IMethodPass
         if (call is CallInst { IsVirtual: true, InBounds: false } && args[0].ResultType.IsManagedObject()) {
             builder.CreateNullCheck(args[0]);
         }
-        if ((target.IsStatic || call is NewObjInst) && target.DeclaringType.RequiresTypeInitialization()) {
+        if (target.RequiresTypeInitialization()) {
             builder.CreateTypeInitialization(target.DeclaringType);
         }
 

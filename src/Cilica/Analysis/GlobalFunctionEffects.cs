@@ -141,7 +141,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
 
     private FunctionEffects ComputeEffects(MethodDef method)
     {
-        if (method.IsStatic && method.DeclaringType.RequiresTypeInitialization()) {
+        if (method.RequiresTypeInitialization()) {
             return FunctionEffects.Unknown;
         }
 
