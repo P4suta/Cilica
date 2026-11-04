@@ -6,7 +6,7 @@ public class MethodDebugSymbols
     public required List<SequencePoint> SequencePoints { get; init; }
     public MethodDef? StateMachineKickoffMethod { get; init; }
 
-    /// <summary> Finds the index of a sequence point at or after <paramref name="offset"/>. </summary>
+    /// <summary> Finds the last sequence point at or before <paramref name="offset"/>, or -1 if none exists. </summary>
     public int IndexOfSequencePoint(int offset)
     {
         var points = SequencePoints.AsSpan();

@@ -9,6 +9,7 @@ internal class RegionNode
     public int StartOffset, EndOffset;
     public RegionNode? Parent;
     public List<RegionNode> Children = new();
+    public BasicBlock EntryBlock = null!;
 
     public HashSet<BasicBlock> ExitTargets = new();
     public Dictionary<BasicBlock, BasicBlock>? LeavingBlocks; // Target -> Leave. May form a chain through multiple regions at a time.
@@ -33,7 +34,7 @@ internal class RegionNode
 
     public RegionNode FindEnclosing(int offset) => FindEnclosing(offset, offset + 1);
 
-    public bool Contains(int offset) => offset >= StartOffset && offset <= EndOffset;
+    public bool Contains(int offset) => offset >= StartOffset && offset < EndOffset;
 
     public static RegionNode? BuildTree(ExceptionClause[] clauses)
     {

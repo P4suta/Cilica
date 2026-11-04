@@ -197,7 +197,7 @@ internal static class ILTables
             TypeKind.Int64 or TypeKind.UInt64   => ld ? ILCode.Ldind_I8 : ILCode.Stind_I8,
             TypeKind.Single                     => ld ? ILCode.Ldind_R4 : ILCode.Stind_R4,
             TypeKind.Double                     => ld ? ILCode.Ldind_R8 : ILCode.Stind_R8,
-            TypeKind.IntPtr or TypeKind.UIntPtr => ld ? ILCode.Ldind_I : ILCode.Stind_I,
+            TypeKind.IntPtr or TypeKind.UIntPtr or TypeKind.Pointer => ld ? ILCode.Ldind_I : ILCode.Stind_I,
             _                                   => ld ? ILCode.Ldobj : ILCode.Stobj
         };
     }

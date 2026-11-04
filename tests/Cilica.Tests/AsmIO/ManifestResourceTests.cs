@@ -61,4 +61,35 @@ public class ManifestResourceTests
         Assert.Equal("ref2", reader.GetString(mfs[1].Name));
         Assert.Equal(HandleKind.AssemblyFile, mfs[1].Implementation.Kind);
     }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(4)]
+    [InlineData(8)]
+    [InlineData(12)]
+    public void EmbeddedResourceContentsSurviveRepeatedRewrites(int length)
+    {
+        using var directory = new TemporaryDirectory();
+        var expected = Enumerable.Range(0, length).Select(i => (byte)(i + 1)).ToArray();
+        string path = Path.Combine(directory.Path, "original.dll");
+        using (var writer = new ModuleResolver()) {
+            writer.AddTrustedSearchPaths();
+            var module = writer.Create("ResourceRoundTrip");
+            // A signature-free PE32+ image allows the resource to end at the section boundary.
+            module.Image = new(new PEHeaderBuilder(machine: Machine.Amd64,
+                imageCharacteristics: Characteristics.ExecutableImage | Characteristics.Dll));
+            module.CreateEmbeddedResource("payload", expected);
+            module.Save(path, savePdb: false, options: ModuleWriteOptions.StripSignatures);
+        }
+        for (int round = 0; round < 4; round++) {
+            using var reader = new ModuleResolver();
+            reader.AddTrustedSearchPaths();
+            var module = reader.Load(path);
+            Assert.Equal(expected, Assert.IsType<EmbeddedResource>(module.GetManifestResource("payload")).GetData().ToArray());
+            if (round == 3) break;
+            path = Path.Combine(directory.Path, $"rewrite{round}.dll");
+            module.Save(path, savePdb: false, options: ModuleWriteOptions.StripSignatures);
+        }
+    }
 }

@@ -12,6 +12,30 @@ using System.Reflection;
 public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Fact]
+    public unsafe void PointerLoadsAndStoresSurviveRepeatedCompilation()
+    {
+        var pointer = PrimType.Byte.CreatePointer();
+        var body = Utils.CreateTestMethod(_modResolver, pointer, pointer.CreatePointer(), pointer);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.Emit(new StoreInst(body.Args[0], body.Args[1], pointer));
+        builder.CreateReturn(builder.Emit(new LoadInst(body.Args[0], pointer)));
+        byte value = 42;
+        byte* storage = null;
+        for (int round = 0; round < 3; round++) {
+            body.Definition.ILBody = ILGenerator.GenerateCode(body);
+            body = Cilica.Frontend.ILImporter.ParseCode(body.Definition);
+            body.Definition.Body = body;
+            IRVerifier.Verify(body);
+            var run = Utils.Compile<UpdatePointer>(body);
+            Assert.Equal((nint)(&value), (nint)run(&storage, &value));
+            Assert.Equal((nint)(&value), (nint)storage);
+            Assert.Equal(42, *storage);
+        }
+    }
+
+    unsafe delegate byte* UpdatePointer(byte** address, byte* value);
+
+    [Fact]
     public void Test_ILGenerator() => CheckCIL("CodeGen/StructFieldInsertExtract.ethil");
 
     [Theory]

@@ -45,11 +45,12 @@ public class EmbeddedResource : ResourceDesc
         }
         
         var pe = Module._loader!._pe;
-        PEMemoryBlock section = pe.GetSectionData(pe.PEHeaders.CorHeader!.ResourcesDirectory.RelativeVirtualAddress);
-        BlobReader blob = section.GetReader(_offsetInResourceDir, section.Length - _offsetInResourceDir);
+        var directory = pe.PEHeaders.CorHeader!.ResourcesDirectory;
+        PEMemoryBlock section = pe.GetSectionData(directory.RelativeVirtualAddress);
+        BlobReader blob = section.GetReader(_offsetInResourceDir, directory.Size - _offsetInResourceDir);
         int length = blob.ReadInt32();
 
-        if (length < 0 || length >= blob.Length - 4) {
+        if (length < 0 || length > blob.RemainingBytes) {
             throw new BadImageFormatException();
         }
         return new ReadOnlySpan<byte>(blob.CurrentPointer, length);

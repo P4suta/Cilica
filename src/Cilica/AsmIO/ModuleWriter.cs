@@ -336,7 +336,7 @@ internal partial class ModuleWriter
             _resourceDataStream.WriteInt32(data.Length);
 
             fixed (byte* pData = data) {
-                _resourceDataStream.WriteBytes(pData, data.Length);
+                if (!data.IsEmpty) _resourceDataStream.WriteBytes(pData, data.Length);
             }
             _resourceDataStream.Align(8); // unspecified in ECMA, same as Roslyn
             

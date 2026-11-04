@@ -13,6 +13,54 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class SsaPromotionTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ValuesMergedAtTryEntryRemainAvailableToHandlers(bool useFilter)
+    {
+        var action = _modResolver.Import(typeof(Action<int>));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Bool, action);
+        var entry = body.CreateBlock();
+        var left = body.CreateBlock();
+        var right = body.CreateBlock();
+        var guarded = body.CreateBlock();
+        var filter = useFilter ? body.CreateBlock() : null;
+        var handler = body.CreateBlock();
+        var exit = body.CreateBlock();
+        var slot = body.CreateVar(PrimType.Int32);
+        entry.SetBranch(new BranchInst(body.Args[0], left, right));
+        new IRBuilder(left).CreateStore(slot, ConstInt.CreateI(17));
+        left.SetBranch(guarded);
+        new IRBuilder(right).CreateStore(slot, ConstInt.CreateI(42));
+        right.SetBranch(guarded);
+        guarded.InsertLast(new GuardInst(GuardKind.Catch, handler, _modResolver.Import(typeof(Exception)), filter));
+        var builder = new IRBuilder(guarded, InsertionDir.After);
+        builder.CreateCallVirt(action.FindMethod("Invoke"), body.Args[1], builder.CreateLoad(slot));
+        guarded.SetBranch(new LeaveInst(exit));
+        if (filter != null) {
+            var check = new IRBuilder(filter);
+            check.CreateCallVirt(action.FindMethod("Invoke"), body.Args[1], check.CreateLoad(slot));
+            filter.SetBranch(new ResumeInst([exit], ConstInt.CreateI(1)));
+        }
+        var cleanup = new IRBuilder(handler);
+        cleanup.CreateCallVirt(action.FindMethod("Invoke"), body.Args[1], cleanup.CreateLoad(slot));
+        handler.SetBranch(new LeaveInst(exit));
+        exit.SetBranch(new ReturnInst());
+
+        Run(body, new SsaPromotion());
+        var run = Utils.Compile<Action<bool, Action<int>>>(body);
+        foreach (bool chooseLeft in new[] { false, true }) {
+            foreach (bool fail in new[] { false, true }) {
+                var observed = new List<int>();
+                run(chooseLeft, value => {
+                    observed.Add(value);
+                    if (fail && observed.Count == 1) throw new InvalidOperationException();
+                });
+                Assert.Equal(Enumerable.Repeat(chooseLeft ? 17 : 42, fail ? (useFilter ? 3 : 2) : 1), observed);
+            }
+        }
+    }
+
     [Fact]
     public void SsaPromotionPreservesValuesObservedByFinally()
     {

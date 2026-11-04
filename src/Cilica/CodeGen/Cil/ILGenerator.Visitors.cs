@@ -93,7 +93,7 @@ partial class ILGenerator
         var addrType = inst.Address.ResultType;
         var interpType = inst.ElemType;
 
-        if (interpType.IsValueType || interpType is GenericParamType || addrType.ElemType != interpType) {
+        if (!interpType.IsManagedObject() || interpType is GenericParamType || addrType.ElemType != interpType) {
             var code = ILTables.GetPtrAccessCode(interpType, isLoad);
             var oper = code is ILCode.Ldobj or ILCode.Stobj ? interpType : null;
             _asm.Emit(code, oper);

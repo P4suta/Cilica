@@ -481,7 +481,9 @@ public class IRVerifier
                             verifier.Error(user, $"Using non-dominating instruction '{def}'");
                         }
 
-                        if (def is not GuardInst && def.Block != user.Block &&
+                        // Phi inputs are established on incoming edges, before
+                        // any protected instruction can transfer to a handler.
+                        if (def is not (GuardInst or PhiInst) && def.Block != user.Block &&
                             def.Block.Guards().Any(g => g.Kind != GuardKind.Finally) &&
                             (user is PhiInst phi
                                 ? Enumerable.Range(0, phi.NumArgs).Any(i => phi.GetValue(i) == def && ExceptionalPaths(def.Block).Contains(phi.GetBlock(i)))

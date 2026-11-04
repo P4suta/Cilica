@@ -128,6 +128,7 @@ public class ILImporter
 
             var guard = new GuardInst(kind, handlerBlock.Block, clause.CatchType, filterBlock?.Block);
             startBlock.InsertAnteLast(guard);
+            _regionTree!.FindEnclosing(clause.TryStart, clause.TryEnd).EntryBlock = startBlock;
 
             // Push exception on handler/filter entry stack
             if (kind == GuardKind.Catch) {
@@ -139,6 +140,25 @@ public class ILImporter
             mappings[guard] = clause;
         }
 
+        // A handler/filter can begin at the same IL offset as a nested try.
+        // Give the exceptional entry its own block, outside that nested region.
+        // Resolve these entries after all protected entry blocks have been built.
+        foreach (var (guard, clause) in mappings) {
+            guard.HandlerBlock = GetHandlerEntry(clause.HandlerStart);
+            if (guard.HasFilter) guard.FilterBlock = GetHandlerEntry(clause.FilterStart);
+        }
+
+        BasicBlock GetHandlerEntry(int offset)
+        {
+            var state = GetBlock(offset);
+            if (state.EntryBlock.HasGuards) {
+                var entry = _body.CreateBlock(insertAfter: state.EntryBlock.Prev);
+                entry.SetBranch(state.EntryBlock);
+                state.EntryBlock = entry;
+            }
+            return state.EntryBlock;
+        }
+
         BasicBlock GetOrSplitStartBlock(ExceptionClause region)
         {
             var state = GetBlock(region.TryStart);
@@ -148,7 +168,6 @@ public class ILImporter
             //  "If handlers are nested, the most deeply nested try blocks shall come
             //  before the try blocks that enclose them."
             // TODO: consider using the region tree for this
-            // FIXME: insert dummy jump block for regions starting in the entry block of a handler/filter
             if (IsBlockNestedBy(region, state.EntryBlock)) {
                 var newBlock = _body.CreateBlock(insertAfter: state.EntryBlock.Prev);
 
@@ -297,6 +316,19 @@ public class ILImporter
 
     /// <summary> Gets the block for the leader instruction at the specified offset. </summary>
     internal BlockState GetBlock(int offset) => _blocks[offset];
+
+    internal BasicBlock GetBranchTarget(int sourceOffset, int targetOffset)
+    {
+        var target = GetBlock(targetOffset).Block;
+        // Multiple nested tries can share an IL offset. Enter each new region,
+        // but do not re-enter an enclosing guard on a branch within its body.
+        for (var region = _regionTree?.FindEnclosing(targetOffset);
+             region is { Kind: RegionKind.Protected } && region.StartOffset == targetOffset && !region.Contains(sourceOffset);
+             region = region.Parent) {
+            target = region.EntryBlock;
+        }
+        return target;
+    }
 
     internal (Value Slot, VarFlags CombinedFlags, bool IsBlockLocal) GetVarSlot(VarFlags op, int index)
     {

@@ -67,7 +67,7 @@ internal class BlockState
     {
         var succ = _importer.GetBlock(offset);
         succ._preds.Add(this);
-        return succ.EntryBlock;
+        return _importer.GetBranchTarget(StartOffset, offset);
     }
     // Adds the last instruction in the block (a branch).
     private void TerminateBlock(Instruction branch, bool clearStack = false)
@@ -157,12 +157,13 @@ internal class BlockState
                 while (seqIndex + 1 < seqPoints.Count &&  inst.Offset >= seqPoints[seqIndex + 1].Offset) {
                     seqIndex++;
                 }
-                var sp = seqPoints[seqIndex];
-
-                if (sp.IsHidden) {
+                if (seqIndex < 0 || seqPoints[seqIndex].IsHidden) {
                     _currDebugLoc = null;
-                } else if (_currDebugLoc == null || !SequencePoint.Create(_currDebugLoc, 0).IsSameSourceRange(sp)) {
-                    _currDebugLoc = new DebugSourceLocation(sp);
+                } else {
+                    var sp = seqPoints[seqIndex];
+                    if (_currDebugLoc == null || !SequencePoint.Create(_currDebugLoc, 0).IsSameSourceRange(sp)) {
+                        _currDebugLoc = new DebugSourceLocation(sp);
+                    }
                 }
             }
             var prefix = InstFlags.None;
@@ -838,15 +839,30 @@ internal class BlockState
 
     private void ImportLeave(int targetOffset)
     {
-        var currRegion = _importer._regionTree!.FindEnclosing(StartOffset);
-        var destRegion = _importer._regionTree!.FindEnclosing(targetOffset);
-        var targetBlock = _importer.GetBlock(targetOffset).Block;
+        var currRegion = _importer._regionTree?.FindEnclosing(StartOffset);
+        var destRegion = _importer._regionTree?.FindEnclosing(targetOffset);
+        var targetBlock = _importer.GetBranchTarget(StartOffset, targetOffset);
+
+        // CIL leave may also branch within a region or enter the beginning of
+        // a disjoint try. Only the regions outside the common ancestor unwind.
+        var ancestors = new HashSet<RegionNode>();
+        for (var region = currRegion; region != null; region = region.Parent) ancestors.Add(region);
+        while (destRegion != null && !ancestors.Contains(destRegion)) {
+            if (destRegion.Kind != RegionKind.Protected || destRegion.StartOffset != targetOffset) {
+                throw Error("Leave target is not an enclosing region or a protected entry.");
+            }
+            destRegion = destRegion.Parent;
+        }
+        if (currRegion == destRegion) {
+            TerminateBlock(new BranchInst(targetBlock), clearStack: true);
+            return;
+        }
 
         // Build the continuation from the outermost region inward, so each leave
         // exits exactly one region. Finally resumes must name these immediate
         // continuations, including those introduced for enclosing regions.
         var parents = new List<RegionNode>();
-        for (var parent = currRegion.Parent; parent != destRegion; parent = parent.Parent) {
+        for (var parent = currRegion!.Parent; parent != destRegion; parent = parent.Parent) {
             if (parent == null) throw Error("Leave target is not in an enclosing region.");
             parents.Add(parent);
         }

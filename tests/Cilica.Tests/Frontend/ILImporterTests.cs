@@ -12,6 +12,95 @@ using Cilica.Util;
 public class ILImporterTests(ModuleResolverFixture fixture)
 {
     [Theory]
+    [InlineData("LoopAtSharedTryEntry", 0, "2134")]
+    [InlineData("LoopAtSharedTryEntry", 1, "2134")]
+    [InlineData("LoopAtSharedTryEntry", 2, "234")]
+    [InlineData("LeaveIntoNestedSiblingTry", 0, "123456")]
+    [InlineData("LeaveIntoNestedSiblingTry", 1, "12")]
+    [InlineData("LeaveIntoNestedSiblingTry", 3, "12345")]
+    [InlineData("LeaveWithinTry", 0, "1234")]
+    [InlineData("LeaveWithinTry", 2, "123")]
+    [InlineData("LeaveWithoutExceptionRegions", 0, "1")]
+    [InlineData("FinallyStartsWithTry", 0, "1234")]
+    [InlineData("FinallyStartsWithTry", 1, "123")]
+    [InlineData("FinallyStartsWithTry", 2, "123")]
+    public void ExceptionControlFlowSurvivesRepeatedOptimization(string name, int failAt, string expected)
+    {
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(AppContext.BaseDirectory, "TestAsm.IL.dll");
+        for (int round = 0; round < 4; round++) {
+            var assembly = System.Reflection.Assembly.Load(File.ReadAllBytes(path));
+            var run = assembly.GetType("ExceptionRegionCases")!.GetMethod(name)!.CreateDelegate<Action<Action<int>>>();
+            var trace = new List<int>();
+            var failure = new InvalidOperationException();
+            var actual = Record.Exception(() => run(value => {
+                trace.Add(value);
+                if (value == failAt) throw failure;
+            }));
+            Assert.Equal(expected, string.Concat(trace));
+            Assert.Same(failAt == 0 ? null : failure, actual);
+            if (round == 3) break;
+
+            using var resolver = new ModuleResolver();
+            resolver.AddTrustedSearchPaths();
+            var module = resolver.Load(path);
+            var method = (MethodDef)module.FindType(null, "ExceptionRegionCases")!.FindMethod(name);
+            var compilation = new Compilation(module, new VoidLogger(), new() { VerifyEachPass = true });
+            CompilationPipeline.CreateDefault(compilation).Run([method]).ThrowIfFailed();
+            path = Path.Combine(directory.Path, $"round{round}.dll");
+            module.Save(path, savePdb: false);
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingPrologueSequencePointsSurviveRepeatedOptimization(bool hasSequencePoint)
+    {
+        using var directory = new TemporaryDirectory();
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var body = Utils.CreateTestMethod(resolver, PrimType.Int32, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.Emit(new BinaryInst(BinaryOp.SDiv, ConstInt.CreateI(42), body.Args[0])));
+        var method = body.Definition;
+        method.ILBody = Cilica.CodeGen.Cil.ILGenerator.GenerateCode(body);
+        method.Body = null;
+        var document = new DebugSourceDocument() { Name = "division.cs", Language = DebugSourceDocument.CSharp };
+        method.Module.GetDebugSymbols(create: true)!.SetMethodSymbols(method, new() {
+            Document = document,
+            SequencePoints = hasSequencePoint ? [new() {
+                Document = document, Offset = method.ILBody.Instructions.Single(i => i.OpCode == ILCode.Div).Offset,
+                StartLine = 42, EndLine = 42, StartColumn = 1, EndColumn = 10
+            }] : []
+        });
+        string path = Path.Combine(directory.Path, "round.dll");
+        OptimizeAndRun(method);
+        for (int round = 0; round < 2; round++) {
+            using var reader = new ModuleResolver();
+            reader.AddTrustedSearchPaths();
+            var module = reader.Load(path);
+            OptimizeAndRun((MethodDef)module.FindType(null, "TestMethods")!.FindMethod("Run"));
+        }
+
+        void OptimizeAndRun(MethodDef method)
+        {
+            var compilation = new Compilation(method.Module, new VoidLogger(), new() { VerifyEachPass = true });
+            CompilationPipeline.CreateDefault(compilation).Run([method]).ThrowIfFailed();
+            method.Module.Save(path, savePdb: true);
+            var assembly = System.Reflection.Assembly.Load(File.ReadAllBytes(path), File.ReadAllBytes(Path.ChangeExtension(path, ".pdb")));
+            var run = assembly.GetType("TestMethods")!.GetMethod("Run")!.CreateDelegate<Func<int, int>>();
+            Assert.Equal(21, run(2));
+            var exception = Assert.Throws<DivideByZeroException>(() => run(0));
+            if (hasSequencePoint) {
+                var frame = new System.Diagnostics.StackTrace(exception, fNeedFileInfo: true).GetFrame(0)!;
+                Assert.Equal(42, frame.GetFileLineNumber());
+                Assert.EndsWith("division.cs", frame.GetFileName());
+            }
+        }
+    }
+
+    [Theory]
     [InlineData("LoadPointerField")]
     [InlineData("StorePointerField")]
     [InlineData("AddressPointerField")]
