@@ -32,6 +32,12 @@ if (result.Tag == ParserResultType.NotParsed) {
 
 static void RunOptimizer(OptimizerOptions options)
 {
+    if (options.PublicSign && options.StripSignatures) {
+        throw new ArgumentException("--public-sign and --strip-signatures cannot be combined");
+    }
+    var writeOptions = (options.PublicSign ? ModuleWriteOptions.PublicSign : 0) |
+        (options.StripSignatures ? ModuleWriteOptions.StripSignatures : 0) |
+        (options.StripReadyToRun ? ModuleWriteOptions.StripReadyToRun : 0);
     var logger = new ConsoleLogger() { MinLevel = options.Verbosity };
 
     using var resolver = new ModuleResolver(logger);
@@ -55,7 +61,7 @@ static void RunOptimizer(OptimizerOptions options)
     string outputPath = options.OutputPath ?? options.InputPath;
     module.Save(outputPath, savePdb: !options.DisablePdbGeneration,
         backupPath: options.OutputPath == null ? options.InputPath + ".bak" : null,
-        publicSign: options.PublicSign);
+        options: writeOptions);
 }
 static CompilationResult RunPasses(OptimizerOptions options, Compilation comp)
 {

@@ -18,10 +18,8 @@ Cilica is a continuation of [DistIL](https://github.com/dubiousconst282/DistIL).
 
 See [Optimization Passes](./docs/opt-list.md) for a detailed list of optimizations passes available.
 
-The CLI can rewrite strong-named assemblies for .NET Core / .NET 5+ with the explicit `--public-sign` option. It preserves the public key and assembly identity, reserves a zero-filled signature, and sets the strong-name-signed flag. This does **not** retain the publisher's cryptographic signature; see [.NET public signing](https://github.com/dotnet/runtime/blob/main/docs/project/public-signing.md). Authenticode-signed images remain unsupported. Use a separate output path to keep the original:
-
 ```powershell
-Cilica.Cli -i input/MyLibrary.dll -o output/MyLibrary.dll --public-sign --strict --verify-each
+Cilica.Cli -i input/MyLibrary.dll -o output/MyLibrary.dll
 ```
 
 # Usage

@@ -125,25 +125,32 @@ public class ModuleDef : EntityDesc
 
     /// <summary> Writes the module, optionally keeping its public key with an empty strong-name signature. </summary>
     public void Save(Stream stream, Stream? pdbStream, string path, bool publicSign)
+        => Save(stream, pdbStream, path, publicSign ? ModuleWriteOptions.PublicSign : ModuleWriteOptions.None);
+
+    /// <summary> Writes the module with explicit signing and native-code removal options. </summary>
+    public void Save(Stream stream, Stream? pdbStream, string path, ModuleWriteOptions options)
     {
         Resolver.ThrowIfDisposed();
-        Image?.ValidateForWriting(AsmName, publicSign);
-        var writer = new ModuleWriter(this);
+        var writer = new ModuleWriter(this, options);
         writer.BuildTables();
-        writer.Serialize(stream, pdbStream, path, publicSign);
+        writer.Serialize(stream, pdbStream, path);
     }
 
     public void Save(string path, bool savePdb, string? backupPath = null) => Save(path, savePdb, publicSign: false, backupPath);
 
     /// <summary> Atomically writes the module, optionally public-signing it without a private key. </summary>
     public void Save(string path, bool savePdb, bool publicSign, string? backupPath = null)
+        => Save(path, savePdb, publicSign ? ModuleWriteOptions.PublicSign : ModuleWriteOptions.None, backupPath);
+
+    /// <summary> Atomically writes the module with explicit signing and native-code removal options. </summary>
+    public void Save(string path, bool savePdb, ModuleWriteOptions options, string? backupPath = null)
     {
         using var output = new AtomicOutput();
         string pdbPath = Path.ChangeExtension(path, ".pdb");
         var pdbStream = savePdb && GetDebugSymbols() != null
             ? output.Create(pdbPath, backupPath == null ? null : pdbPath + ".bak") : null;
         var stream = output.Create(path, backupPath);
-        Save(stream, pdbStream, path, publicSign);
+        Save(stream, pdbStream, path, options);
         output.Commit();
     }
 

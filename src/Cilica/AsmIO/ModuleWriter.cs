@@ -9,6 +9,9 @@ using System.Security.Cryptography;
 internal partial class ModuleWriter
 {
     readonly ModuleDef _mod;
+    readonly ModuleWriteOptions _options;
+    readonly ModuleImage _image;
+    readonly PEHeaderBuilder _header;
     readonly MetadataBuilder _builder;
     readonly MethodBodyStreamEncoder _bodyEncoder;
     readonly ReservedBlob<GuidHandle> _mvid;
@@ -20,13 +23,35 @@ internal partial class ModuleWriter
     readonly List<EntityDesc> _genericDefs = new();
     readonly Dictionary<(StringHandle, BlobHandle, bool), AssemblyFileHandle> _fileRefHandles = new();
 
-    public ModuleWriter(ModuleDef mod)
+    public ModuleWriter(ModuleDef mod, ModuleWriteOptions options)
     {
         _mod = mod;
+        _options = options;
+        var characteristics = Characteristics.LargeAddressAware | Characteristics.ExecutableImage |
+            (mod.EntryPoint == null ? Characteristics.Dll : 0);
+        _image = mod.Image ?? new ModuleImage(new PEHeaderBuilder(imageCharacteristics: characteristics));
+        _image.ValidateForWriting(mod.AsmName, options);
+        _header = _image.GetOutputHeader(options);
+        if (_image.ReadyToRunFlags != null && options.HasFlag(ModuleWriteOptions.StripReadyToRun)) {
+            ValidateRetainedIL();
+        }
         _builder = new MetadataBuilder();
         _mvid = _builder.ReserveGuid();
         _mvid.CreateWriter().WriteGuid(Guid.Empty);
         _bodyEncoder = new MethodBodyStreamEncoder(new BlobBuilder());
+    }
+
+    private void ValidateRetainedIL()
+    {
+        foreach (var method in _mod.MethodDefs()) {
+            var codeType = method.ImplAttribs & MethodImplAttributes.CodeTypeMask;
+            bool external = (method.Attribs & (MethodAttributes.Abstract | MethodAttributes.PinvokeImpl)) != 0 ||
+                method.ImplAttribs.HasFlag(MethodImplAttributes.InternalCall) || codeType == MethodImplAttributes.Runtime;
+            if (codeType is not (MethodImplAttributes.IL or MethodImplAttributes.Runtime) ||
+                (!external && method.ILBody == null)) {
+                throw new NotSupportedException($"Cannot remove ReadyToRun code: '{method}' has no retained IL implementation");
+            }
+        }
     }
 
     public void BuildTables()
@@ -41,12 +66,13 @@ internal partial class ModuleWriter
         );
 
         var asmName = _mod.AsmName;
+        bool stripSignatures = _options.HasFlag(ModuleWriteOptions.StripSignatures);
         var mainAsmHandle = _builder.AddAssembly(
             AddString(asmName.Name!),
             asmName.Version!,
             AddString(asmName.CultureName),
-            AddBlob(asmName.GetPublicKey()),
-            (AssemblyFlags)asmName.Flags,
+            stripSignatures ? default : AddBlob(asmName.GetPublicKey()),
+            stripSignatures ? (AssemblyFlags)asmName.Flags & ~AssemblyFlags.PublicKey : (AssemblyFlags)asmName.Flags,
 #pragma warning disable SYSLIB0037 // AssemblyName.HashAlgorithm is obsolete
             (AssemblyHashAlgorithm)asmName.HashAlgorithm
 #pragma warning restore SYSLIB0037
@@ -344,16 +370,10 @@ internal partial class ModuleWriter
         }
     }
 
-    public void Serialize(Stream peStream, Stream? pdbStream, string pePath, bool publicSign = false)
+    public void Serialize(Stream peStream, Stream? pdbStream, string pePath)
     {
-        var imageChars = 
-            Characteristics.LargeAddressAware |
-            Characteristics.ExecutableImage |
-            (_mod.EntryPoint == null ? Characteristics.Dll : 0);
-
-        var image = _mod.Image ?? new ModuleImage(new PEHeaderBuilder(imageCharacteristics: imageChars));
-        image.ValidateForWriting(_mod.AsmName, publicSign);
-        var header = image.Header;
+        var image = _image;
+        var header = _header;
         var entryPoint = _mod.EntryPoint == null ? default : (MethodDefinitionHandle)_handleMap[_mod.EntryPoint];
 
         var debugDirBuilder = new DebugDirectoryBuilder();
@@ -381,8 +401,9 @@ internal partial class ModuleWriter
             nativeResources: image.CreateResources(),
             entryPoint: entryPoint,
             debugDirectoryBuilder: debugDirBuilder,
-            flags: publicSign ? image.Flags | CorFlags.StrongNameSigned : image.Flags,
-            strongNameSignatureSize: publicSign ? ModuleImage.GetSignatureSize(_mod.AsmName) : 128,
+            flags: image.GetOutputFlags(_options),
+            strongNameSignatureSize: _options.HasFlag(ModuleWriteOptions.PublicSign) ? ModuleImage.GetSignatureSize(_mod.AsmName)
+                : _options.HasFlag(ModuleWriteOptions.StripSignatures) ? 0 : 128,
             deterministicIdProvider: ComputeContentId
         );
         var blob = new BlobBuilder();

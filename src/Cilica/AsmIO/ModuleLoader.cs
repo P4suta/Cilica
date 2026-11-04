@@ -94,7 +94,7 @@ internal class ModuleLoader
 
         // Other module stuff
         int entryPointToken = _pe.PEHeaders.CorHeader?.EntryPointTokenOrRelativeVirtualAddress ?? 0;
-        if (entryPointToken != 0) {
+        if (entryPointToken != 0 && !_pe.PEHeaders.CorHeader!.Flags.HasFlag(CorFlags.NativeEntryPoint)) {
             _mod.EntryPoint = GetMethod(MetadataTokens.MethodDefinitionHandle(entryPointToken));
         }
 

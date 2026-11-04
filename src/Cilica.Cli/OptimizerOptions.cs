@@ -14,6 +14,12 @@ class OptimizerOptions
     [Option("public-sign", HelpText = "Keep the assembly public key and identity, with a zero-filled strong-name signature for .NET Core/.NET 5+. Does not preserve the publisher's cryptographic signature.")]
     public bool PublicSign { get; set; }
 
+    [Option("strip-signatures", HelpText = "Remove Authenticode and strong-name signing, including the assembly public key. Changes assembly identity. Cannot be combined with --public-sign.")]
+    public bool StripSignatures { get; set; }
+
+    [Option("strip-readytorun", HelpText = "Discard ReadyToRun native code and emit retained IL for JIT compilation.")]
+    public bool StripReadyToRun { get; set; }
+
     [Option('i', Required = true, HelpText = "Input module file path.")]
     public string InputPath { get; set; } = null!;
 
