@@ -76,6 +76,7 @@ public class LoopStrengthReduction : IMethodPass
         // Details: https://github.com/dotnet/runtime/pull/75857#discussion_r974661744
         if (!loop.IsCanonical) return 0;
 
+        int numChanges = HoistArrayBound(loop, dominators) ? 1 : 0;
         var indexedAccs = new Dictionary<Value, (List<Instruction> Addrs, bool BoundsLoop, bool IsSpan)>();
 
         foreach (var user in loop.Counter.Users()) {
@@ -115,7 +116,10 @@ public class LoopStrengthReduction : IMethodPass
             // Header:
             //  T& currPtr = phi [Pred: startPtr], [Latch: {currPtr + iv.Scale}]
             bool mayReplaceCond = loop.ExitCondition.Block != null && boundsLoop;
-            bool shouldCreateIV = mayReplaceCond && indexedAccs.Count == 1 && addrs.Count == 1 && loop.Counter.NumUses == 3;
+            // A range guard can prove only a prefix is in bounds. Pointer induction
+            // using the storage length is valid only when that length is the bound.
+            bool shouldCreateIV = mayReplaceCond && indexedAccs.Count == 1 && addrs.Count == 1 && loop.Counter.NumUses == 3 &&
+                                  (isSpan || ArrayBoundsFacts.IsLengthBound(loop.End, source, loop.PreHeader, dominators, exact: true));
 
             var builder = new IRBuilder(loop.PreHeader);
             var (startPtr, count) = CreateGetDataPtrRange(builder, source, getCount: shouldCreateIV);
@@ -171,7 +175,24 @@ public class LoopStrengthReduction : IMethodPass
             loop.UpdatedCounter.Remove();
             loop.Counter.Remove();
         }
-        return indexedAccs.Count;
+        return numChanges + indexedAccs.Count;
+    }
+
+    private static bool HoistArrayBound(CountingLoopInfo loop, DominatorTree dominators)
+    {
+        // The bounding array need not be indexed by the body. Hoist its length
+        // even when no accesses can be reduced until runtime bounds guards exist.
+        if (loop.Header.HasGuards || loop.GetSourceArray() == null ||
+            !loop.HasKnownTripCount(dominators, loop.PreHeader.Last) ||
+            loop.End is not ConvertInst { Value: CilIntrinsic.ArrayLen length } bound ||
+            bound.Block != loop.Header || length.Block != loop.Header ||
+            loop.Header.NonPhis().Any(inst => inst != length && inst != bound && inst != loop.ExitCondition && inst != loop.Header.Last)) {
+            return false;
+        }
+
+        length.MoveBefore(loop.PreHeader.Last);
+        bound.MoveBefore(loop.PreHeader.Last);
+        return true;
     }
 
     // TODO: Get rid of this once have range-analysis and InBounds metadata

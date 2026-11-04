@@ -36,16 +36,185 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
     }
 
     [Fact]
-    public void BypassedLengthGuardsDoNotProveBounds()
+    public void BypassedLengthGuardsUseRuntimeBoundsChecks()
     {
         var body = CreateGuardedArrayMap(negateGuard: false, swapOperands: false, bypassGuard: true);
-        Vectorize(body, expected: false);
+        Vectorize(body, expected: true);
         var run = Utils.Compile<Action<int[], int[], bool>>(body);
         int[] source = [1, 2, 3];
         var destination = new int[1];
         Assert.Throws<IndexOutOfRangeException>(() => run(source, destination, true));
         Assert.Equal(new[] { 10 }, destination);
         Assert.Equal(new[] { 11, 2, 3 }, source);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void UnguardedArrayMapsVectorizeWithAliasingAndLongerDestinations(bool defaultPipeline)
+    {
+        var body = CreateArrayMap();
+        if (defaultPipeline) {
+            var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { VerifyEachPass = true });
+            CompilationPipeline.CreateDefault(compilation).Run([body.Definition]).ThrowIfFailed();
+            body = body.Definition.Body!;
+            Assert.Contains(body.Instructions().OfType<CallInst>(), call => call.Method.DeclaringType.Name.StartsWith("Vector256"));
+        } else {
+            Vectorize(body, expected: true);
+        }
+
+        var run = Utils.Compile<Action<int[], int[]>>(body);
+        foreach (int count in new[] { 0, 1, 7, 8, 9, 15, 16, 17, 31, 33 }) {
+            var original = Enumerable.Range(0, count).Select(i => i % 2 == 0 ? int.MaxValue : i).ToArray();
+            foreach (int extra in new[] { 0, 5 }) {
+                var source = (int[])original.Clone();
+                var destination = Enumerable.Repeat(-1, count + extra).ToArray();
+                run(source, destination);
+                Assert.Equal(original.Select(x => unchecked(x * 3 + 7)), destination.Take(count));
+                Assert.All(destination.Skip(count), value => Assert.Equal(-1, value));
+                Assert.Equal(original.Select(x => unchecked(x * 3 + 8)), source);
+            }
+
+            var shared = (int[])original.Clone();
+            run(shared, shared);
+            Assert.Equal(original.Select(x => unchecked(x * 3 + 8)), shared);
+        }
+    }
+
+    [Fact]
+    public void FailedArrayGuardsPreserveExceptionsAndCompletedStores()
+    {
+        var body = CreateArrayMap();
+        Vectorize(body, expected: true);
+        var run = Utils.Compile<Action<int[], int[]>>(body);
+
+        foreach (int count in new[] { 0, 1, 7, 8, 9, 16, 32 }) {
+            var source = Enumerable.Range(1, 33).ToArray();
+            var destination = new int[count];
+            Assert.Throws<IndexOutOfRangeException>(() => run(source, destination));
+            Assert.Equal(Enumerable.Range(1, count).Select(x => x * 3 + 7), destination);
+            Assert.Equal(Enumerable.Range(1, 33).Select((x, i) => i < count ? x * 3 + 8 : x), source);
+        }
+
+        run([], null!);
+        Assert.Throws<NullReferenceException>(() => run(null!, []));
+        Assert.Throws<NullReferenceException>(() => run(new int[33], null!));
+    }
+
+    [Fact]
+    public void NullArrayGuardDoesNotPreemptEarlierStores()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray(), PrimType.Int32.CreateArray());
+        var entry = body.CreateBlock();
+        var loop = new LoopBuilder(entry);
+        entry.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        loop.Build(h => h.CreateSlt(index, h.CreateConvert(h.CreateArrayLen(body.Args[0]), PrimType.Int32)), b => {
+            b.CreateArrayStore(body.Args[0], index, ConstInt.CreateI(7));
+            b.CreateArrayStore(body.Args[1], index, ConstInt.CreateI(9));
+        });
+        loop.Exit.CreateReturn();
+        Vectorize(body, expected: true);
+
+        var values = new int[33];
+        var run = Utils.Compile<Action<int[], int[]>>(body);
+        Assert.Throws<NullReferenceException>(() => run(values, null!));
+        Assert.Equal(7, values[0]);
+        Assert.All(values.Skip(1), value => Assert.Equal(0, value));
+    }
+
+    [Fact]
+    public void RuntimeCountGuardsPreserveReductionSeedsAndLoopLiveOuts()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32.CreateArray(), PrimType.Int32.CreateArray(), PrimType.Int32);
+        var entry = body.CreateBlock();
+        var loop = new LoopBuilder(entry);
+        entry.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        Value sum = null!;
+        loop.Build(h => h.CreateSlt(index, body.Args[2]), b => {
+            var value = b.CreateArrayLoad(body.Args[0], index);
+            b.CreateArrayStore(body.Args[1], index, value);
+            sum = loop.CreateAccum(ConstInt.CreateI(13), current => b.CreateAdd(current, value));
+        });
+        loop.Exit.CreateReturn(loop.Exit.CreateAdd(sum, index));
+        Vectorize(body, expected: true);
+        var run = Utils.Compile<Func<int[], int[], int, int>>(body);
+
+        foreach (int count in new[] { int.MinValue, -1, 0, 1, 7, 8, 9, 16, 33 }) {
+            var source = Enumerable.Range(1, 40).ToArray();
+            var destination = new int[45];
+            Assert.Equal(13 + source.Take(Math.Max(0, count)).Sum() + Math.Max(0, count), run(source, destination, count));
+            Assert.Equal(source.Take(Math.Max(0, count)), destination.Take(Math.Max(0, count)));
+            Assert.All(destination.Skip(Math.Max(0, count)), value => Assert.Equal(0, value));
+        }
+
+        Assert.Equal(13, run(null!, null!, 0));
+        Assert.Equal(13, run(null!, null!, int.MinValue));
+        var shortDestination = new int[9];
+        Assert.Throws<IndexOutOfRangeException>(() => run(Enumerable.Range(1, 40).ToArray(), shortDestination, int.MaxValue));
+        Assert.Equal(Enumerable.Range(1, 9), shortDestination);
+        var longDestination = new int[40];
+        Assert.Throws<IndexOutOfRangeException>(() => run(Enumerable.Range(1, 9).ToArray(), longDestination, 33));
+        Assert.Equal(Enumerable.Range(1, 9), longDestination.Take(9));
+        Assert.All(longDestination.Skip(9), value => Assert.Equal(0, value));
+    }
+
+    private MethodBody CreateArrayMap()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray(), PrimType.Int32.CreateArray());
+        var entry = body.CreateBlock();
+        var loop = new LoopBuilder(entry);
+        entry.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        loop.Build(h => h.CreateSlt(index, h.CreateConvert(h.CreateArrayLen(body.Args[0]), PrimType.Int32)), b => {
+            var value = b.CreateArrayLoad(body.Args[0], index);
+            b.CreateArrayStore(body.Args[1], index, b.CreateAdd(b.CreateMul(value, ConstInt.CreateI(3)), ConstInt.CreateI(7)));
+            b.CreateArrayStore(body.Args[0], index, b.CreateAdd(b.CreateArrayLoad(body.Args[1], index), ConstInt.CreateI(1)));
+        });
+        loop.Exit.CreateReturn();
+        return body;
+    }
+
+    [Fact]
+    public void BoundingArrayNeedNotBeAccessedByTheLoopBody()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray(), PrimType.Int32.CreateArray());
+        var entry = body.CreateBlock();
+        var loop = new LoopBuilder(entry);
+        entry.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        loop.Build(h => h.CreateSlt(index, h.CreateConvert(h.CreateArrayLen(body.Args[0]), PrimType.Int32)),
+            b => b.CreateArrayStore(body.Args[1], index, index));
+        loop.Exit.CreateReturn();
+        Vectorize(body, expected: true);
+
+        var run = Utils.Compile<Action<int[], int[]>>(body);
+        var destination = Enumerable.Repeat(-1, 40).ToArray();
+        run(new int[33], destination);
+        Assert.Equal(Enumerable.Range(0, 33), destination.Take(33));
+        Assert.All(destination.Skip(33), value => Assert.Equal(-1, value));
+        run([], null!);
+        Assert.Throws<NullReferenceException>(() => run(null!, destination));
+        Assert.Throws<NullReferenceException>(() => run(new int[33], null!));
+        var shortDestination = new int[9];
+        Assert.Throws<IndexOutOfRangeException>(() => run(new int[33], shortDestination));
+        Assert.Equal(Enumerable.Range(0, 9), shortDestination);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BoundsGuardsDoNotEnableVolatileOrCheckedOperations(bool isVolatile)
+    {
+        var body = CreateArrayMap();
+        if (isVolatile) {
+            body.Instructions().OfType<LoadInst>().First().Flags |= PointerFlags.Volatile;
+        } else {
+            body.Instructions().OfType<BinaryInst>().First(inst => inst.Op == BinaryOp.Mul).Op = BinaryOp.MulOvf;
+        }
+        Vectorize(body, expected: false);
+        Assert.DoesNotContain(body.Instructions().OfType<CompareInst>(), compare => compare.Right is ConstNull);
     }
 
     [Fact]
@@ -74,6 +243,47 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         run([], 0);
         run(values, -1);
         Assert.All(values, value => Assert.Equal(7, value));
+    }
+
+    [Theory]
+    [InlineData(CompareOp.Sle, false, false)]
+    [InlineData(CompareOp.Sle, false, true)]
+    [InlineData(CompareOp.Sle, true, false)]
+    [InlineData(CompareOp.Sle, true, true)]
+    [InlineData(CompareOp.Slt, false, false)]
+    [InlineData(CompareOp.Slt, true, true)]
+    [InlineData(CompareOp.Ule, false, false)]
+    [InlineData(CompareOp.Ule, true, true)]
+    [InlineData(CompareOp.Ult, false, false)]
+    [InlineData(CompareOp.Ult, true, true)]
+    public void GuardedPrefixesKeepTheirCountWithoutAdditionalBoundsChecks(CompareOp operation, bool negateGuard, bool swapOperands)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray(), PrimType.Int32);
+        var entry = body.CreateBlock();
+        var preheader = body.CreateBlock();
+        var exit = body.CreateBlock();
+        var builder = new IRBuilder(entry);
+        var length = builder.CreateConvert(builder.CreateArrayLen(body.Args[0]), PrimType.Int32);
+        var predicate = swapOperands ? operation.GetSwapped() : operation;
+        if (negateGuard) predicate = predicate.GetNegated();
+        var condition = builder.CreateCmp(predicate, swapOperands ? length : body.Args[1], swapOperands ? body.Args[1] : length);
+        entry.SetBranch(new BranchInst(condition, negateGuard ? exit : preheader, negateGuard ? preheader : exit));
+        var loop = new LoopBuilder(preheader);
+        preheader.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        loop.Build(h => h.CreateSlt(index, body.Args[1]), b => b.CreateArrayStore(body.Args[0], index, ConstInt.CreateI(7)));
+        loop.Exit.CreateReturn();
+        exit.SetBranch(new ReturnInst());
+
+        Vectorize(body, expected: true);
+        Assert.Single(body.Instructions().OfType<CilIntrinsic.ArrayLen>());
+        var run = Utils.Compile<Action<int[], int>>(body);
+        foreach (int count in new[] { int.MinValue, -1, 0, 1, 7, 8, 9, 16, 32, 33, 34, int.MaxValue }) {
+            var values = new int[33];
+            run(values, count);
+            int changed = count <= 0 || count > 33 || count == 33 && operation.IsStrict() ? 0 : count;
+            Assert.Equal(Enumerable.Range(0, 33).Select(i => i < changed ? 7 : 0), values);
+        }
     }
 
     private MethodBody CreateGuardedArrayMap(bool negateGuard, bool swapOperands, bool bypassGuard = false)

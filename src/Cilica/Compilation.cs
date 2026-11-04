@@ -56,6 +56,12 @@ public class Compilation
 
     internal void EnsureReferencedMembersAccessible(MethodBody body)
     {
+        // The runtime parses these attributes using CoreLib's own assembly-name
+        // parser. Adding one to CoreLib can recursively enter that parser's JIT
+        // compilation during startup. Inlining and constructor expansion use
+        // CanInlineBody to avoid introducing references needing suppression.
+        if (Module == Resolver.CoreLib) return;
+
         foreach (var inst in body.Instructions()) {
             MemberDesc? member = inst switch {
                 CallInst call => call.Method,
@@ -83,6 +89,10 @@ public class Compilation
             }
         }
     }
+
+    internal bool CanInlineBody(MethodDef caller, MethodDefOrSpec callee, bool scalarReplacement = false)
+        => Module != Resolver.CoreLib ||
+           new InliningAccess(caller.DeclaringType).CheckBody(Ensure.NotNull(callee.Definition.Body), scalarReplacement);
 
     /// <summary> Returns the compiler's auxiliary type for the current module. </summary>
     public TypeDef GetAuxType()
@@ -218,6 +228,9 @@ public class Compilation
     /// <remarks> This ensures that <see cref="Module"/> can access any private member declared in the given module.  </remarks>
     public void EnsureMembersAccessible(ModuleDef module)
     {
+        if (Module == Resolver.CoreLib) {
+            throw new InvalidOperationException("CoreLib cannot use access-check suppression during runtime initialization");
+        }
         string name = module.AsmName.Name!;
 
         if (_assembliesToIgnoreAccessChecksFor.Add(name)) {

@@ -25,8 +25,8 @@ public class LoopVectorizer : IMethodPass
                 continue;
             }
 
-            if (VectorizationLegality.Check(forLoop, ctx, out string? reason)) {
-                changed |= InnerLoopVectorizer.Run(forLoop, _trans, ctx.Logger);
+            if (VectorizationLegality.Check(forLoop, ctx, out var boundsChecks, out string? reason)) {
+                changed |= InnerLoopVectorizer.Run(forLoop, _trans, boundsChecks, ctx.Logger);
             } else {
                 ctx.Logger.Trace($"Loop vectorization declined: {reason}");
             }

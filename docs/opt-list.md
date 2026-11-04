@@ -109,6 +109,8 @@ For a mutable `List<T>` source, the optimizer retains the relevant library stage
 
 Canonical counting loops can replace array or span indexing with pointer induction when the loop bound proves each access is within the same storage. This exposes sequential accesses to the vectorizer and reduces repeated address calculation.
 
+Dominating equality and range guards can establish array bounds, including a count that covers only a prefix of an array. Prefix loops retain their original count. Array-length loop bounds can be hoisted even when the bounding array is not indexed by the body.
+
 The pass preserves covariant array-store checks and declines loops whose span view may be reassigned during iteration. It accesses arrays through `MemoryMarshal.GetArrayDataReference()` and spans through their public reference accessors. Loop analysis tracks nesting and combines backedges sharing a header.
 
 CIL preparation can select ordinary array instructions for bounded scalar accesses, exposing the array and index relationship to the runtime JIT. Vector accesses, reinterpretation, volatile or unaligned memory operations, and reference stores with unproven array-type compatibility retain pointer-based access.
@@ -116,6 +118,10 @@ CIL preparation can select ordinary array instructions for bounded scalar access
 ## Loop Vectorization
 
 Loop vectorization is enabled in the default pipeline. Eligible innermost loops use `Vector256<T>` operations, a runtime hardware-acceleration check, and a scalar tail. The scalar loop also handles execution when vector acceleration is unavailable.
+
+When an array extent cannot be proved statically, the pass adds a null check followed by a length check before the vector path. This allows pointwise loops over multiple arrays and loops bounded by a count parameter to vectorize. Each unknown array extent is checked once, and short loops skip these checks. Existing dominating range guards avoid redundant runtime checks.
+
+The original scalar loop serves both as the tail and as the fallback when a guard fails. A shorter or null array therefore retains the original exception timing and completed stores. This shares the scalar body instead of cloning a second scalar loop; reduction seeds and final counters are merged at the scalar entry.
 
 ### Examples
 
@@ -233,7 +239,7 @@ public static void GenerateInts(Span<int> destination, int bias)
 
 - The loop must have a header and one body/latch block, an invariant bound, supported induction, and uniform exception-region membership.
 - Storage comes from recognized arrays, strings, or stable by-value span views. Raw pointers with unknown extents remain scalar.
-- Every memory access needs a bound proof. Unknown aliasing, offset dependencies, volatile accesses, and potentially overlapping views prevent vectorization.
+- Every memory access needs a static bound proof or a runtime array extent guard. Unknown aliasing, offset dependencies, volatile accesses, and potentially overlapping views prevent vectorization.
 - Strings are read-only. Same-buffer pointwise updates are supported when each iteration touches only its own element.
 - Mixed scalar widths remain unsupported. Implicit promotion of byte or short arithmetic can therefore prevent vectorization.
 - Floating-point reductions remain scalar because reassociation changes rounding. Floating-point `Min`/`Max`, integer `Abs`, checked arithmetic, and unsupported calls retain their scalar behavior, including exceptions and completed stores.
@@ -397,6 +403,8 @@ Inlining combines call-site benefits with callee costs. Direct calls and resolve
 The default policy uses an initial budget of 80 plus half the caller's estimated cost, a per-call cost threshold of 250, and independent limits of 16 ancestor levels, 128 expansions, and 4096 expanded IR instructions. Ordinary IL candidates above 256 instructions are rejected early; `AggressiveInlining` raises that early limit to 4096. `NoInlining`, unsupported targets, and recursive ancestor chains prevent expansion.
 
 Virtual-call null checks and required type initialization are preserved. Cross-assembly IPO is controlled by compilation settings. When imported code requires access to private members, the compilation adds `IgnoresAccessChecksToAttribute` metadata as needed and removes unused auxiliary artifacts.
+
+When optimizing `System.Private.CoreLib`, cross-type inlining accepts public and same-assembly internal references, including their type and signature dependencies. Private/protected cases without a simple access proof retain their calls. Scalar replacement applies the same rule to references that survive removal of the allocation. CoreLib cannot use the access-check suppression attribute: the runtime parses that attribute using CoreLib itself, which can recursively trigger compilation during startup. Other assemblies continue to use access-check suppression when needed.
 
 Instruction simplification coalesces an explicit null check with a following dereference of the same receiver when no observable operation or control-flow boundary intervenes. Exceptions retain their ordering relative to stores and other potentially throwing operations.
 

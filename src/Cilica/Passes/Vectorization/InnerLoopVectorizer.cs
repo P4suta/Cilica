@@ -15,6 +15,7 @@ internal sealed class InnerLoopVectorizer
     IRBuilder _vectorPreHeader = null!;
     readonly Dictionary<(VectorShape Shape, Value Scalar), Value> _invariants = new();
     readonly Dictionary<VectorShape, Value> _counterOffsets = new();
+    readonly Dictionary<Value, Value> _arrayBases = new();
     int _width;
 
     private InnerLoopVectorizer(CountingLoopInfo loop, VectorTranslator translator)
@@ -24,7 +25,7 @@ internal sealed class InnerLoopVectorizer
         _bodyBlock = loop.Latch;
     }
 
-    public static bool Run(CountingLoopInfo loop, VectorTranslator trans, ICompilationLogger? reportLogger)
+    public static bool Run(CountingLoopInfo loop, VectorTranslator trans, IReadOnlyList<Value> boundsChecks, ICompilationLogger? reportLogger)
     {
         // Only consider loops with a single body block (the latch).
         if (loop.Loop.NumBlocks != 2) {
@@ -41,7 +42,7 @@ internal sealed class InnerLoopVectorizer
         var vectorizer = new InnerLoopVectorizer(loop, trans);
 
         if (vectorizer.BuildMappings(reportLogger) && vectorizer.PickVectorWidth()) {
-            vectorizer.EmitVectorizedLoop();
+            vectorizer.EmitVectorizedLoop(boundsChecks);
 
             return true;
         }
@@ -87,6 +88,11 @@ internal sealed class InnerLoopVectorizer
 
         foreach (var inst in _bodyBlock) {
             switch (inst) {
+                case ArrayAddrInst: {
+                    // Legality has proved the full range or requested a runtime guard.
+                    _mappings.Add(inst, new());
+                    break;
+                }
                 case PtrOffsetInst addr: {
                     if ((!_loop.IsInvariant(addr.BasePtr) || addr.Index != _loop.Counter) && addr.BasePtr is not PhiInst) {
                         logger?.Debug($"AutoVec: unsupported pointer addressing '{addr}'");
@@ -188,10 +194,34 @@ internal sealed class InnerLoopVectorizer
         return true;
     }
 
-    private void EmitVectorizedLoop()
+    private void EmitVectorizedLoop(IReadOnlyList<Value> boundsChecks)
     {
         var newLoop = new LoopBuilder(_loop.PreHeader, "Vec_");
         _vectorPreHeader = newLoop.PreHeader;
+        var scalarEntry = newLoop.Exit;
+        BasicBlock? fallback = null;
+
+        if (boundsChecks.Count != 0) {
+            scalarEntry = new IRBuilder(_loop.Header.Method.CreateBlock(insertAfter: newLoop.Exit.Block).SetName("Vec_Scalar"));
+            fallback = _loop.Header.Method.CreateBlock(insertAfter: scalarEntry.Block).SetName("Vec_Fallback");
+            fallback.SetBranch(scalarEntry.Block);
+
+            var guard = new IRBuilder(_loop.PreHeader);
+            // Short and empty loops need neither bounds checks nor vector setup.
+            guard.ForkIf(guard.CreateSlt(_loop.End, ConstInt.CreateI(_width)), fallback);
+
+            foreach (var array in boundsChecks) {
+                // Keep length reads behind null checks. A failed check must run the
+                // original loop so earlier scalar stores and exceptions stay ordered.
+                guard.ForkIf(guard.CreateEq(array, ConstNull.Create()), fallback);
+                var length = guard.CreateConvert(guard.CreateArrayLen(array), PrimType.Int32);
+                guard.ForkIf(guard.CreateUgt(_loop.End, length), fallback);
+            }
+            guard.SetBranch(newLoop.EntryBlock);
+        } else {
+            _loop.PreHeader.SetBranch(newLoop.EntryBlock);
+        }
+
         int stepSize = _loop.UpdatedCounter is PtrOffsetInst lea ? _width * lea.Stride : _width;
         var accelerated = _trans.EmitHardwareCheck(newLoop.PreHeader);
 
@@ -249,17 +279,30 @@ internal sealed class InnerLoopVectorizer
                 next = _trans.EmitBitcast(newLoop.Latch, new VectorShape(next.ResultType.GenericParams[0], _width), phi.ResultType.Kind, next);
             }
             data.NewPhi.SetValue(newLoop.Latch.Block, next);
-            phi.RedirectArg(_loop.PreHeader, newLoop.Exit.Block, exitValue);
+            phi.RedirectArg(_loop.PreHeader, scalarEntry.Block, MergeScalarInput(data.Seed, exitValue));
         }
 
-        newLoop.Exit.SetBranch(_loop.Header);
+        if (fallback != null) newLoop.Exit.SetBranch(scalarEntry.Block);
+        scalarEntry.SetBranch(_loop.Header);
 
-        _loop.PreHeader.SetBranch(newLoop.EntryBlock);
-        _loop.Counter.RedirectArg(_loop.PreHeader, newLoop.Exit.Block, _newCounter);
+        _loop.Counter.RedirectArg(_loop.PreHeader, scalarEntry.Block, MergeScalarInput(_loop.Start, _newCounter));
+
+        Value MergeScalarInput(Value seed, Value vectorResult)
+            => fallback == null ? vectorResult : scalarEntry.CreatePhi(seed.ResultType,
+                (fallback, seed), (newLoop.Exit.Block, vectorResult));
     }
 
     private Value VectorizeInst(LoopBuilder newLoop, Instruction inst, ref InstMapping mapping)
     {
+        if (inst is ArrayAddrInst arrayAddress) {
+            if (!_arrayBases.TryGetValue(arrayAddress.Array, out var basePtr)) {
+                basePtr = LoopStrengthReduction.CreateGetDataPtrRange(_vectorPreHeader, arrayAddress.Array, getCount: false).BasePtr;
+                _arrayBases.Add(arrayAddress.Array, basePtr);
+            }
+
+            return newLoop.Body.CreatePtrOffset(basePtr, _newCounter, arrayAddress.ElemType);
+        }
+
         if (inst is PtrOffsetInst addr) {
             Debug.Assert(!addr.KnownStride || addr.Stride == addr.ElemType.Kind.Size());
 

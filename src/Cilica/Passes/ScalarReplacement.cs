@@ -83,7 +83,8 @@ public class ScalarReplacement : IMethodPass
 
         // Ctor must be small and instance obj cannot escape
         var body = ctor.Body!;
-        return advisor.EvaluateInliningCost(body, [alloc, ..alloc.Args]) < 100 && !Escapes(body.Args[0], isCtor: true);
+        return advisor.EvaluateInliningCost(body, [alloc, ..alloc.Args]) < 100 && !Escapes(body.Args[0], isCtor: true) &&
+               ctx.Compilation.CanInlineBody(ctx.Definition, (MethodDefOrSpec)alloc.Constructor, scalarReplacement: true);
     }
     private static bool Escapes(TrackedValue obj, bool isCtor = false)
     {

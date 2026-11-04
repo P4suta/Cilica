@@ -46,7 +46,9 @@ internal partial class ModuleWriter
         foreach (var method in _mod.MethodDefs()) {
             var codeType = method.ImplAttribs & MethodImplAttributes.CodeTypeMask;
             bool external = (method.Attribs & (MethodAttributes.Abstract | MethodAttributes.PinvokeImpl)) != 0 ||
-                method.ImplAttribs.HasFlag(MethodImplAttributes.InternalCall) || codeType == MethodImplAttributes.Runtime;
+                method.ImplAttribs.HasFlag(MethodImplAttributes.InternalCall) || codeType == MethodImplAttributes.Runtime ||
+                method.ILBody == null && method.IsStatic && method.GetCustomAttribs().Any(attribute =>
+                    attribute.Type.IsCorelibType(typeof(System.Runtime.CompilerServices.UnsafeAccessorAttribute)));
             if (codeType is not (MethodImplAttributes.IL or MethodImplAttributes.Runtime) ||
                 (!external && method.ILBody == null)) {
                 throw new NotSupportedException($"Cannot remove ReadyToRun code: '{method}' has no retained IL implementation");
