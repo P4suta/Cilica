@@ -18,7 +18,7 @@ public class LoopStrengthReduction : IMethodPass
             // Don't reduce loops with more than one body block, because the 
             // only benefit it has is in enabling vectorization.
             if (loop.NumBlocks <= 2 && ShapedLoopInfo.Parse(loop) is CountingLoopInfo countingLoop) {
-                numChanges += ReduceLoop(countingLoop);
+                numChanges += ReduceLoop(countingLoop, domTree);
             }
         }
         return numChanges > 0 ? MethodInvalidations.DataFlow : 0;
@@ -69,7 +69,7 @@ public class LoopStrengthReduction : IMethodPass
         return numChanges;
     }
 
-    private int ReduceLoop(CountingLoopInfo loop)
+    private int ReduceLoop(CountingLoopInfo loop, DominatorTree dominators)
     {
         // Strength-reducing array indexes in backward loops is not trivial, as the GC
         // doesn't update refs pointing outside an object when compacting the heap.
@@ -83,7 +83,7 @@ public class LoopStrengthReduction : IMethodPass
 
             switch (user) {
                 case ArrayAddrInst addr 
-                when !addr.IsCasting && !addr.RequiresVarianceCheck && IsBoundedByArrayLen(addr, loop.ExitCondition) is bool isBounded && (isBounded || addr.InBounds): {
+                when !addr.IsCasting && !addr.RequiresVarianceCheck && IsBoundedByArrayLen(addr, loop, dominators) is bool isBounded && (isBounded || addr.InBounds): {
                     ref var info = ref indexedAccs.GetOrAddRef(addr.Array);
                     info.Addrs ??= new();
 
@@ -130,13 +130,9 @@ public class LoopStrengthReduction : IMethodPass
                     loop.ExitCondition.ReplaceWith(new CompareInst(op, currPtr, endPtr), insertIfInst: true);
 
                     // Delete old bound access
-                    var oldBound = (Instruction)loop.ExitCondition.Right;
-                    if (oldBound.NumUses == 0) {
-                        oldBound.Remove();
-                    }
-
-                    if (oldBound is ConvertInst { Value: IntrinsicInst { NumUses: 0 } oldLen }) {
-                        oldLen.Remove();
+                    if (loop.ExitCondition.Right is Instruction oldBound) {
+                        if (oldBound.NumUses == 0) oldBound.Remove();
+                        if (oldBound is ConvertInst { Value: IntrinsicInst { NumUses: 0 } oldLen }) oldLen.Remove();
                     }
                 }
                 builder.SetPosition(loop.Latch);
@@ -179,13 +175,13 @@ public class LoopStrengthReduction : IMethodPass
     }
 
     // TODO: Get rid of this once have range-analysis and InBounds metadata
-    private static bool IsBoundedByArrayLen(ArrayAddrInst addr, CompareInst exitCond)
+    private static bool IsBoundedByArrayLen(ArrayAddrInst addr, CountingLoopInfo loop, DominatorTree dominators)
     {
+        var exitCond = loop.ExitCondition;
         // exitCond is cmp.slt ($index, $array.Length)
         return exitCond.Op is CompareOp.Slt &&
                exitCond.Left == addr.Index &&
-               exitCond.Right is ConvertInst { Value: CilIntrinsic.ArrayLen bound, ResultType.Kind: TypeKind.Int32 } &&
-               bound.Args[0] == addr.Array;
+               ArrayBoundsFacts.IsLengthBound(exitCond.Right, addr.Array, loop.PreHeader, dominators);
     }
     private static bool IsBoundedBySpanLen(CallInst getItemCall, CompareInst exitCond)
     {

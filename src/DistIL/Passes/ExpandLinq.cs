@@ -5,9 +5,13 @@ using DistIL.Passes.Linq;
 public class ExpandLinq : IMethodPass
 {
     readonly TypeDefOrSpec t_Enumerable, t_IEnumerableOfT0;
+    readonly bool _deferEnumeratorSources;
 
-    public ExpandLinq(ModuleResolver resolver)
+    public ExpandLinq(ModuleResolver resolver) : this(resolver, deferEnumeratorSources: false) { }
+
+    internal ExpandLinq(ModuleResolver resolver, bool deferEnumeratorSources)
     {
+        _deferEnumeratorSources = deferEnumeratorSources;
         t_Enumerable = resolver.Import(typeof(Enumerable));
         t_IEnumerableOfT0 = resolver.Import(typeof(IEnumerable<>)).GetSpec(GenericContext.Empty);
     }
@@ -38,6 +42,10 @@ public class ExpandLinq : IMethodPass
         }
         var source = CreateStage(call.GetOperandRef(0), sink);
 
+        // A helper may expose fixed storage after inlining. Keep the original
+        // sink available until then instead of committing to an enumerator loop.
+        if (_deferEnumeratorSources && source is EnumeratorSource) return null;
+
         if (source is EnumeratorSource && !RuntimeLibrary.HasKnownSequenceDispatch(source.PhysicalSource.Operand)) {
             return null;
         }
@@ -47,6 +55,9 @@ public class ExpandLinq : IMethodPass
 
     private static bool IsProfitableToExpand(LinqSourceNode source, LinqSink sink)
     {
+        // Preserve the runtime's specialized direct Sum paths (including their
+        // overflow behavior). Fuse only staged queries or selector overloads.
+        if (sink is SumSink && source.Drain == sink && sink.SubjectCall.NumArgs == 1) return false;
         // Unfiltered Count()/Any() is not profitable because we always scan over
         // the entire source, and LINQ specializes over collections and such. 
         if (sink.SubjectCall is { NumArgs: 1, Method.Name: "Count" or "Any" }) {
@@ -79,6 +90,7 @@ public class ExpandLinq : IMethodPass
                 "ToDictionary"              => new DictionarySink(call),
                 "Aggregate"                 => new AggregationSink(call),
                 "Count"                     => new CountSink(call),
+                "Sum" when SumSink.IsSupported(call) => new SumSink(call),
                 "First" or "FirstOrDefault" => new FindSink(call),
                 "Any" or "All"              => new QuantifySink(call),
                 _ => null

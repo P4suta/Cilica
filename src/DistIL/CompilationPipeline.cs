@@ -9,7 +9,10 @@ public static class CompilationPipeline
     public static PassManager CreateDefault(Compilation compilation)
     {
         var manager = new PassManager() { Compilation = compilation };
-        manager.AddPasses().Apply<SimplifyCFG>().Apply<SsaPromotion>().Apply<ExpandLinq>().Apply<SimplifyInsts>();
+        manager.AddPasses().Apply<SimplifyCFG>().Apply<SsaPromotion>()
+            .Apply(new ExpandLinq(compilation.Resolver, deferEnumeratorSources: true)).Apply<SimplifyInsts>();
+        manager.AddPasses(applyIndependently: true).Apply<InlineMethods>();
+        manager.AddPasses().Apply<ExpandLinq>().Apply<SimplifyInsts>();
         manager.AddPasses(applyIndependently: true).Apply<InlineMethods>();
         var simplify = manager.AddPasses().Apply<SimplifyInsts>().Apply<SimplifyCFG>().Apply<DeadCodeElim>()
             .RepeatUntilFixedPoint(3);

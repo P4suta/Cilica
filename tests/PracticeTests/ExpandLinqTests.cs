@@ -10,6 +10,118 @@ public class ExpandLinqTests
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
+    [InlineData(15)]
+    [InlineData(16)]
+    [InlineData(17)]
+    [InlineData(257)]
+    public void CachedStringLambdaVectorizes(int count)
+    {
+        string source = new string('A', count) + "Z@[`a\uffff";
+        Assert.Equal(count + 1, source.Count(c => c is >= 'A' and <= 'Z'));
+        // CHECK: Vector256
+        // CHECK-NOT: Enumerable::Count
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(17)]
+    [InlineData(257)]
+    public void QueryHelpersFuseAfterInlining(int count)
+    {
+        var source = Enumerable.Range(0, count).ToArray();
+        int result = FilterEven(source).Select(x => x * 3).Aggregate(0, (sum, x) => sum + x);
+        int pairs = count / 2;
+        Assert.Equal(3 * pairs * (pairs - 1 + 2 * (count % 2)), result);
+        // CHECK-NOT: Enumerable::Where
+        // CHECK-NOT: Enumerable::Select
+        // CHECK-NOT: Enumerable::Aggregate
+        // CHECK-NOT: GetEnumerator
+    }
+
+    static IEnumerable<int> FilterEven(int[] source) => source.Where(x => (x & 1) == 0);
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(17)]
+    [InlineData(257)]
+    public void CheckedIntegerSumsFuse(int count)
+    {
+        var source = Enumerable.Range(-count, count * 2).ToArray();
+        int result = source.Where(x => x > 0).Select(x => x * 3).Sum();
+        long squares = source.Sum(x => (long)x * x);
+        Assert.Equal(3 * count * (count - 1) / 2, result);
+        Assert.Equal((2L * count * count * count + count) / 3, squares);
+        // CHECK: add.ovf
+        // CHECK-NOT: Enumerable::Sum
+    }
+
+    [Fact]
+    public void IntegerSumOverflowStopsBeforeTheNextSelectorAndDisposes()
+    {
+        var source = new TrackingEnumerable([int.MaxValue, 1, -1]);
+        var seen = new List<int>();
+        bool threw = false;
+        try {
+            _ = source.Where(x => true).Sum(x => { seen.Add(x); return x; });
+        } catch (OverflowException) { threw = true; }
+        Assert.True(threw);
+        Assert.Equal(new[] { int.MaxValue, 1 }, seen);
+        Assert.Equal(2, source.Moves);
+        Assert.Equal(1, source.Disposals);
+        // CHECK: try finally
+        // CHECK: add.ovf
+        // CHECK-NOT: Enumerable::Sum
+    }
+
+    [Fact]
+    public void LongSumRetainsCheckedOverflow()
+    {
+        long[] source = [long.MinValue, -1, 1];
+        int visits = 0;
+        bool threw = false;
+        try {
+            _ = source.Select(x => { visits++; return x; }).Sum();
+        } catch (OverflowException) { threw = true; }
+        Assert.True(threw);
+        Assert.Equal(2, visits);
+        // CHECK: add.ovf
+        // CHECK-NOT: Enumerable::Sum
+    }
+
+    [Theory]
+    [InlineData(false, "selector")]
+    [InlineData(true, "source")]
+    public void SumValidatesSourceAndSelectorBeforeEnumeration(bool nullSource, string expectedParameter)
+    {
+        var source = Utils.DoNotOptimize(nullSource ? null! : Array.Empty<int>());
+        var selector = Utils.DoNotOptimize<Func<int, int>>(null!);
+        string? parameter = null;
+        try { _ = source.Sum(selector); }
+        catch (ArgumentNullException error) { parameter = error.ParamName; }
+        Assert.Equal(expectedParameter, parameter);
+        // CHECK: ThrowIfNull
+        // CHECK-NOT: Enumerable::Sum
+    }
+
+    [Fact]
+    public void DirectAndNonIntegerSumsKeepTheirLibraryPaths()
+    {
+        int[] integers = [1, 2, 3];
+        double[] fractions = [1e20, 1, -1e20, 3];
+        int?[] nullable = [null, 1, 2];
+        decimal[] decimals = [0.1m, 0.2m];
+        Assert.Equal(6, integers.Sum());
+        Assert.Equal(3, fractions.Where(x => true).Sum());
+        Assert.Equal(3, nullable.Where(x => true).Sum());
+        Assert.Equal(0.3m, decimals.Where(x => true).Sum());
+        // CHECK: Enumerable::Sum
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
     [InlineData(2)]
     [InlineData(3)]
     public void ForeachNestedEarlyExitsDisposeEveryEnumerator(int mode)

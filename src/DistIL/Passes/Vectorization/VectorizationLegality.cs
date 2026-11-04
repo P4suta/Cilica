@@ -15,6 +15,7 @@ internal static class VectorizationLegality
         }
 
         var regions = context.GetAnalysis<ProtectedRegionAnalysis>();
+        var dominators = context.GetAnalysis<DominatorTree>();
         var region = regions.GetBlockRegion(loop.PreHeader);
 
         if (regions.GetBlockRegion(loop.Header) != region || regions.GetBlockRegion(loop.Latch) != region ||
@@ -33,7 +34,7 @@ internal static class VectorizationLegality
                 update.BasePtr != loop.Counter || !TryGetStorage(loop.Start, loop, out var storage) ||
                 update.Stride != storage.Element.Kind.Size() ||
                 loop.End is not PtrOffsetInst end || end.BasePtr != loop.Start ||
-                end.Stride != update.Stride || !IsBounded(end.Index, storage)) {
+                end.Stride != update.Stride || !IsBounded(end.Index, storage, loop, dominators)) {
                 reason = "pointer induction requires a proven storage extent";
 
                 return false;
@@ -70,7 +71,7 @@ internal static class VectorizationLegality
             }
 
             if (inst is MemoryInst memory) {
-                if (memory.IsVolatile || !TryGetAccess(loop, memory, out var storage)) {
+                if (memory.IsVolatile || !TryGetAccess(loop, memory, dominators, out var storage)) {
                     reason = "memory accesses require nonvolatile unit-stride, bounded storage";
 
                     return false;
@@ -86,7 +87,7 @@ internal static class VectorizationLegality
 
                 foreach (var previous in accesses) {
                     if ((writes || previous.Writes) && previous.Storage.Source != storage.Source &&
-                        !AreDisjoint(previous.Storage.Source, storage.Source)) {
+                        !AreIndependent(previous.Storage.Source, storage.Source)) {
                         reason = "memory dependence cannot be excluded";
 
                         return false;
@@ -105,7 +106,7 @@ internal static class VectorizationLegality
         return true;
     }
 
-    private static bool TryGetAccess(CountingLoopInfo loop, MemoryInst access, out Storage storage)
+    private static bool TryGetAccess(CountingLoopInfo loop, MemoryInst access, DominatorTree dominators, out Storage storage)
     {
         storage = default;
         Value address = access.Address;
@@ -120,7 +121,7 @@ internal static class VectorizationLegality
             return false;
         }
 
-        return offset.Stride == storage.Element.Kind.Size() && access.ElemType == storage.Element && IsBounded(loop.End, storage);
+        return offset.Stride == storage.Element.Kind.Size() && access.ElemType == storage.Element && IsBounded(loop.End, storage, loop, dominators);
     }
 
     private static bool TryGetStorage(Value pointer, CountingLoopInfo loop, out Storage storage)
@@ -171,8 +172,9 @@ internal static class VectorizationLegality
         return false;
     }
 
-    private static bool IsBounded(Value bound, Storage storage)
+    private static bool IsBounded(Value bound, Storage storage, CountingLoopInfo loop, DominatorTree dominators)
     {
+        if (storage.Source.ResultType is ArrayType && ArrayBoundsFacts.IsLengthBound(bound, storage.Source, loop.PreHeader, dominators)) return true;
         while (bound is ConvertInst { CheckOverflow: false } conversion) {
             bound = conversion.Value;
         }
@@ -199,8 +201,12 @@ internal static class VectorizationLegality
         return count.HasValue && bound is ConstInt constant && constant.Value >= 0 && constant.Value <= count.Value;
     }
 
-    private static bool AreDisjoint(Value left, Value right)
-        => left is CilIntrinsic.NewArray && right is CilIntrinsic.NewArray && left != right ||
+    private static bool AreIndependent(Value left, Value right)
+        // Array storage either does not overlap or is the same array. All accepted
+        // accesses use the same index and element stride, so identical arrays have
+        // no cross-iteration dependence. This does not apply to overlapping spans.
+        => left.ResultType is ArrayType a && right.ResultType is ArrayType b && a.ElemType == b.ElemType ||
+           left is CilIntrinsic.NewArray && right is CilIntrinsic.NewArray && left != right ||
            left.ResultType.Kind == TypeKind.String || right.ResultType.Kind == TypeKind.String;
 
     readonly record struct Storage(Value Source, TypeDesc Element);

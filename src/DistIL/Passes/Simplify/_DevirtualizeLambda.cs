@@ -39,7 +39,7 @@ partial class SimplifyInsts
 
             if (allocInst == null || cacheLoad == null ||
                 !MatchCache(phi, allocInst, cacheLoad, out var branch, out var store) ||
-                !DevirtWithCtorArgs(call, allocInst, rematerializeInstance: true)) return false;
+                !DevirtWithCtorArgs(call, allocInst, cacheLoad)) return false;
 
             // Last lambda to be inlined is responsible for cleanup
             if (phi.NumUses == 0) {
@@ -59,7 +59,7 @@ partial class SimplifyInsts
         }
         return false;
 
-        static bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc, bool rematerializeInstance = false)
+        static bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc, LoadInst? cacheLoad = null)
         {
             if (alloc is not { Args: [var instanceObj, FuncAddrInst { Method: var method } addr] }) return false;
             if (call.NumArgs - (method.IsStatic ? 1 : 0) != method.ParamSig.Count) return false;
@@ -69,13 +69,23 @@ partial class SimplifyInsts
                 return true;
             } else if (method.IsInstance) {
                 // Cached instance targets must be available on both phi edges.
-                if (rematerializeInstance) {
+                if (cacheLoad != null) {
                     if (!IRMatcher.StaticFieldLoad(instanceObj, out var field) ||
                         !field.Attribs.HasFlag(System.Reflection.FieldAttributes.InitOnly)) return false;
                     var fieldAddr = new FieldAddrInst(field);
                     var newLoad = new LoadInst(fieldAddr);
-                    fieldAddr.InsertBefore(call);
-                    newLoad.InsertBefore(call);
+                    // Reading the cache already initialized this type. Its readonly
+                    // receiver can be loaded there, outside any consuming loop.
+                    // The single-entry allocation arm makes the cache block dominate
+                    // the merge and every use of the delegate phi.
+                    if (cacheLoad.Address is FieldAddrInst cacheAddr && cacheAddr.Field.DeclaringType == field.DeclaringType &&
+                        alloc.Block.NumPreds == 1 && alloc.Block.Preds.First() == cacheLoad.Block) {
+                        fieldAddr.InsertAfter(cacheLoad);
+                        newLoad.InsertAfter(fieldAddr);
+                    } else {
+                        fieldAddr.InsertBefore(call);
+                        newLoad.InsertBefore(call);
+                    }
                     instanceObj = newLoad;
                 }
                 call.Method = method;

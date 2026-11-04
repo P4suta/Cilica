@@ -18,6 +18,66 @@ public class SimplifyInstsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     public void Test_SimplifyInsts() => CheckIR("SimplifyInsts.ethil", new SimplifyInsts(_modResolver));
 
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CachedLambdaReceiversMoveOnlyAfterTheirTypeHasInitialized(bool separateReceiverType)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var module = body.Definition.Module;
+        var cacheType = module.CreateType(null, "LambdaCache");
+        cacheType.GetCustomAttribs(readOnly: false).Add(new CustomAttrib(
+            _modResolver.Import(typeof(CompilerGeneratedAttribute)).FindMethod(".ctor")));
+        var receiverType = separateReceiverType ? module.CreateType(null, "Receiver") : cacheType;
+        var funcType = _modResolver.Import(typeof(Func<int>));
+        var cache = cacheType.CreateField("Cache", funcType, FieldAttributes.Public | FieldAttributes.Static);
+        var receiver = receiverType.CreateField("Instance", PrimType.String,
+            FieldAttributes.Public | FieldAttributes.Static | FieldAttributes.InitOnly);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var initializer = receiverType.CreateMethod(".cctor", PrimType.Void, [],
+            MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        initializer.Body = new MethodBody(initializer);
+        var init = new IRBuilder(initializer.Body.CreateBlock());
+        init.CreateFieldStore(receiver, null, ConstString.Create("abc"));
+        init.CreateFieldStore(effect, null, ConstInt.CreateI(50));
+        init.CreateReturn();
+
+        var entry = body.CreateBlock();
+        var allocate = body.CreateBlock();
+        var merge = body.CreateBlock();
+        var builder = new IRBuilder(entry);
+        var cached = builder.CreateFieldLoad(cache);
+        entry.SetBranch(new BranchInst(builder.CreateNe(cached, ConstNull.Create()), merge, allocate));
+        builder.SetPosition(allocate);
+        var instance = builder.CreateFieldLoad(receiver);
+        var target = builder.Emit(new FuncAddrInst(_modResolver.Import(typeof(string)).FindMethod("get_Length")));
+        var allocation = builder.CreateNewObj(funcType.FindMethod(".ctor"), instance, target);
+        builder.CreateFieldStore(cache, null, allocation);
+        allocate.SetBranch(merge);
+        builder.SetPosition(merge);
+        var lambda = builder.CreatePhi(funcType, (entry, cached), (allocate, allocation));
+        var loop = new LoopBuilder(merge);
+        merge.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        Value sum = null!;
+        CallInst invoke = null!;
+        loop.Build(header => header.CreateSlt(index, body.Args[0]), items => {
+            invoke = items.CreateCallVirt("Invoke", lambda);
+            sum = loop.CreateAccum(ConstInt.CreateI(0), current => items.CreateAdd(current, invoke));
+        });
+        loop.Exit.CreateReturn(loop.Exit.CreateAdd(sum, loop.Exit.CreateFieldLoad(effect)));
+        Run(body, new SimplifyInsts(_modResolver));
+
+        Assert.Equal("get_Length", invoke.Method.Name);
+        var rematerialized = Assert.IsType<LoadInst>(invoke.Args[0]);
+        Assert.Same(separateReceiverType ? invoke.Block : entry, rematerialized.Block);
+        Assert.True(rematerialized.MayThrow);
+        Run(body, new SimplifyCFG(), new DeadCodeElim());
+        var run = Utils.Compile<Func<int, int>>(body);
+        Assert.Equal(50, run(0));
+        Assert.Equal(59, run(3));
+    }
+
+    [Theory]
     [InlineData(UnaryOp.Neg)]
     [InlineData(UnaryOp.Not)]
     [InlineData(UnaryOp.FNeg)]

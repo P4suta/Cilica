@@ -16,6 +16,41 @@ public class GlobalFunctionEffectsTests(ModuleResolverFixture fixture)
     readonly ModuleResolver _modResolver = fixture.Resolver;
 
     [Fact]
+    public void WarmDependencyValidationDoesNotAllocateAndDetectsDirectMutations()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void);
+        var type = body.Definition.DeclaringType;
+        var methods = Enumerable.Range(0, 64).Select(i => type.CreateMethod("Node" + i, PrimType.Void, [],
+            MethodAttributes.Public | MethodAttributes.Static)).ToArray();
+        for (int i = 0; i < methods.Length; i++) {
+            methods[i].Body = new MethodBody(methods[i]);
+            var builder = new IRBuilder(methods[i].Body!.CreateBlock());
+            if (i + 1 < methods.Length) builder.CreateCall(methods[i + 1]);
+            builder.CreateReturn();
+        }
+        var effects = new Compilation(body.Definition.Module, new VoidLogger(), new()).GetAnalysis<GlobalFunctionEffects>();
+        for (int i = 0; i < 100; i++) Assert.True(effects.GetEffects(methods[0]).IsPure);
+        long allocated = GC.GetAllocatedBytesForCurrentThread();
+        for (int i = 0; i < 1000; i++) effects.GetEffects(methods[0]);
+        allocated = GC.GetAllocatedBytesForCurrentThread() - allocated;
+        Assert.Equal(0, allocated);
+        Assert.Equal(methods.Length, effects.Computations);
+
+        // No explicit invalidation: the root must notice a changed leaf revision.
+        var leaf = methods[^1];
+        var loop = leaf.Body!.CreateBlock();
+        loop.SetBranch(loop);
+        leaf.Body.EntryBlock.SetBranch(loop);
+        Assert.True(effects.GetEffects(methods[0]).MayDiverge);
+
+        // Body identity is also part of validation, even with a fresh revision.
+        leaf.Body = new MethodBody(leaf);
+        leaf.Body.CreateBlock().SetBranch(new ReturnInst());
+        Assert.True(effects.GetEffects(methods[0]).IsPure);
+        Assert.Equal(methods.Length * 3, effects.Computations);
+    }
+
+    [Fact]
     public void RecursiveDependencyDiamondsReuseEffectsWhileAnAncestorIsBuilding()
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Void);

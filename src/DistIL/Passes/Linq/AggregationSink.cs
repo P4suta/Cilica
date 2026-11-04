@@ -103,3 +103,18 @@ internal class CountSink : AggregationSink
         return accum;
     }
 }
+
+internal sealed class SumSink(CallInst call) : AggregationSink(call)
+{
+    public static bool IsSupported(CallInst call)
+        => call.NumArgs is 1 or 2 && call.ResultType.Kind is TypeKind.Int32 or TypeKind.Int64;
+
+    protected override Value GetSeed(IRBuilder builder, EstimatedSourceLen sourceLen)
+        => ConstInt.Create(SubjectCall.ResultType, 0);
+
+    protected override Value Accumulate(IRBuilder builder, Value currAccum, Value currItem, BasicBlock skipBlock)
+    {
+        if (SubjectCall.NumArgs == 2) currItem = builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem);
+        return builder.CreateBin(BinaryOp.AddOvf, currAccum, currItem);
+    }
+}

@@ -5,6 +5,9 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     readonly Dictionary<MethodDef, Entry> _cache = new();
     readonly Dictionary<MethodDef, HashSet<MethodDef>> _callers = new();
     readonly Stack<(MethodDef Method, HashSet<MethodDef> Dependencies)> _building = new();
+    readonly HashSet<MethodDef> _active = new();
+    readonly HashSet<MethodDef> _checkedMethods = new();
+    readonly Stack<MethodDef> _pendingChecks = new();
     readonly Compilation _comp;
 
     public long Computations { get; private set; }
@@ -30,13 +33,13 @@ public class GlobalFunctionEffects : IGlobalAnalysis
             parent.Dependencies.Add(target);
         }
 
-        if (_building.Any(item => item.Method == target)) {
+        if (_active.Contains(target)) {
             return FunctionEffects.Unknown;
         }
 
         if (_cache.TryGetValue(target, out var entry)) {
             if (entry.Body == target.Body && entry.Revision == (target.Body?.Revision ?? 0) &&
-                (entry.Dependencies.Count == 0 || IsCurrent(target, new HashSet<MethodDef>()))) {
+                (entry.Dependencies.Count == 0 || IsCurrent(target))) {
                 CacheHits++;
 
                 return entry.Effects;
@@ -47,6 +50,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
 
         var dependencies = new HashSet<MethodDef>();
         _building.Push((target, dependencies));
+        _active.Add(target);
 
         try {
             var effects = ComputeEffects(target);
@@ -61,24 +65,32 @@ public class GlobalFunctionEffects : IGlobalAnalysis
             return effects;
         } finally {
             _building.Pop();
+            _active.Remove(target);
         }
     }
 
-    bool IsCurrent(MethodDef method, HashSet<MethodDef> checkedMethods)
+    bool IsCurrent(MethodDef method)
     {
-        if (!checkedMethods.Add(method)) {
+        // Validation does not compute effects or re-enter GetEffects, so queries
+        // can share this scratch storage, including queries during graph building.
+        _pendingChecks.Push(method);
+        try {
+            while (_pendingChecks.TryPop(out var current)) {
+                if (!_checkedMethods.Add(current)) continue;
+                if (!_cache.TryGetValue(current, out var entry)) {
+                    // Active recursive ancestors deliberately contributed unknown
+                    // effects and have not published their cache entries yet.
+                    if (!_active.Contains(current)) return false;
+                    continue;
+                }
+                if (entry.Body != current.Body || entry.Revision != (current.Body?.Revision ?? 0)) return false;
+                foreach (var dependency in entry.Dependencies) _pendingChecks.Push(dependency);
+            }
             return true;
+        } finally {
+            _checkedMethods.Clear();
+            _pendingChecks.Clear();
         }
-
-        if (!_cache.TryGetValue(method, out var entry)) {
-            // Recursive edges were deliberately evaluated as unknown. An active
-            // ancestor has not published its cache entry yet, but its body has
-            // not changed. Invalidating here repeatedly rebuilds the same graph.
-            return _building.Any(item => item.Method == method);
-        }
-
-        return entry.Body == method.Body && entry.Revision == (method.Body?.Revision ?? 0) &&
-            entry.Dependencies.All(dependency => IsCurrent(dependency, checkedMethods));
     }
 
     public FunctionEffects GetEffects(CallInst call)

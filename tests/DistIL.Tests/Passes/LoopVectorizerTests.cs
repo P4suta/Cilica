@@ -8,6 +8,102 @@ using DistIL.Passes;
 [Collection("ModuleResolver")]
 public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void EqualLengthArrayMapsVectorizeWithAliasingAndOrderedStores(bool negateGuard, bool swapOperands)
+    {
+        var body = CreateGuardedArrayMap(negateGuard, swapOperands);
+        Vectorize(body, expected: true);
+        var run = Utils.Compile<Action<int[], int[], bool>>(body);
+        foreach (int count in new[] { 0, 1, 7, 8, 9, 15, 16, 17, 31, 33 }) {
+            var original = Enumerable.Range(0, count).Select(i => i % 2 == 0 ? int.MaxValue : i).ToArray();
+            var source = (int[])original.Clone();
+            var destination = new int[count];
+            run(source, destination, false);
+            Assert.Equal(original.Select(x => unchecked(x * 3 + 7)), destination);
+            Assert.Equal(original.Select(x => unchecked(x * 3 + 8)), source);
+
+            source = (int[])original.Clone();
+            run(source, source, false);
+            Assert.Equal(original.Select(x => unchecked(x * 3 + 8)), source);
+        }
+        var shortDestination = new int[1];
+        run([1, 2], shortDestination, false);
+        Assert.Equal(0, shortDestination[0]);
+    }
+
+    [Fact]
+    public void BypassedLengthGuardsDoNotProveBounds()
+    {
+        var body = CreateGuardedArrayMap(negateGuard: false, swapOperands: false, bypassGuard: true);
+        Vectorize(body, expected: false);
+        var run = Utils.Compile<Action<int[], int[], bool>>(body);
+        int[] source = [1, 2, 3];
+        var destination = new int[1];
+        Assert.Throws<IndexOutOfRangeException>(() => run(source, destination, true));
+        Assert.Equal(new[] { 10 }, destination);
+        Assert.Equal(new[] { 11, 2, 3 }, source);
+    }
+
+    [Fact]
+    public void GuardedCountParametersCanBoundArrayStorage()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray(), PrimType.Int32);
+        var entry = body.CreateBlock();
+        var preheader = body.CreateBlock();
+        var exit = body.CreateBlock();
+        var builder = new IRBuilder(entry);
+        var length = builder.CreateConvert(builder.CreateArrayLen(body.Args[0]), PrimType.Int32);
+        entry.SetBranch(new BranchInst(builder.CreateEq(body.Args[1], length), preheader, exit));
+        var loop = new LoopBuilder(preheader);
+        preheader.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        loop.Build(header => header.CreateSlt(index, body.Args[1]), items => {
+            items.CreateArrayStore(body.Args[0], index, ConstInt.CreateI(7));
+        });
+        loop.Exit.CreateReturn();
+        exit.SetBranch(new ReturnInst());
+        Vectorize(body, expected: true);
+        var run = Utils.Compile<Action<int[], int>>(body);
+        var values = new int[33];
+        run(values, 33);
+        Assert.All(values, value => Assert.Equal(7, value));
+        run([], 0);
+        run(values, -1);
+        Assert.All(values, value => Assert.Equal(7, value));
+    }
+
+    private MethodBody CreateGuardedArrayMap(bool negateGuard, bool swapOperands, bool bypassGuard = false)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray(), PrimType.Int32.CreateArray(), PrimType.Bool);
+        var entry = body.CreateBlock();
+        var guard = bypassGuard ? body.CreateBlock() : entry;
+        var preheader = body.CreateBlock();
+        var exit = body.CreateBlock();
+        if (bypassGuard) entry.SetBranch(new BranchInst(body.Args[2], preheader, guard));
+        var builder = new IRBuilder(guard);
+        var sourceLength = builder.CreateConvert(builder.CreateArrayLen(body.Args[0]), PrimType.Int32);
+        var destinationLength = builder.CreateConvert(builder.CreateArrayLen(body.Args[1]), PrimType.Int32);
+        var condition = builder.CreateCmp(negateGuard ? CompareOp.Ne : CompareOp.Eq,
+            swapOperands ? destinationLength : sourceLength, swapOperands ? sourceLength : destinationLength);
+        guard.SetBranch(new BranchInst(condition, negateGuard ? exit : preheader, negateGuard ? preheader : exit));
+        var loop = new LoopBuilder(preheader);
+        preheader.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        loop.Build(header => header.CreateSlt(index, header.CreateConvert(header.CreateArrayLen(body.Args[0]), PrimType.Int32)), items => {
+            var value = items.CreateArrayLoad(body.Args[0], index);
+            items.CreateArrayStore(body.Args[1], index, items.CreateAdd(items.CreateMul(value, ConstInt.CreateI(3)), ConstInt.CreateI(7)));
+            // A load following a store must observe it, including when the arrays alias.
+            items.CreateArrayStore(body.Args[0], index, items.CreateAdd(items.CreateArrayLoad(body.Args[1], index), ConstInt.CreateI(1)));
+        });
+        loop.Exit.CreateReturn();
+        exit.SetBranch(new ReturnInst());
+        return body;
+    }
+
     [Fact]
     public void UnsignedReductionsCanConsumeSignedLanesOfTheSameWidth()
     {
