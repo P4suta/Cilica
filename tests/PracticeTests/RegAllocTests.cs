@@ -6,6 +6,17 @@ using Cilica.Attributes;
 public class RegAllocTests
 {
     [Theory]
+    [InlineData("-", "0")]
+    [InlineData("OFF", "0")]
+    [InlineData("Off", "0")]
+    [InlineData("on", "on")]
+    public void SharedSelectLocalsPreserveBothPaths(string value, string expected)
+    {
+        if (value == "-" || value.ToUpperInvariant() == "OFF") value = "0";
+        Assert.Equal(expected, value);
+    }
+
+    [Theory]
     [InlineData(0, 1020)]
     [InlineData(1, 2000)]
     [InlineData(2, 0)]

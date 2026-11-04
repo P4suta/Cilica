@@ -14,6 +14,47 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
     [Fact]
     public void Test_ILGenerator() => CheckCIL("CodeGen/StructFieldInsertExtract.ethil");
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StackAllocationsInCallArgumentsKeepAnEmptyStackAndEvaluationOrder(bool wrapInSpan)
+    {
+        var callback = _modResolver.Import(typeof(Func<int>));
+        var span = _modResolver.Import(typeof(Span<byte>));
+        var pointer = PrimType.Void.CreatePointer();
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, callback, callback);
+        var consume = body.Definition.DeclaringType.CreateMethod("Consume", PrimType.Int32,
+            [new ParamDef(PrimType.Int32, "prefix"), new ParamDef(wrapInSpan ? span : pointer, "buffer")],
+            MethodAttributes.Public | MethodAttributes.Static);
+        consume.ImplAttribs = MethodImplAttributes.NoInlining;
+        consume.Body = new Cilica.IR.MethodBody(consume);
+        var callee = new IRBuilder(consume.Body.CreateBlock());
+        Value count;
+        if (wrapInSpan) {
+            var local = consume.Body.CreateVar(span);
+            callee.CreateStore(local, consume.Body.Args[1]);
+            count = callee.CreateCall(span.FindMethod("get_Length"), local);
+        } else {
+            callee.Emit(new StoreInst(consume.Body.Args[1], ConstInt.CreateI(8), PrimType.Byte));
+            count = callee.Emit(new LoadInst(consume.Body.Args[1], PrimType.Byte));
+        }
+        callee.CreateReturn(callee.CreateAdd(consume.Body.Args[0], count));
+        var builder = new IRBuilder(body.CreateBlock());
+        var prefix = builder.CreateCallVirt(callback.FindMethod("Invoke"), body.Args[0]);
+        var size = builder.CreateCallVirt(callback.FindMethod("Invoke"), body.Args[1]);
+        var allocation = builder.Emit(new CilIntrinsic.Alloca(builder.CreateConvert(size, PrimType.UIntPtr)));
+        Value buffer = wrapInSpan
+            ? builder.CreateNewObj(span.FindMethod(".ctor", new MethodSig(PrimType.Void, [pointer, PrimType.Int32])), allocation, ConstInt.CreateI(8))
+            : allocation;
+        builder.CreateReturn(builder.CreateCall(consume, prefix, buffer));
+        IRVerifier.Verify(body);
+
+        var trace = new List<string>();
+        var run = Utils.Compile<Func<Func<int>, Func<int>, int>>(body);
+        Assert.Equal(42, run(() => { trace.Add("prefix"); return 34; }, () => { trace.Add("size"); return 8; }));
+        Assert.Equal(new[] { "prefix", "size" }, trace);
+    }
+
     public enum SmallFlags : ushort { None = 0, One = 1, High = 0x8000 }
 
     [Fact]

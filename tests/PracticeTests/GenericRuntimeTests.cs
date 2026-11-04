@@ -8,6 +8,50 @@ using Cilica.Attributes;
 public class GenericRuntimeTests
 {
     [Fact]
+    public void InlinedTypeTokensKeepGenericDefinitions()
+    {
+        Assert.Equal(typeof(Nullable<>), OpenGeneric<int>());
+        Assert.Equal(typeof(List<>), OpenGenericList<string>());
+    }
+
+    static Type OpenGeneric<T>() => typeof(Nullable<>);
+    static Type OpenGenericList<T>() => typeof(List<>);
+
+    [Fact]
+    public void BoxedGenericConstraintsRemainUsable()
+    {
+        var stream = new MemoryStream();
+        DisposeGeneric(stream);
+        Assert.False(stream.CanRead);
+        var other = new MemoryStream();
+        GenericHolder<MemoryStream>.Dispose(other);
+        Assert.False(other.CanRead);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void DisposeGeneric<T>(T value) where T : IDisposable => ((IDisposable)value).Dispose();
+
+    [Optimize]
+    static class GenericHolder<T> where T : Stream
+    {
+        public static void Dispose(T value) => ((Stream)value).Dispose();
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MergedCollectionsKeepTheirCommonInterface(bool populated)
+    {
+        List<int>? values = populated ? new List<int> { 42 } : null;
+        var result = MergeCollections(values);
+        Assert.Equal(populated ? 1 : 0, result.Count);
+        if (populated) Assert.Equal(42, result[0]);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static IReadOnlyList<int> MergeCollections(List<int>? values) => values ?? (IReadOnlyList<int>)Array.Empty<int>();
+
+    [Fact]
     public void StaticInterfaceCallsDoNotHaveAnInstanceReceiver()
     {
         Assert.Equal(42, Sum<int>(20, 22));

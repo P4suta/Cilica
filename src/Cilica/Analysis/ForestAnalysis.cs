@@ -48,6 +48,9 @@ public class ForestAnalysis : IMethodAnalysis
             // Check for single-use instruction defined in the same block
             if (inst.Operands[i] is not Instruction oper || oper.Block != inst.Block) return;
             if (oper is PhiInst or FieldInsertInst) return; // needs own slot for codegen
+            // CIL localloc requires an empty evaluation stack apart from its size.
+            // Keep it rooted during scheduling so earlier effects also stay ordered.
+            if (oper is CilIntrinsic.Alloca) return;
             if (oper.NumUses >= 2 && !IsCheaperToRematerialize(oper)) return;
 
             if (HasHazardsBetweenDefUse(oper, root, aa)) return;
