@@ -23,7 +23,13 @@ Cilica.Cli -i input/MyLibrary.dll -o output/MyLibrary.dll
 ```
 
 # Usage
-The `Cilica.OptimizerTask` NuGet package contains an MSBuild task which automatically invokes the optimizer on the output project assembly when building in _Release_ mode. Build the packages locally and install `Cilica.OptimizerTask` from the `artifacts` directory using a local NuGet source:
+The `Cilica.OptimizerTask` NuGet package contains an MSBuild task which automatically invokes the optimizer on the output project assembly when building in _Release_ mode. It requires the .NET 10 SDK and runtime. Install the preview package with:
+
+```shell
+dotnet add package Cilica.OptimizerTask --prerelease
+```
+
+The `Cilica.Core` package exposes the optimizer and intermediate representation APIs for direct use. To build both packages locally:
 
 ```shell
 dotnet pack Cilica.sln -c Release -o artifacts
