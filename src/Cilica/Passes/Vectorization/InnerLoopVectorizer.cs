@@ -41,8 +41,9 @@ internal sealed class InnerLoopVectorizer
 
         var vectorizer = new InnerLoopVectorizer(loop, trans);
 
-        if (vectorizer.BuildMappings(reportLogger) && vectorizer.PickVectorWidth()) {
+        if (vectorizer.BuildMappings(reportLogger) && vectorizer.PickVectorWidth(reportLogger)) {
             vectorizer.EmitVectorizedLoop(boundsChecks);
+            reportLogger?.Trace($"Vectorized loop: 256-bit vectors, {vectorizer._width} lanes, {vectorizer._reductionPhis.Count} reductions, {boundsChecks.Count} guarded arrays, with scalar fallback.");
 
             return true;
         }
@@ -66,16 +67,19 @@ internal sealed class InnerLoopVectorizer
             }
 
             if (phi.GetValue(_bodyBlock) is not Instruction iterOut || iterOut.Block != _bodyBlock) {
+                logger?.Trace($"Loop vectorization declined: reduction {phi} is not updated in the body block.");
                 return false;
             }
 
             if (phi.Users().Any(u => _loop.Contains(u.Block) && u != iterOut)) {
+                logger?.Trace($"Loop vectorization declined: reduction {phi} is used outside its update.");
                 return false;
             }
 
             var op = _trans.GetVectorOp(iterOut).Op;
 
             if (!IsSupportedReductionOp(op)) {
+                logger?.Trace($"Loop vectorization declined: unsupported reduction operation {iterOut}.");
                 return false;
             }
 
@@ -95,7 +99,7 @@ internal sealed class InnerLoopVectorizer
                 }
                 case PtrOffsetInst addr: {
                     if ((!_loop.IsInvariant(addr.BasePtr) || addr.Index != _loop.Counter) && addr.BasePtr is not PhiInst) {
-                        logger?.Debug($"AutoVec: unsupported pointer addressing '{addr}'");
+                        logger?.Trace($"Loop vectorization declined: unsupported pointer addressing '{addr}'.");
 
                         return false;
                     }
@@ -105,7 +109,7 @@ internal sealed class InnerLoopVectorizer
                 }
                 case MemoryInst acc: {
                     if (!VectorShape.IsSupportedElemType(acc.ElemType)) {
-                        logger?.Debug($"AutoVec: unsupported memory access type '{acc.ElemType}'");
+                        logger?.Trace($"Loop vectorization declined: unsupported memory access type '{acc.ElemType}'.");
 
                         return false;
                     }
@@ -125,7 +129,7 @@ internal sealed class InnerLoopVectorizer
                     var (op, elemType) = _trans.GetVectorOp(inst);
 
                     if (op == VectorOp.Invalid) {
-                        logger?.Debug($"AutoVec: unsupported instruction '{inst}'");
+                        logger?.Trace($"Loop vectorization declined: unsupported instruction '{inst}'.");
 
                         return false;
                     }
@@ -134,13 +138,13 @@ internal sealed class InnerLoopVectorizer
                         elemType = GetConditionalElemType(inst);
 
                         if (elemType == TypeKind.Void) {
-                            logger?.Debug("AutoVec: mismatching conditional element width (compares of different types?)");
+                            logger?.Trace($"Loop vectorization declined: conditional operands have incompatible element widths at {inst}.");
 
                             return false;
                         }
 
                         if (!inst.Users().All(u => IsSupportedConditionalUse(u, elemType))) {
-                            logger?.Debug("AutoVec: unsupported use of bool-returning instruction");
+                            logger?.Trace($"Loop vectorization declined: unsupported use of boolean result {inst}.");
 
                             return false;
                         }
@@ -164,7 +168,7 @@ internal sealed class InnerLoopVectorizer
         return true;
     }
 
-    private bool PickVectorWidth()
+    private bool PickVectorWidth(ICompilationLogger? logger)
     {
         // Check if all mappings have the same scalar width
         int commonElemSize = 0;
@@ -181,6 +185,7 @@ internal sealed class InnerLoopVectorizer
             if (commonElemSize == 0) {
                 commonElemSize = size;
             } else if (commonElemSize != size) {
+                logger?.Trace($"Loop vectorization declined: mixed element widths ({commonElemSize} and {size} bits).");
                 return false;
             }
         }

@@ -116,10 +116,6 @@ public class InliningAdvisor : IGlobalAnalysis
             var (reason, metrics) = ComputeMetrics(method);
             entry = new Entry(reason, metrics, method, method.Revision);
             _cache[method.Definition] = entry;
-
-            if (entry.Reason != InlineRejectReason.Accepted) {
-                _comp.Logger.Trace($"Rejecting inlinee '{method}': {entry.Reason}");
-            }
         }
 
         return (entry.Reason, entry.Metrics);

@@ -9,6 +9,10 @@ public static class PassRunner
     {
         long revision = ctx.Method.Revision;
         long controlFlowRevision = ctx.Method.ControlFlowRevision;
+        bool trace = ctx.Logger.IsEnabled(LogLevel.Trace);
+        using var scope = trace
+            ? ctx.Logger.Push(new("Cilica.Pass"), $"{pass.GetType().Name} on '{ctx.Definition}'")
+            : default;
 
         try {
             foreach (var inspector in inspectors) {
@@ -31,6 +35,7 @@ public static class PassRunner
 
             return result;
         } catch (Exception error) {
+            ctx.Logger.Trace($"Failed: {error.GetType().Name}: {error.Message}");
             ctx.InvalidateAll();
             ctx.Compilation.InvalidateAnalyses(ctx.Definition);
 

@@ -7,6 +7,10 @@ public class SimplifyCFG : IMethodPass
     public MethodPassResult Run(MethodTransformContext ctx)
     {
         bool everChanged = false;
+        long revision = ctx.Method.Revision;
+        int blocksBefore = ctx.Method.NumBlocks;
+        int branchesBefore = ctx.Logger.IsEnabled(LogLevel.Trace)
+            ? ctx.Method.Instructions().Count(inst => inst is BranchInst or SwitchInst) : 0;
 
         // Canonicalization
         everChanged |= SinkReturnsAndJumpThreads(ctx.Compilation, ctx.Method);
@@ -25,6 +29,9 @@ public class SimplifyCFG : IMethodPass
         }
 
         if (everChanged) ControlFlowUtils.RemoveUnreachableBlocks(ctx.Method);
+        if (ctx.Method.Revision != revision) {
+            ctx.Logger.Trace($"Simplified control flow: {blocksBefore} -> {ctx.Method.NumBlocks} blocks, {branchesBefore} -> {ctx.Method.Instructions().Count(inst => inst is BranchInst or SwitchInst)} branches.");
+        }
 
         return everChanged ? MethodInvalidations.ControlFlow : 0;
     }

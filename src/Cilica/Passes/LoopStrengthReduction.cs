@@ -11,8 +11,10 @@ public class LoopStrengthReduction : IMethodPass
         var loopAnalysis = ctx.GetAnalysis<LoopAnalysis>();
         var domTree = ctx.GetAnalysis<DominatorTree>();
         int numChanges = 0;
+        int changedLoops = 0;
 
         foreach (var loop in loopAnalysis.Loops) {
+            long revision = ctx.Method.Revision;
             numChanges += RemoveDuplicatedCounters(loop, domTree);
 
             // Don't reduce loops with more than one body block, because the 
@@ -20,7 +22,9 @@ public class LoopStrengthReduction : IMethodPass
             if (loop.NumBlocks <= 2 && ShapedLoopInfo.Parse(loop) is CountingLoopInfo countingLoop) {
                 numChanges += ReduceLoop(countingLoop, domTree);
             }
+            changedLoops += ctx.Method.Revision != revision ? 1 : 0;
         }
+        if (changedLoops != 0) ctx.Logger.Trace($"Simplified induction variables or indexing in {changedLoops} loops.");
         return numChanges > 0 ? MethodInvalidations.DataFlow : 0;
     }
 

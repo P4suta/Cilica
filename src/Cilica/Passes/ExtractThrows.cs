@@ -31,6 +31,8 @@ public class ExtractThrows : IMethodPass
                 // but that could mess up the CFG too much and confuse some opts or the JIT.
                 throwInst.Exception = ConstNull.Create();
                 excAlloc.Remove();
+                changed = true;
+                ctx.Logger.Trace($"Extracted throw of '{excAlloc.ResultType}' into helper '{helper}'.");
             }
         }
         return changed ? MethodInvalidations.DataFlow : MethodInvalidations.None;

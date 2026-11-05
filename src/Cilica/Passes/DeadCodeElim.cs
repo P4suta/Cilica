@@ -9,11 +9,18 @@ public class DeadCodeElim : IMethodPass
     {
         var changes = MethodInvalidations.None;
         var funcInfo = ctx.Compilation.GetAnalysis<GlobalFunctionEffects>();
+        bool trace = ctx.Logger.IsEnabled(LogLevel.Trace);
+        int blocksBefore = ctx.Method.NumBlocks;
+        int instructionsBefore = trace ? ctx.Method.Instructions().Count() : 0;
+        int variablesBefore = trace ? ctx.Method.LocalVars().Count() : 0;
 
         changes |= RemoveUnreachableBlocks(ctx.Method) ? MethodInvalidations.ControlFlow : 0;
         changes |= RemoveUnusedVars(ctx.Method) ? MethodInvalidations.DataFlow : 0;
         changes |= RemoveUselessCode(ctx.Method, funcInfo) ? MethodInvalidations.DataFlow : 0;
 
+        if (changes != MethodInvalidations.None) {
+            ctx.Logger.Trace($"Removed {blocksBefore - ctx.Method.NumBlocks} blocks, {instructionsBefore - ctx.Method.Instructions().Count()} instructions, and {variablesBefore - ctx.Method.LocalVars().Count()} variables.");
+        }
         return changes;
     }
 

@@ -16,11 +16,15 @@ internal sealed class InliningSizeBudget(MethodTransformContext context, int ins
 
     public bool HasBudget => _remainingInstructions > 0;
 
-    public bool AllowsExpansion(Instruction site, MethodDefOrSpec target, Action<Instruction> expand, int initializedFields = 0)
+    public bool AllowsExpansion(Instruction site, MethodDefOrSpec target, Action<Instruction> expand, out string? rejection, int initializedFields = 0)
     {
+        rejection = null;
         var caller = context.Method;
         _reservedInstructions = target.Definition.Body!.Instructions().Count();
-        if (_reservedInstructions > _remainingInstructions) return false;
+        if (_reservedInstructions > _remainingInstructions) {
+            rejection = $"needs {_reservedInstructions} instructions, remaining cloning budget {_remainingInstructions}";
+            return false;
+        }
         int limit = context.Compilation.Settings.MaxInlinedMethodILSize;
         if (_estimatedRevision != caller.Revision) {
             _estimatedSize = EstimateSize(caller);
@@ -37,7 +41,10 @@ internal sealed class InliningSizeBudget(MethodTransformContext context, int ins
         // Trial clones spend the same work budget as committed expansions.
         // Leave enough for the real inline if specialization makes it fit.
         int trialInstructions = caller.Instructions().Count() + _reservedInstructions;
-        if (trialInstructions > _remainingInstructions - _reservedInstructions) return false;
+        if (trialInstructions > _remainingInstructions - _reservedInstructions) {
+            rejection = "insufficient instruction budget for a size probe and the committed expansion";
+            return false;
+        }
         _remainingInstructions -= trialInstructions;
         var copy = IRCloner.CloneBody(caller, out var cloner);
         expand((Instruction)cloner.GetMapping(site));
@@ -48,15 +55,25 @@ internal sealed class InliningSizeBudget(MethodTransformContext context, int ins
 
         // Already-large inputs may still benefit from size-neutral or shrinking
         // inlines. Compare the same cleanup/emission on both sides.
-        if (_estimatedSize <= limit) return false;
+        if (_estimatedSize <= limit) {
+            rejection = $"resulting IL size {expandedSize} bytes exceeds limit {limit}";
+            return false;
+        }
         if (_measuredRevision != caller.Revision) {
             int callerInstructions = caller.Instructions().Count();
-            if (callerInstructions > _remainingInstructions - _reservedInstructions) return false;
+            if (callerInstructions > _remainingInstructions - _reservedInstructions) {
+                rejection = "insufficient instruction budget to measure the original caller";
+                return false;
+            }
             _remainingInstructions -= callerInstructions;
             _measuredSize = MeasureAfterCleanup(IRCloner.CloneBody(caller));
             _measuredRevision = caller.Revision;
         }
-        return expandedSize <= _measuredSize;
+        if (expandedSize > _measuredSize) {
+            rejection = $"already oversized caller would grow from {_measuredSize} to {expandedSize} IL bytes (limit {limit})";
+            return false;
+        }
+        return true;
     }
 
     public void RecordExpansion()
@@ -74,6 +91,9 @@ internal sealed class InliningSizeBudget(MethodTransformContext context, int ins
 
     int MeasureAfterCleanup(MethodBody body)
     {
+        using var scope = context.Logger.IsEnabled(LogLevel.Trace)
+            ? context.Logger.Push(new("Cilica.Inlining.SizeProbe"), $"Speculative size probe for '{body.Definition}' on a working copy")
+            : default;
         var ctx = new MethodTransformContext(context.Compilation, body);
         Cleanup(ctx, new SimplifyInsts(ctx.Compilation.Resolver));
         return ILGenerator.GenerateCode(body).GetCodeSize();

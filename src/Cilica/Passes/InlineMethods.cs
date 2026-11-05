@@ -25,6 +25,7 @@ public class InlineMethods : IMethodPass
         var root = ImmutableArray.Create(ctx.Definition);
         var ancestry = new Dictionary<CallInst, ImmutableArray<MethodDef>>();
         var worklist = new Queue<CallInst>();
+        var decisions = ctx.Logger.IsEnabled(LogLevel.Trace) ? new DecisionTree() : null;
         EnqueueCalls();
 
         var advisor = ctx.Compilation.GetAnalysis<InliningAdvisor>();
@@ -34,7 +35,10 @@ public class InlineMethods : IMethodPass
         var sizeBudget = new InliningSizeBudget(ctx, _opts.MaxExpandedInstructions);
         var devirtualize = new Devirtualize();
         var simplify = new SimplifyInsts(ctx.Compilation.Resolver) {
-            OnCallReplaced = (previous, replacement) => ancestry[replacement] = ancestry.GetValueOrDefault(previous, root)
+            OnCallReplaced = (previous, replacement) => {
+                ancestry[replacement] = ancestry.GetValueOrDefault(previous, root);
+                decisions?.Replace(previous, replacement);
+            }
         };
 
         // Keep one budget and each call's ancestry across the whole fixed point.
@@ -45,33 +49,50 @@ public class InlineMethods : IMethodPass
 
             while (HasBudget() && worklist.TryDequeue(out var call)) {
                 var ancestors = ancestry[call];
-                if (call.Block == null || call.IsTailCall || call.IsReadOnly || ancestors.Length >= _opts.MaxDepth) continue;
+                if (call.Block == null) continue;
+                if (call.IsTailCall || call.IsReadOnly || ancestors.Length >= _opts.MaxDepth) {
+                    decisions?.Record(call, call.Method, call.IsTailCall ? "tail-call semantics must be preserved"
+                        : call.IsReadOnly ? "readonly receiver semantics must be preserved"
+                        : $"maximum inline depth {_opts.MaxDepth} reached");
+                    continue;
+                }
 
-                var inlinee = ResolveTarget(ctx, advisor, call);
+                var inlinee = ResolveTarget(ctx, advisor, call, out var rejection);
                 var target = inlinee?.Definition;
-                if (target == null || ancestors.Contains(target)) continue;
+                if (target == null || ancestors.Contains(target)) {
+                    decisions?.Record(call, inlinee ?? call.Method, target == null ? rejection : "recursive inline ancestry");
+                    continue;
+                }
 
                 int cost = advisor.EvaluateInliningCost(target.Body!, call.Args);
-                if (cost > _opts.CostThreshold || cost > budget) continue;
+                if (cost > _opts.CostThreshold || cost > budget) {
+                    decisions?.Record(call, inlinee!, cost == int.MaxValue ? advisor.GetMetrics(target.Body!).Rejection.ToString()
+                        : $"cost {cost} exceeds limit {Math.Min(_opts.CostThreshold, budget)}");
+                    continue;
+                }
                 if (!sizeBudget.AllowsExpansion(call, inlinee!, probe => {
                     var clonedCall = (CallInst)probe;
                     var value = Inline(clonedCall, inlinee!, clonedCall.Args, ctx.Compilation);
                     if (value != null) clonedCall.ReplaceUses(value);
                     clonedCall.Remove();
-                })) continue;
+                }, out rejection)) {
+                    decisions?.Record(call, inlinee!, rejection);
+                    continue;
+                }
 
                 budget -= Math.Max(cost, -_opts.NegativeCostLimit);
                 expansions++;
-                ctx.Logger.Trace($"Inlining '{target}' into '{ctx.Method}'. RemBudget={budget} Cost={cost}");
 
                 var chain = ancestors.Add(target);
                 var result = Inline(call, inlinee!, call.Args, ctx.Compilation, onNewCall: nested => {
                     ancestry[nested] = chain;
+                    decisions?.Register(nested, call);
                     worklist.Enqueue(nested);
                 });
                 if (result != null) call.ReplaceUses(result);
                 call.Remove();
                 sizeBudget.RecordExpansion();
+                decisions?.Record(call, inlinee!, rejection: null);
             }
 
             if (ctx.Method.Revision == revision) break;
@@ -85,6 +106,9 @@ public class InlineMethods : IMethodPass
             EnqueueCalls();
         }
 
+        decisions?.Write(ctx.Logger, budget <= 0 ? "inline cost budget exhausted"
+            : expansions >= _opts.MaxExpansions ? $"maximum inline expansion count {_opts.MaxExpansions} reached"
+            : !sizeBudget.HasBudget ? "instruction cloning budget exhausted" : null);
         if (ctx.Method.Revision == initialRevision) return MethodInvalidations.None;
         advisor.InvalidateMetrics(ctx.Method);
         return MethodInvalidations.Everything;
@@ -96,36 +120,47 @@ public class InlineMethods : IMethodPass
             worklist.Clear();
             foreach (var call in ctx.Method.Instructions().OfType<CallInst>()) {
                 ancestry.TryAdd(call, root);
+                decisions?.Register(call);
                 worklist.Enqueue(call);
             }
         }
     }
 
-    private static MethodDefOrSpec? ResolveTarget(MethodTransformContext ctx, InliningAdvisor advisor, CallInst call)
+    private static MethodDefOrSpec? ResolveTarget(MethodTransformContext ctx, InliningAdvisor advisor, CallInst call, out string? rejection)
     {
+        rejection = null;
         Devirtualize.TryDevirtualize(ctx, call);
         // Must be a non-recursive MethodDef
         var parent = ctx.Method.Definition;
 
         if (call.Method is not MethodDefOrSpec inlinee || inlinee.Definition == parent) {
+            rejection = call.Method is MethodDefOrSpec ? "recursive call" : "method definition is unavailable";
             return null;
         }
         var target = inlinee.Definition;
-        if (target.Module != ctx.Compilation.Module && !ctx.Compilation.Settings.AllowCrossAssemblyIPO) return null;
+        if (target.Module != ctx.Compilation.Module && !ctx.Compilation.Settings.AllowCrossAssemblyIPO) {
+            rejection = "cross-assembly optimization is disabled";
+            return null;
+        }
 
         // Static constraints must resolve before inlining; a default body may be overridden.
         // Instance constraints require an exact value-type target with the same receiver convention.
         if (call.Constraint is { } constraint &&
             (call.IsStatic || !constraint.IsValueType || constraint != inlinee.DeclaringType)) {
+            rejection = "constrained dispatch is unresolved or requires an incompatible receiver";
             return null;
         }
 
         // Known virtual target
         if (call.IsVirtual && target.Attribs.HasFlag(MethodAttributes.Virtual) && !target.Attribs.HasFlag(MethodAttributes.Final)) {
             if (Devirtualize.ResolveTarget(ctx, call) is not MethodDefOrSpec actualTarget || actualTarget == parent) {
+                rejection = "virtual dispatch has no known non-recursive target";
                 return null;
             }
-            if (actualTarget.DeclaringType.IsValueType && call.Args[0].ResultType.StackType != StackType.ByRef) return null;
+            if (actualTarget.DeclaringType.IsValueType && call.Args[0].ResultType.StackType != StackType.ByRef) {
+                rejection = "value-type target requires a byref receiver";
+                return null;
+            }
             // CoreLib cannot persist a devirtualization that needs access-check
             // suppression. It can still inline the target if its body is safe.
             if (ctx.Compilation.Module != ctx.Compilation.Resolver.CoreLib ||
@@ -137,18 +172,23 @@ public class InlineMethods : IMethodPass
         }
 
         if (ctx.Compilation.HasFailed(target)) {
+            rejection = "target failed compilation";
             return null;
         }
 
-        if (advisor.EarlyCheck(target) != InlineRejectReason.Accepted) {
+        var eligibility = advisor.EarlyCheck(target);
+        if (eligibility != InlineRejectReason.Accepted) {
+            rejection = $"{eligibility} ({target.ImplAttribs})";
             return null;
         }
 
         // If there's no body after devirt, there's no way we can inline this method.
         if (target.Body == null && !advisor.ImportBodyForInlining(target)) {
+            rejection = "body unavailable under the inline import policy";
             return null;
         }
         if (!ctx.Compilation.CanInlineBody(parent, inlinee)) {
+            rejection = "body requires its original frame, exception policy, or member access context";
             return null;
         }
         // CIL filters cannot contain nested exception regions. Keep a call to an
@@ -156,6 +196,7 @@ public class InlineMethods : IMethodPass
         if (target.Body!.Instructions().Any(inst => inst is GuardInst)) {
             var region = new ProtectedRegionAnalysis(ctx.Method).GetBlockRegion(call.Block);
             if (region.GetHandlerGuard() is { HasFilter: true } guard && guard.FilterBlock == region.StartBlock) {
+                rejection = "exception regions cannot be nested in a filter";
                 return null;
             }
         }
@@ -273,6 +314,67 @@ public class InlineMethods : IMethodPass
             // fixed-point rounds cannot mistake them for fresh root calls.
             if (clonedVal is CallInst call) onNewCall?.Invoke(call);
             return clonedVal;
+        }
+    }
+
+    sealed class DecisionTree
+    {
+        readonly Dictionary<CallInst, Node> _nodes = new();
+        readonly List<Node> _roots = new();
+
+        public void Register(CallInst call, CallInst? parent = null)
+        {
+            if (_nodes.ContainsKey(call)) return;
+            var node = new Node(call);
+            _nodes.Add(call, node);
+            (parent == null ? _roots : _nodes[parent].Children).Add(node);
+        }
+
+        public void Replace(CallInst previous, CallInst replacement)
+        {
+            if (_nodes.Remove(previous, out var node)) {
+                node.Call = replacement;
+                node.Decision = null;
+                _nodes.Add(replacement, node);
+            } else {
+                Register(replacement);
+            }
+        }
+
+        public void Record(CallInst call, MethodDesc target, string? rejection)
+            => _nodes[call].Decision = new(target, rejection);
+
+        public void Write(ICompilationLogger logger, string? budgetRejection)
+        {
+            var text = new StringBuilder();
+            foreach (var root in _roots) Append(root, 0);
+            if (text.Length != 0) {
+                text.Length -= Environment.NewLine.Length;
+                logger.Trace($"{text}");
+            }
+
+            void Append(Node node, int depth)
+            {
+                var decision = node.Decision;
+                if (decision == null) {
+                    if (budgetRejection == null || node.Call.Block == null) return;
+                    decision = new(node.Call.Method, budgetRejection);
+                }
+                text.Append(' ', depth * 2).Append(decision.Rejection == null ? "[INLINE] '" : "[FAIL] '")
+                    .Append(decision.Target).Append('\'');
+                if (decision.Rejection != null) text.Append(": ").Append(decision.Rejection);
+                text.AppendLine();
+                foreach (var child in node.Children) Append(child, depth + 1);
+            }
+        }
+
+        sealed record Decision(MethodDesc Target, string? Rejection);
+
+        sealed class Node(CallInst call)
+        {
+            public CallInst Call = call;
+            public Decision? Decision;
+            public List<Node> Children = new();
         }
     }
 

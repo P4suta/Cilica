@@ -24,14 +24,16 @@ public partial class SimplifyInsts : IMethodPass
     public MethodPassResult Run(MethodTransformContext ctx)
     {
         long revision = ctx.Method.Revision;
+        int simplified = 0;
 
         foreach (var inst in ctx.Method.Instructions()) {
+            long before = ctx.Method.Revision;
             var newValue = inst switch {
                 BinaryInst c    => SimplifyBinary(c),
                 CompareInst c   => SimplifyCompare(c),
                 UnaryInst c     => SimplifyUnary(c),
                 ConvertInst c   => SimplifyConvert(c),
-                CallInst c      => SimplifyCall(c),
+                CallInst c      => SimplifyCall(c, ctx.Logger),
                 IntrinsicInst c => SimplifyIntrinsic(c),
                 SelectInst c    => SimplifySelect(c),
                 _ => null
@@ -39,19 +41,21 @@ public partial class SimplifyInsts : IMethodPass
             if (newValue != null) {
                 inst.ReplaceWith(newValue, insertIfInst: true);
             }
+            simplified += ctx.Method.Revision != before ? 1 : 0;
         }
 
+        if (simplified != 0) ctx.Logger.Trace($"Simplified {simplified} instructions.");
         return ctx.Method.Revision != revision ? MethodInvalidations.DataFlow : MethodInvalidations.None;
     }
 
-    private Value? SimplifyCall(CallInst call)
+    private Value? SimplifyCall(CallInst call, ICompilationLogger logger)
     {
         var method = call.Method;
         var declType = method.DeclaringType;
 
         bool changed = method.Name switch {
             "Invoke" when declType.Inherits(t_Delegate)
-                => DevirtualizeLambda(call),
+                => DevirtualizeLambda(call, logger),
 
             "ContainsKey" when declType is TypeDefOrSpec s && s.Definition == t_DictionaryOfTT
                 => SimplifyDictLookup(call),

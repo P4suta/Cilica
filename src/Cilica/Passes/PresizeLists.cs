@@ -14,6 +14,7 @@ public class PresizeLists : IMethodPass
 
         var candidateLists = new Dictionary<TrackedValue, (bool HasConditionalAdd, int AddCallCount)>();
         int numChanges = 0;
+        int arrayBuilders = 0;
 
         foreach (var loop in loopAnalysis.GetShapedLoops(innermostOnly: true)) {
             // Must be able to calculate loop trip count before entering it
@@ -74,7 +75,7 @@ public class PresizeLists : IMethodPass
                 listAlloc.ReplaceWith(newList);
 
                 if (!info.HasConditionalAdd && fitsCapacity) {
-                    TryReplaceArrayBuilder(loop, builder, newList, domTree);
+                    arrayBuilders += TryReplaceArrayBuilder(loop, builder, newList, domTree) ? 1 : 0;
                 }
 
                 numChanges++;
@@ -83,6 +84,7 @@ public class PresizeLists : IMethodPass
             candidateLists.Clear();
         }
 
+        if (numChanges > 0) ctx.Logger.Trace($"Presized {numChanges} lists; replaced {arrayBuilders} with direct array construction.");
         return numChanges > 0 ? MethodInvalidations.DataFlow : MethodInvalidations.None;
     }
 

@@ -30,7 +30,10 @@ public class ExpandLinq : IMethodPass
         }
 
         var validated = new HashSet<CallInst>();
-        foreach (var query in queries) query.Emit(validated);
+        foreach (var query in queries) {
+            query.Emit(validated);
+            ctx.Logger.Trace($"Expanded LINQ query ending in '{query.GetSink().SubjectCall.Method}' into a loop.");
+        }
         return queries.Count > 0 ? MethodInvalidations.Loops : 0;
     }
 

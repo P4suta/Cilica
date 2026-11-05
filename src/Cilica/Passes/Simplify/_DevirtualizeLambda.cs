@@ -27,7 +27,7 @@ partial class SimplifyInsts
     //  BB_Result:
     //    r5 = ldfld Data::Instance -> Data
     //    r25 = call Data::Lambda1(Data: r5, int: r24) -> bool
-    private bool DevirtualizeLambda(CallInst call)
+    private bool DevirtualizeLambda(CallInst call, ICompilationLogger logger)
     {
         if (call is not { Method.Name: "Invoke", IsStatic: false, Args: [var lambdaInstance, ..] }) return false;
 
@@ -74,6 +74,7 @@ partial class SimplifyInsts
                 var replacement = new CallInst(method, call.Args[1..].ToArray()) { IsTailCall = call.IsTailCall };
                 OnCallReplaced?.Invoke(call, replacement);
                 call.ReplaceWith(replacement, insertIfInst: true);
+                logger.Trace($"Replaced delegate invocation with a direct call to '{method}'.");
                 return true;
             } else if (method.IsInstance) {
                 // Cached instance targets must be available on both phi edges.
@@ -104,6 +105,7 @@ partial class SimplifyInsts
                 call.Method = method;
                 call.SetArg(0, instanceObj);
                 call.IsVirtual = addr.IsVirtual;
+                logger.Trace($"Replaced delegate invocation with a call to '{method}' using its captured receiver.");
                 return true;
             }
             return false;

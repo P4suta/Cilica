@@ -13,7 +13,7 @@ public class ValueNumbering : IMethodPass
             FuncInfo = ctx.Compilation.GetAnalysis<GlobalFunctionEffects>(),
             RegionAnalysis = ctx.GetAnalysis<ProtectedRegionAnalysis>(),
         };
-        bool madeChanges = false;
+        int removed = 0;
 
         // Generate list of blocks in reverse post order, so that we visit most predecessors first.
         // (index will be > 0 at the end if there are unreachable blocks.)
@@ -24,11 +24,12 @@ public class ValueNumbering : IMethodPass
         // Perform GVN
         foreach (var block in blocks.AsSpan(index)) {
             foreach (var inst in block) {
-                madeChanges |= table.Process(inst);
+                removed += table.Process(inst) ? 1 : 0;
             }
         }
 
-        return madeChanges ? MethodInvalidations.DataFlow : 0;
+        if (removed != 0) ctx.Logger.Trace($"Eliminated {removed} redundant computations or loads.");
+        return removed != 0 ? MethodInvalidations.DataFlow : 0;
     }
 
     class ValueTable

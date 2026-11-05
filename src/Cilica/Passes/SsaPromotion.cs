@@ -30,6 +30,7 @@ public class SsaPromotion : IMethodPass
 
             RemoveDeadPhis();
             RemovePromotedSlots();
+            ctx.Logger.Trace($"Promoted {_slotNameStacks.Count} variables to SSA.");
 
             return MethodInvalidations.DataFlow;
         }
