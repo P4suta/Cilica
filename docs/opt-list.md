@@ -194,7 +194,7 @@ Elements beyond the prefix remain unchanged. The same bound proof can enable vec
 
 ## Loop Vectorization
 
-Loop vectorization is enabled in the default pipeline. Eligible innermost loops use `Vector256<T>` operations, a runtime hardware-acceleration check, and a scalar tail. The scalar loop also handles execution when vector acceleration is unavailable.
+Loop vectorization is enabled in the default pipeline. Eligible innermost loops use `Vector256<T>` operations when hardware accelerated, followed by `Vector128<T>` operations for the remaining full vectors. The 128-bit path also handles the whole loop when only 128-bit acceleration is available. Each width has its own runtime hardware-acceleration check; a scalar loop handles any remaining elements or execution without vector acceleration.
 
 When an array extent cannot be proved statically, the pass adds a null check followed by a length check before the vector path. This allows pointwise loops over multiple arrays and loops bounded by a count parameter to vectorize. Each unknown array extent is checked once, and short loops skip these checks. Existing dominating range guards avoid redundant runtime checks.
 
@@ -225,13 +225,23 @@ public static int CountAsciiA(string text)
     ref char first = ref MemoryMarshal.GetReference(text.AsSpan());
     int index = 0;
     int count = 0;
-    var target = Vector256.Create((ushort)'A');
 
     if (Vector256.IsHardwareAccelerated) {
+        var target = Vector256.Create((ushort)'A');
         for (; (long)text.Length - index >= 16; index += 16) {
             ref char current = ref Unsafe.Add(ref first, index);
             var values = Unsafe.ReadUnaligned<Vector256<ushort>>(ref Unsafe.As<char, byte>(ref current));
             var matches = Vector256.Equals(values, target);
+            count += BitOperations.PopCount(matches.AsByte().ExtractMostSignificantBits()) >> 1;
+        }
+    }
+
+    if (Vector128.IsHardwareAccelerated) {
+        var target = Vector128.Create((ushort)'A');
+        for (; (long)text.Length - index >= 8; index += 8) {
+            ref char current = ref Unsafe.Add(ref first, index);
+            var values = Unsafe.ReadUnaligned<Vector128<ushort>>(ref Unsafe.As<char, byte>(ref current));
+            var matches = Vector128.Equals(values, target);
             count += BitOperations.PopCount(matches.AsByte().ExtractMostSignificantBits()) >> 1;
         }
     }
@@ -265,13 +275,25 @@ public static void GenerateInts(Span<int> destination, int bias)
 {
     ref int first = ref destination.GetPinnableReference();
     int index = 0;
-    var offsets = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
-    var scale = Vector256.Create(3);
-    var biasVector = Vector256.Create(bias);
 
     if (Vector256.IsHardwareAccelerated) {
+        var offsets = Vector256.Create(0, 1, 2, 3, 4, 5, 6, 7);
+        var scale = Vector256.Create(3);
+        var biasVector = Vector256.Create(bias);
         for (; (long)destination.Length - index >= 8; index += 8) {
             var indices = Vector256.Create(index) + offsets;
+            var values = indices * scale + biasVector;
+            ref int current = ref Unsafe.Add(ref first, index);
+            Unsafe.WriteUnaligned(ref Unsafe.As<int, byte>(ref current), values);
+        }
+    }
+
+    if (Vector128.IsHardwareAccelerated) {
+        var offsets = Vector128.Create(0, 1, 2, 3);
+        var scale = Vector128.Create(3);
+        var biasVector = Vector128.Create(bias);
+        for (; (long)destination.Length - index >= 4; index += 4) {
+            var indices = Vector128.Create(index) + offsets;
             var values = indices * scale + biasVector;
             ref int current = ref Unsafe.Add(ref first, index);
             Unsafe.WriteUnaligned(ref Unsafe.As<int, byte>(ref current), values);
@@ -306,18 +328,30 @@ public static void Map(int[] source, int[] destination)
     int length = source.Length;
     int index = 0;
 
-    if (length >= 8 && destination != null && destination.Length >= length &&
-        Vector256.IsHardwareAccelerated) {
+    if (length >= 4 && destination != null && destination.Length >= length) {
         ref int sourceBase = ref MemoryMarshal.GetArrayDataReference(source);
         ref int destinationBase = ref MemoryMarshal.GetArrayDataReference(destination);
-        var scale = Vector256.Create(3);
-        var bias = Vector256.Create(7);
 
-        for (; (long)length - index >= 8; index += 8) {
-            ref int input = ref Unsafe.Add(ref sourceBase, index);
-            ref int output = ref Unsafe.Add(ref destinationBase, index);
-            var values = Unsafe.ReadUnaligned<Vector256<int>>(ref Unsafe.As<int, byte>(ref input));
-            Unsafe.WriteUnaligned(ref Unsafe.As<int, byte>(ref output), values * scale + bias);
+        if (Vector256.IsHardwareAccelerated) {
+            var scale = Vector256.Create(3);
+            var bias = Vector256.Create(7);
+            for (; (long)length - index >= 8; index += 8) {
+                ref int input = ref Unsafe.Add(ref sourceBase, index);
+                ref int output = ref Unsafe.Add(ref destinationBase, index);
+                var values = Unsafe.ReadUnaligned<Vector256<int>>(ref Unsafe.As<int, byte>(ref input));
+                Unsafe.WriteUnaligned(ref Unsafe.As<int, byte>(ref output), values * scale + bias);
+            }
+        }
+
+        if (Vector128.IsHardwareAccelerated) {
+            var scale = Vector128.Create(3);
+            var bias = Vector128.Create(7);
+            for (; (long)length - index >= 4; index += 4) {
+                ref int input = ref Unsafe.Add(ref sourceBase, index);
+                ref int output = ref Unsafe.Add(ref destinationBase, index);
+                var values = Unsafe.ReadUnaligned<Vector128<int>>(ref Unsafe.As<int, byte>(ref input));
+                Unsafe.WriteUnaligned(ref Unsafe.As<int, byte>(ref output), values * scale + bias);
+            }
         }
     }
 

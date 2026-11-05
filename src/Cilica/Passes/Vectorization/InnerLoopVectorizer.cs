@@ -16,6 +16,7 @@ internal sealed class InnerLoopVectorizer
     readonly Dictionary<(VectorShape Shape, Value Scalar), Value> _invariants = new();
     readonly Dictionary<VectorShape, Value> _counterOffsets = new();
     readonly Dictionary<Value, Value> _arrayBases = new();
+    int _elemBitWidth;
     int _width;
 
     private InnerLoopVectorizer(CountingLoopInfo loop, VectorTranslator translator)
@@ -41,9 +42,9 @@ internal sealed class InnerLoopVectorizer
 
         var vectorizer = new InnerLoopVectorizer(loop, trans);
 
-        if (vectorizer.BuildMappings(reportLogger) && vectorizer.PickVectorWidth(reportLogger)) {
+        if (vectorizer.BuildMappings(reportLogger) && vectorizer.CheckElementWidth(reportLogger)) {
             vectorizer.EmitVectorizedLoop(boundsChecks);
-            reportLogger?.Trace($"Vectorized loop: 256-bit vectors, {vectorizer._width} lanes, {vectorizer._reductionPhis.Count} reductions, {boundsChecks.Count} guarded arrays, with scalar fallback.");
+            reportLogger?.Trace($"Vectorized loop: {256 / vectorizer._elemBitWidth} lanes (256-bit), {128 / vectorizer._elemBitWidth} lanes (128-bit), {vectorizer._reductionPhis.Count} reductions, {boundsChecks.Count} guarded arrays.");
 
             return true;
         }
@@ -168,7 +169,7 @@ internal sealed class InnerLoopVectorizer
         return true;
     }
 
-    private bool PickVectorWidth(ICompilationLogger? logger)
+    private bool CheckElementWidth(ICompilationLogger? logger)
     {
         // Check if all mappings have the same scalar width
         int commonElemSize = 0;
@@ -194,26 +195,26 @@ internal sealed class InnerLoopVectorizer
             return false;
         }
 
-        _width = 256 / commonElemSize;
+        _elemBitWidth = commonElemSize;
 
         return true;
     }
 
     private void EmitVectorizedLoop(IReadOnlyList<Value> boundsChecks)
     {
-        var newLoop = new LoopBuilder(_loop.PreHeader, "Vec_");
-        _vectorPreHeader = newLoop.PreHeader;
-        var scalarEntry = newLoop.Exit;
+        var wideLoop = new LoopBuilder(_loop.PreHeader, "Vec256_");
+        var narrowLoop = new LoopBuilder(wideLoop.Exit.Block, "Vec128_");
+        var scalarEntry = narrowLoop.Exit;
         BasicBlock? fallback = null;
 
         if (boundsChecks.Count != 0) {
-            scalarEntry = new IRBuilder(_loop.Header.Method.CreateBlock(insertAfter: newLoop.Exit.Block).SetName("Vec_Scalar"));
+            scalarEntry = new IRBuilder(_loop.Header.Method.CreateBlock(insertAfter: narrowLoop.Exit.Block).SetName("Vec_Scalar"));
             fallback = _loop.Header.Method.CreateBlock(insertAfter: scalarEntry.Block).SetName("Vec_Fallback");
             fallback.SetBranch(scalarEntry.Block);
 
             var guard = new IRBuilder(_loop.PreHeader);
             // Short and empty loops need neither bounds checks nor vector setup.
-            guard.ForkIf(guard.CreateSlt(_loop.End, ConstInt.CreateI(_width)), fallback);
+            guard.ForkIf(guard.CreateSlt(_loop.End, ConstInt.CreateI(128 / _elemBitWidth)), fallback);
 
             foreach (var array in boundsChecks) {
                 // Keep length reads behind null checks. A failed check must run the
@@ -222,16 +223,40 @@ internal sealed class InnerLoopVectorizer
                 var length = guard.CreateConvert(guard.CreateArrayLen(array), PrimType.Int32);
                 guard.ForkIf(guard.CreateUgt(_loop.End, length), fallback);
             }
-            guard.SetBranch(newLoop.EntryBlock);
+            guard.SetBranch(wideLoop.EntryBlock);
         } else {
-            _loop.PreHeader.SetBranch(newLoop.EntryBlock);
+            _loop.PreHeader.SetBranch(wideLoop.EntryBlock);
         }
 
+        // Each width consumes the remaining iterations and passes scalar reductions onward.
+        var reductions = _reductionPhis.ToDictionary(pair => pair.Key, pair => pair.Value.Seed);
+        var counter = EmitVectorLoop(wideLoop, 256, _loop.Start, reductions);
+        wideLoop.Exit.SetBranch(narrowLoop.EntryBlock);
+        counter = EmitVectorLoop(narrowLoop, 128, counter, reductions);
+
+        foreach (var (phi, data) in _reductionPhis) {
+            phi.RedirectArg(_loop.PreHeader, scalarEntry.Block, MergeScalarInput(data.Seed, reductions[phi]));
+        }
+        _loop.Counter.RedirectArg(_loop.PreHeader, scalarEntry.Block, MergeScalarInput(_loop.Start, counter));
+
+        if (fallback != null) narrowLoop.Exit.SetBranch(scalarEntry.Block);
+        scalarEntry.SetBranch(_loop.Header);
+
+        Value MergeScalarInput(Value seed, Value vectorResult)
+            => fallback == null
+                ? vectorResult
+                : scalarEntry.CreatePhi(seed.ResultType, (fallback, seed), (narrowLoop.Exit.Block, vectorResult));
+    }
+
+    private Value EmitVectorLoop(LoopBuilder newLoop, int bitWidth, Value start, Dictionary<PhiInst, Value> reductions)
+    {
+        _width = bitWidth / _elemBitWidth;
+        _vectorPreHeader = newLoop.PreHeader;
         int stepSize = _loop.UpdatedCounter is PtrOffsetInst lea ? _width * lea.Stride : _width;
-        var accelerated = _trans.EmitHardwareCheck(newLoop.PreHeader);
+        var accelerated = _trans.EmitHardwareCheck(newLoop.PreHeader, bitWidth);
 
         _newCounter = newLoop.CreateAccum(
-            seed: _loop.Start,
+            seed: start,
             emitUpdate: currVal => {
                 var step = ConstInt.CreateI(_width);
 
@@ -243,7 +268,7 @@ internal sealed class InnerLoopVectorizer
 
         // Create reduction accumulator phis
         foreach (var phi in _reductionPhis.Keys) {
-            CreateReductionPhi(newLoop, phi);
+            CreateReductionPhi(newLoop, phi, reductions[phi]);
         }
 
         // Emit loop and widen instructions
@@ -284,17 +309,10 @@ internal sealed class InnerLoopVectorizer
                 next = _trans.EmitBitcast(newLoop.Latch, new VectorShape(next.ResultType.GenericParams[0], _width), phi.ResultType.Kind, next);
             }
             data.NewPhi.SetValue(newLoop.Latch.Block, next);
-            phi.RedirectArg(_loop.PreHeader, scalarEntry.Block, MergeScalarInput(data.Seed, exitValue));
+            reductions[phi] = exitValue;
         }
 
-        if (fallback != null) newLoop.Exit.SetBranch(scalarEntry.Block);
-        scalarEntry.SetBranch(_loop.Header);
-
-        _loop.Counter.RedirectArg(_loop.PreHeader, scalarEntry.Block, MergeScalarInput(_loop.Start, _newCounter));
-
-        Value MergeScalarInput(Value seed, Value vectorResult)
-            => fallback == null ? vectorResult : scalarEntry.CreatePhi(seed.ResultType,
-                (fallback, seed), (newLoop.Exit.Block, vectorResult));
+        return _newCounter;
     }
 
     private Value VectorizeInst(LoopBuilder newLoop, Instruction inst, ref InstMapping mapping)
@@ -420,24 +438,20 @@ internal sealed class InnerLoopVectorizer
         return val;
     }
 
-    private void CreateReductionPhi(LoopBuilder newLoop, PhiInst phi)
+    private void CreateReductionPhi(LoopBuilder newLoop, PhiInst phi, Value scalarSeed)
     {
         ref var data = ref _reductionPhis.GetRef(phi);
         var vecType = new VectorShape(phi.ResultType, _width);
 
         var seed = data.Op switch {
             // For bool sums, it's easier to use scalar phi + movemask
-            VectorOp.Add when IsPredicatedCountStep(data.IterOut)
-                => data.Seed,
+            VectorOp.Add when IsPredicatedCountStep(data.IterOut) => scalarSeed,
             // Additive: [seed, 0, 0, ...]
-            VectorOp.Add or VectorOp.Or or VectorOp.Xor
-                => EmitAccumOpSeed(data.Seed, 0),
+            VectorOp.Add or VectorOp.Or or VectorOp.Xor => EmitAccumOpSeed(scalarSeed, 0),
             // Multiplicative: [seed, 1, 1, ...]
-            VectorOp.Mul
-                => EmitAccumOpSeed(data.Seed, 1),
+            VectorOp.Mul => EmitAccumOpSeed(scalarSeed, 1),
             // Exclusive: [seed, seed, ...]
-            VectorOp.And or VectorOp.Min or VectorOp.Max
-                => _trans.EmitOp(newLoop.PreHeader, vecType, VectorOp.Splat, data.Seed),
+            VectorOp.And or VectorOp.Min or VectorOp.Max => _trans.EmitOp(newLoop.PreHeader, vecType, VectorOp.Splat, scalarSeed),
         };
         data.NewPhi = newLoop.CreateAccum(seed, currVal => currVal);
 

@@ -123,8 +123,11 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         Assert.All(values.Skip(1), value => Assert.Equal(0, value));
     }
 
-    [Fact]
-    public void RuntimeCountGuardsPreserveReductionSeedsAndLoopLiveOuts()
+    [Theory]
+    [InlineData(256)]
+    [InlineData(128)]
+    [InlineData(0)]
+    public void RuntimeCountGuardsPreserveReductionSeedsAndLoopLiveOuts(int maxVectorBitWidth)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32.CreateArray(), PrimType.Int32.CreateArray(), PrimType.Int32);
         var entry = body.CreateBlock();
@@ -138,10 +141,10 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
             sum = loop.CreateAccum(ConstInt.CreateI(13), current => b.CreateAdd(current, value));
         });
         loop.Exit.CreateReturn(loop.Exit.CreateAdd(sum, index));
-        Vectorize(body, expected: true);
+        Vectorize(body, expected: true, maxVectorBitWidth);
         var run = Utils.Compile<Func<int[], int[], int, int>>(body);
 
-        foreach (int count in new[] { int.MinValue, -1, 0, 1, 7, 8, 9, 16, 33 }) {
+        foreach (int count in new[] { int.MinValue, -1, 0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 16, 33 }) {
             var source = Enumerable.Range(1, 40).ToArray();
             var destination = new int[45];
             Assert.Equal(13 + source.Take(Math.Max(0, count)).Sum() + Math.Max(0, count), run(source, destination, count));
@@ -338,8 +341,11 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         }
     }
 
-    [Fact]
-    public void IntegerArrayLoopsVectorizeWithScalarTails()
+    [Theory]
+    [InlineData(256)]
+    [InlineData(128)]
+    [InlineData(0)]
+    public void IntegerArrayLoopsVectorizeWithNarrowAndScalarTails(int maxVectorBitWidth)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray());
         var entry = body.CreateBlock();
@@ -353,10 +359,10 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         });
         loop.Exit.CreateReturn();
 
-        Vectorize(body, expected: true);
+        Vectorize(body, expected: true, maxVectorBitWidth);
         var run = Utils.Compile<Action<int[]>>(body);
 
-        foreach (int count in new[] { 0, 1, 7, 8, 9, 16, 31, 33 }) {
+        foreach (int count in new[] { 0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 16, 31, 33 }) {
             var values = new int[count];
             run(values);
 
@@ -402,8 +408,11 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         Assert.Equal(5, run(values, false));
     }
 
-    [Fact]
-    public void PointwiseFloatNegationPreservesSignedZero()
+    [Theory]
+    [InlineData(256)]
+    [InlineData(128)]
+    [InlineData(0)]
+    public void PointwiseFloatNegationPreservesSignedZero(int maxVectorBitWidth)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Single.CreateArray());
         var entry = body.CreateBlock();
@@ -417,12 +426,17 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         });
         loop.Exit.CreateReturn();
 
-        Vectorize(body, expected: true);
-        float[] values = [0.0f, -0.0f, 1, -1, float.PositiveInfinity, float.NegativeInfinity, float.NaN, -3, -0.0f];
-        var expected = values.Select(value => BitConverter.SingleToInt32Bits(-value)).ToArray();
-        Utils.Compile<Action<float[]>>(body)(values);
+        Vectorize(body, expected: true, maxVectorBitWidth);
+        var run = Utils.Compile<Action<float[]>>(body);
+        float[] pattern = [0.0f, -0.0f, 1, -1, float.PositiveInfinity, float.NegativeInfinity, float.NaN, -3, -0.0f];
 
-        Assert.Equal(expected, values.Select(BitConverter.SingleToInt32Bits));
+        foreach (int count in new[] { 0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 33 }) {
+            var values = Enumerable.Range(0, count).Select(i => pattern[i % pattern.Length]).ToArray();
+            var expected = values.Select(value => BitConverter.SingleToInt32Bits(-value)).ToArray();
+            run(values);
+
+            Assert.Equal(expected, values.Select(BitConverter.SingleToInt32Bits));
+        }
     }
 
     [Fact]
@@ -509,14 +523,17 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         Assert.Single(body.Instructions().OfType<LoadInst>().Where(load => load.IsVolatile));
     }
 
-    [Fact]
-    public void IntegerReductionsPreserveSeedsAndWrapping()
+    [Theory]
+    [InlineData(256)]
+    [InlineData(128)]
+    [InlineData(0)]
+    public void IntegerReductionsPreserveSeedsAndWrapping(int maxVectorBitWidth)
     {
         var body = CreateReduction(PrimType.Int32, ConstInt.CreateI(17), BinaryOp.Add);
-        Vectorize(body, expected: true);
+        Vectorize(body, expected: true, maxVectorBitWidth);
         var run = Utils.Compile<Func<int[], int>>(body);
 
-        foreach (int count in new[] { 0, 1, 7, 8, 15, 16, 33 }) {
+        foreach (int count in new[] { 0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15, 16, 33 }) {
             var values = Enumerable.Range(0, count).Select(i => i % 2 == 0 ? int.MaxValue : -3).ToArray();
             int expected = 17;
 
@@ -529,18 +546,26 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
     }
 
     [Theory]
-    [InlineData(BinaryOp.Mul)]
-    [InlineData(BinaryOp.And)]
-    [InlineData(BinaryOp.Or)]
-    [InlineData(BinaryOp.Xor)]
-    public void WideIntegerReductionsCombineAllLanes(BinaryOp operation)
+    [InlineData(BinaryOp.Mul, 256)]
+    [InlineData(BinaryOp.Mul, 128)]
+    [InlineData(BinaryOp.Mul, 0)]
+    [InlineData(BinaryOp.And, 256)]
+    [InlineData(BinaryOp.And, 128)]
+    [InlineData(BinaryOp.And, 0)]
+    [InlineData(BinaryOp.Or, 256)]
+    [InlineData(BinaryOp.Or, 128)]
+    [InlineData(BinaryOp.Or, 0)]
+    [InlineData(BinaryOp.Xor, 256)]
+    [InlineData(BinaryOp.Xor, 128)]
+    [InlineData(BinaryOp.Xor, 0)]
+    public void WideIntegerReductionsCombineAllLanes(BinaryOp operation, int maxVectorBitWidth)
     {
         const long seed = 0x123456789ABCDEF;
         var body = CreateReduction(PrimType.Int64, ConstInt.CreateL(seed), operation);
-        Vectorize(body, expected: true);
+        Vectorize(body, expected: true, maxVectorBitWidth);
         var run = Utils.Compile<Func<long[], long>>(body);
 
-        foreach (int count in new[] { 0, 1, 3, 4, 5, 8, 17 }) {
+        foreach (int count in new[] { 0, 1, 2, 3, 4, 5, 6, 7, 8, 17 }) {
             var values = Enumerable.Range(0, count).Select(i => (1L << (i + 32)) + i * 3 + 1).ToArray();
             long expected = seed;
 
@@ -558,8 +583,49 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         }
     }
 
-    [Fact]
-    public void NarrowComparisonsCountEachMatchingLaneOnce()
+    [Theory]
+    [InlineData(256)]
+    [InlineData(128)]
+    [InlineData(0)]
+    public void MultipleReductionsPreserveSeedsAndFinalCounter(int maxVectorBitWidth)
+    {
+        var min = _modResolver.Import(typeof(Math)).FindMethod("Min", new MethodSig(PrimType.Int32, [PrimType.Int32, PrimType.Int32]));
+        var max = _modResolver.Import(typeof(Math)).FindMethod("Max", new MethodSig(PrimType.Int32, [PrimType.Int32, PrimType.Int32]));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, PrimType.Int32.CreateArray(), PrimType.Int32.CreateArray());
+        var entry = body.CreateBlock();
+        var loop = new LoopBuilder(entry);
+        entry.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        Value sum = null!, minimum = null!, maximum = null!;
+
+        loop.Build(header => header.CreateSlt(index, header.CreateConvert(header.CreateArrayLen(body.Args[0]), PrimType.Int32)), builder => {
+            var item = builder.CreateArrayLoad(body.Args[0], index);
+            sum = loop.CreateAccum(ConstInt.CreateI(17), current => builder.CreateAdd(current, item));
+            minimum = loop.CreateAccum(ConstInt.CreateI(5), current => builder.CreateCall(min, current, item));
+            maximum = loop.CreateAccum(ConstInt.CreateI(-5), current => builder.CreateCall(max, current, item));
+        });
+        loop.Exit.CreateArrayStore(body.Args[1], ConstInt.CreateI(0), sum);
+        loop.Exit.CreateArrayStore(body.Args[1], ConstInt.CreateI(1), minimum);
+        loop.Exit.CreateArrayStore(body.Args[1], ConstInt.CreateI(2), maximum);
+        loop.Exit.CreateArrayStore(body.Args[1], ConstInt.CreateI(3), index);
+        loop.Exit.CreateReturn();
+        Vectorize(body, expected: true, maxVectorBitWidth);
+        var run = Utils.Compile<Action<int[], int[]>>(body);
+
+        foreach (int count in new[] { 0, 1, 3, 4, 5, 7, 8, 9, 11, 12, 13, 15, 16, 17, 31, 33 }) {
+            var values = Enumerable.Range(0, count).Select(i => i % 2 == 0 ? i * 7 + 1 : -i * 11).ToArray();
+            var result = new int[4];
+            run(values, result);
+
+            Assert.Equal(new[] { 17 + values.Sum(), values.Prepend(5).Min(), values.Prepend(-5).Max(), count }, result);
+        }
+    }
+
+    [Theory]
+    [InlineData(256)]
+    [InlineData(128)]
+    [InlineData(0)]
+    public void NarrowComparisonsCountEachMatchingLaneOnce(int maxVectorBitWidth)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Char.CreateArray());
         var entry = body.CreateBlock();
@@ -575,13 +641,33 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         });
         loop.Exit.CreateReturn(result);
 
-        Vectorize(body, expected: true);
+        Vectorize(body, expected: true, maxVectorBitWidth);
         var run = Utils.Compile<Func<char[], int>>(body);
 
-        foreach (int count in new[] { 0, 15, 16, 17, 32, 35 }) {
+        foreach (int count in new[] { 0, 1, 7, 8, 9, 15, 16, 17, 23, 24, 25, 32, 35 }) {
             var values = Enumerable.Range(0, count).Select(i => i % 3 == 0 ? 'A' : '\uffff').ToArray();
 
             Assert.Equal(3 + values.Count(value => value == 'A'), run(values));
+        }
+    }
+
+    [Theory]
+    [InlineData(256)]
+    [InlineData(128)]
+    [InlineData(0)]
+    public void ByteMapsCoverVectorBoundaries(int maxVectorBitWidth)
+    {
+        var body = CreatePointwiseLoop(PrimType.Byte, (builder, value) =>
+            builder.CreateXor(value, ConstInt.Create(PrimType.Byte, 0xA5)));
+        Vectorize(body, expected: true, maxVectorBitWidth);
+        var run = Utils.Compile<Action<byte[]>>(body);
+
+        foreach (int count in new[] { 0, 1, 15, 16, 17, 31, 32, 33, 47, 48, 49, 63, 64, 65 }) {
+            var values = Enumerable.Range(0, count).Select(i => (byte)(i * 17)).ToArray();
+            var expected = values.Select(value => (byte)(value ^ 0xA5)).ToArray();
+            run(values);
+
+            Assert.Equal(expected, values);
         }
     }
 
@@ -780,7 +866,7 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
         return body;
     }
 
-    private void Vectorize(MethodBody body, bool expected)
+    private void Vectorize(MethodBody body, bool expected, int maxVectorBitWidth = 256)
     {
         Run(body, new SimplifyCFG(), new SsaPromotion(), new DeadCodeElim(), new SimplifyCFG(),
             new ValueNumbering(), new LoopStrengthReduction(), new DeadCodeElim(), new SimplifyCFG());
@@ -794,7 +880,15 @@ public class LoopVectorizerTests(ModuleResolverFixture fixture) : PassTestBase(f
             Assert.Fail(dump.ToString());
         }
 
-        Assert.Equal(expected, body.Instructions().OfType<CallInst>().Any(call => call.Method.DeclaringType.Name.StartsWith("Vector256")));
+        foreach (int bitWidth in new[] { 256, 128 }) {
+            var checks = body.Instructions().OfType<CallInst>().Where(call =>
+                call.Method.Name == "get_IsHardwareAccelerated" && call.Method.DeclaringType.Name == $"Vector{bitWidth}").ToArray();
+            Assert.Equal(expected, checks.Length != 0);
+
+            if (bitWidth > maxVectorBitWidth) {
+                foreach (var check in checks) check.ReplaceWith(ConstInt.Create(PrimType.Bool, 0));
+            }
+        }
 
         Run(body, new SimplifyInsts(_modResolver), new SimplifyCFG(), new DeadCodeElim());
     }

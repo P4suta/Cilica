@@ -207,6 +207,13 @@ public class EhRegionTests
 
     [Theory]
     [InlineData(0, -1)]
+    [InlineData(4, -1)]
+    [InlineData(4, 3)]
+    [InlineData(4, 4)]
+    [InlineData(5, 5)]
+    [InlineData(12, 12)]
+    [InlineData(13, 12)]
+    [InlineData(13, 13)]
     [InlineData(33, -1)]
     [InlineData(33, 0)]
     [InlineData(33, 9)]

@@ -10,9 +10,13 @@ public class GenericRuntimeTests
     [Theory, CheckCodeGenAfterRun]
     [InlineData(0)]
     [InlineData(1)]
+    [InlineData(4)]
+    [InlineData(5)]
     [InlineData(7)]
     [InlineData(8)]
     [InlineData(9)]
+    [InlineData(12)]
+    [InlineData(13)]
     [InlineData(17)]
     [InlineData(257)]
     public void GenericDefaultSeedsVectorizedReduction(int count)
@@ -29,9 +33,12 @@ public class GenericRuntimeTests
     [Theory, CheckCodeGenAfterRun]
     [InlineData(0)]
     [InlineData(1)]
+    [InlineData(2)]
     [InlineData(3)]
     [InlineData(4)]
     [InlineData(5)]
+    [InlineData(6)]
+    [InlineData(7)]
     [InlineData(17)]
     public void GenericDefaultSeedsWideVectorizedReduction(int count)
     {

@@ -125,9 +125,9 @@ internal sealed class VectorTranslator
         _resolver = resolver;
     }
 
-    public Value EmitHardwareCheck(IRBuilder builder)
+    public Value EmitHardwareCheck(IRBuilder builder, int bitWidth)
     {
-        var type = _resolver.Import(typeof(System.Runtime.Intrinsics.Vector256));
+        var type = _resolver.CoreLib.FindType("System.Runtime.Intrinsics", "Vector" + bitWidth, throwIfNotFound: true);
         var method = type.FindMethod("get_IsHardwareAccelerated", new MethodSig(PrimType.Bool, []));
 
         return builder.CreateCall(method);
