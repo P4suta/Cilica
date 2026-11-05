@@ -18,6 +18,8 @@ public class LinqRuntimeTests
         if (count == 0) {
             Assert.Same(Array.Empty<int>(), first);
             Assert.Same(first, second);
+            Assert.Same(first, source.Where(value => value > 0).ToArray());
+            Assert.Same(first, Enumerable.Range(1, 3).Take(count).ToArray());
         } else {
             Assert.NotSame(first, second);
         }

@@ -84,16 +84,14 @@ internal class ListOrArraySink : ConcretizationSink
 
     protected override Value WrapContainer(IRBuilder builder, Value container)
     {
-        if (container.ResultType is ArrayType array) {
+        if (SubjectCall.ResultType is ArrayType array) {
+            var result = container.ResultType is ArrayType ? container : builder.CreateCallVirt("ToArray", container);
             var empty = builder.Resolver.SysTypes.Array.FindMethod("Empty").GetSpec([array.ElemType]);
-            return builder.CreateSelect(builder.CreateEq(builder.CreateArrayLen(container), ConstInt.CreateI(0)),
-                builder.CreateCall(empty), container);
+            return builder.CreateSelect(builder.CreateEq(builder.CreateArrayLen(result), ConstInt.CreateI(0)),
+                builder.CreateCall(empty), result);
         }
         if (container.ResultType == SubjectCall.ResultType) {
             return container;
-        }
-        if (SubjectCall.Method.Name == "ToArray") {
-            return builder.CreateCallVirt("ToArray", container);
         }
         throw new UnreachableException();
     }
