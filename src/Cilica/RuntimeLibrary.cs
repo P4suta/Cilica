@@ -40,6 +40,7 @@ public sealed class RuntimeLibrary(ModuleResolver resolver)
     public static bool HasKnownSequenceDispatch(Value source)
     {
         var type = source is CilIntrinsic.Box box ? box.SourceType : source.ResultType;
+        if (type is GenericParamType) return false;
 
         if (type is ArrayType || type.Kind == TypeKind.String || type.IsCorelibType(typeof(ArraySegment<>))) {
             return true;

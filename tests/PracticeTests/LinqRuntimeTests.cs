@@ -6,6 +6,32 @@ using System.Runtime.CompilerServices;
 [Optimize]
 public class LinqRuntimeTests
 {
+    [Fact]
+    public void GenericEnumerableSourcesSupportReferenceAndValueTypes()
+    {
+        Assert.Equal(new[] { 1 }, TakeFirst<List<int>, int>([1, 2]));
+        Assert.Equal(new[] { "first" }, TakeFirst<string[], string>(["first", "second"]));
+        Assert.Equal(new[] { 3 }, TakeFirst<ArraySegment<int>, int>(new(new[] { 3, 4 })));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static T[] TakeFirst<TCollection, T>(TCollection source) where TCollection : IEnumerable<T>
+        => source.Take(1).ToArray();
+
+    [Fact]
+    public void NullableEnumerableSourcesUseTheirBoxedUnderlyingValue()
+    {
+        Assert.Equal(new[] { 7 }, TakeFirstNullable(new ArraySegment<int>(new[] { 7, 8 })));
+        Assert.Throws<ArgumentNullException>(() => TakeFirstNullable(null));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int[] TakeFirstNullable(ArraySegment<int>? source)
+    {
+        IEnumerable<int>? sequence = source;
+        return sequence!.Take(1).ToArray();
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]

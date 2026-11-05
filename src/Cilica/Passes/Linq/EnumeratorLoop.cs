@@ -22,7 +22,8 @@ internal sealed class EnumeratorLoop
         _source = source;
         _getEnumerator = enumerableType.FindMethod("GetEnumerator", searchBaseAndItfs: true);
 
-        if (source is CilIntrinsic.Box box && enumerableType.IsGeneric) {
+        if (source is CilIntrinsic.Box box && enumerableType.IsGeneric &&
+            box.SourceType.IsValueType && !box.SourceType.IsCorelibType(typeof(Nullable<>))) {
             _unboxType = box.SourceType;
             var custom = box.SourceType.IsCorelibType(typeof(ArraySegment<>))
                 ? box.SourceType.Methods.FirstOrDefault(m => m is { Name: "GetEnumerator", IsPublic: true, IsInstance: true, ParamSig.Count: 1 }) : null;
