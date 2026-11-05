@@ -13,6 +13,39 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class SimplifyCFGTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BranchlessConversionPreservesSharedComparisons(bool constantWhenTrue)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32, PrimType.Int32);
+        var entry = body.CreateBlock();
+        var yes = body.CreateBlock();
+        var no = body.CreateBlock();
+        var merge = body.CreateBlock();
+        var builder = new IRBuilder(entry);
+        var condition = builder.CreateSgt(body.Args[0], ConstInt.CreateI(0));
+        var other = builder.CreateSgt(body.Args[1], ConstInt.CreateI(0));
+        var flag = builder.CreateSelect(condition, ConstInt.CreateI(1024), ConstInt.CreateI(0));
+        entry.SetBranch(new BranchInst(condition, yes, no));
+        yes.SetBranch(merge);
+        no.SetBranch(merge);
+        var selected = merge.InsertPhi(new PhiInst(PrimType.Bool,
+            (yes, constantWhenTrue ? ConstInt.Create(PrimType.Bool, 0) : other),
+            (no, constantWhenTrue ? other : ConstInt.Create(PrimType.Bool, 1))));
+        var output = new IRBuilder(selected, InsertionDir.After);
+        output.CreateReturn(output.CreateAdd(flag, output.CreateConvert(selected, PrimType.Int32)));
+
+        Run(body, new SimplifyCFG(), new SimplifyInsts(_modResolver), new DeadCodeElim());
+        var run = Utils.Compile<Func<int, int, int>>(body);
+        foreach (int a in new[] { -1, 0, 1 }) {
+            foreach (int b in new[] { -1, 0, 1 }) {
+                bool boolean = constantWhenTrue ? a > 0 ? false : b > 0 : a > 0 ? b > 0 : true;
+                Assert.Equal((a > 0 ? 1024 : 0) + (boolean ? 1 : 0), run(a, b));
+            }
+        }
+    }
+
     [Fact]
     public void UnreachableStoresDoNotParticipateInSsaPromotion()
     {

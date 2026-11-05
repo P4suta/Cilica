@@ -197,7 +197,7 @@ public class SimplifyCFG : IMethodPass
                 if (x?.Value is 0 or 1 && (y.ResultType == PrimType.Bool || y is ConstInt { Value: 0 or 1 })) {
                     bool negCond = (x.Value == 0 && x == valT) || (x.Value != 0 && x == valF);
 
-                    if (!negCond || cond.NumUses < 2) {
+                    if (!negCond || cond.NumUses == 0) {
                         if (negCond) {
                             cond.Op = cond.Op.GetNegated();
                         }
