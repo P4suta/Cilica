@@ -6,6 +6,8 @@
 - [Pre-size Lists / Array Builder Opts](#pre-size-lists--array-builder-opts)
 - [Scalar Replacement](#scalar-replacement)
 - [Common Sub-expression Elimination](#common-sub-expression-elimination)
+- [Assertion Propagation](#assertion-propagation)
+- [Devirtualization](#devirtualization)
 - [Method Inlining](#method-inlining)
 - [Pipeline and Compiler Benchmarks](#pipeline-and-compiler-benchmarks)
 
@@ -13,13 +15,15 @@ Cilica also implements canonicalization, SSA promotion, control-flow simplificat
 
 Code examples show source and representative equivalent output, with compiler-generated delegate setup and temporary names simplified for readability. Decompiled unsafe operations correspond to lifted IL instructions; exact output depends on the surrounding method and subsequent simplification.
 
-The benchmark tables use .NET 10.0.14, BenchmarkDotNet 0.15.8, and an Intel Core i7-13700K on Windows 11 x64. Each job uses one launch, three warmup iterations, and ten measured iterations targeting 200 ms each. Error is half the 99.9% confidence interval; ratios compare Cilica with the baseline for the same workload. Ratios above one indicate a slowdown.
+The benchmark tables compare .NET 10 with the same runtime plus Cilica.
 
 ## LINQ Expansion
 
-Rewrites recognized LINQ queries into imperative code in bottom-up order. Pattern matching identifies supported sources, intermediate stages, and consuming operations. Compatible stages fuse into a loop, while operations with unproven collection semantics remain library calls.
+Rewrites recognized LINQ queries into imperative code. Compatible sources, intermediate stages, and consuming operations fuse into a loop, while operations with unproven collection semantics remain library calls. Queries can also fuse across helper methods when inlining exposes their sources and stages.
 
-### Example
+### Examples
+
+#### Filtering and aggregation
 
 An array provides fixed storage and a stable element count for this query:
 
@@ -54,26 +58,62 @@ public static float Aggregate(Item[] items)
 
 For a mutable `List<T>` source, the optimizer retains the relevant library stage so that iterator version checks, indexed dispatch, and materialization behavior remain intact. It does not traverse a list's private backing array. A downstream aggregation may still expand around the retained iterator, including its disposal scope.
 
+#### Fusion through helpers and checked sums
+
+A helper returning `IEnumerable<T>` can still expose a query over an array after inlining:
+
+```cs
+static IEnumerable<int> PositiveValues(int[] values)
+    => values.Where(value => value > 0);
+
+[Optimize]
+public static int SumPositiveTriples(int[] values)
+    => PositiveValues(values).Select(value => unchecked(value * 3)).Sum();
+```
+
+The filter, projection, and sum can share one traversal:
+
+```cs
+public static int SumPositiveTriples(int[] values)
+{
+    ArgumentNullException.ThrowIfNull(values, "source");
+    int sum = 0;
+
+    foreach (int value in values) {
+        if (value > 0) {
+            int projected = unchecked(value * 3);
+            sum = checked(sum + projected);
+        }
+    }
+
+    return sum;
+}
+```
+
+Non-nullable `int` and `long` sums support staged queries and selector overloads such as `values.Sum(value => (long)value * value)`. Accumulation remains checked even when the selector uses unchecked arithmetic. An overflow stops before the next selector invocation and preserves enumerator disposal. These checked reductions remain scalar.
+
+Direct `source.Sum()` calls without a preceding stage retain the runtime's specialized implementation. Floating-point, decimal, and nullable sums also remain library calls.
+
 ### Benchmarks
 
 [Source](/tests/Benchmarks/LinqExpansion.cs). These workloads include mutable-list queries, a string predicate count, and a LINQ ray tracer. Their results measure the complete default pipeline together with the runtime JIT, rather than one isolated pass.
 
-| Method         | Toolchain          | ElemCount | Mean         | Error       | StdDev      | Ratio | RatioSD |
-|--------------- |------------------- |---------- |-------------:|------------:|------------:|------:|--------:|
-| FilterObjects  | .NET 10.0          | 4096      |    19.002 μs |   0.9627 μs |   0.5729 μs |  1.00 |    0.04 |
-| FilterObjects  | .NET 10.0 + Cilica | 4096      |    15.508 μs |   0.2175 μs |   0.1295 μs |  0.82 |    0.02 |
-|                |                    |           |              |             |             |       |         |
-| FirstPredicate | .NET 10.0          | 4096      |     6.876 μs |   0.1994 μs |   0.1319 μs |  1.00 |    0.03 |
-| FirstPredicate | .NET 10.0 + Cilica | 4096      |     6.752 μs |   0.0674 μs |   0.0446 μs |  0.98 |    0.02 |
-|                |                    |           |              |             |             |       |         |
-| Aggregate      | .NET 10.0          | 4096      |    30.459 μs |   0.7505 μs |   0.4466 μs |  1.00 |    0.02 |
-| Aggregate      | .NET 10.0 + Cilica | 4096      |    11.128 μs |   0.4271 μs |   0.2542 μs |  0.37 |    0.01 |
-|                |                    |           |              |             |             |       |         |
-| CountLetters   | .NET 10.0          | 4096      |     3.278 μs |   0.0448 μs |   0.0296 μs |  1.00 |    0.01 |
-| CountLetters   | .NET 10.0 + Cilica | 4096      |     2.477 μs |   0.0310 μs |   0.0185 μs |  0.76 |    0.01 |
-|                |                    |           |              |             |             |       |         |
-| RayTracer      | .NET 10.0          | 4096      | 8,940.111 μs | 200.9677 μs | 132.9277 μs |  1.00 |    0.02 |
-| RayTracer      | .NET 10.0 + Cilica | 4096      | 5,019.279 μs |  80.5863 μs |  42.1482 μs |  0.56 |    0.01 |
+| Method         | Toolchain          | ElemCount |       Mean |      Error |     StdDev | Ratio | RatioSD |
+| -------------- | ------------------ | --------- | ---------: | ---------: | ---------: | ----: | ------: |
+| FilterObjects  | .NET 10.0          | 4096      | 18.0047 μs | 0.64129 μs | 0.42417 μs |  1.00 |    0.03 |
+| FilterObjects  | .NET 10.0 + Cilica | 4096      | 11.3843 μs | 0.38509 μs | 0.25471 μs |  0.63 |    0.02 |
+|                |                    |           |            |            |            |       |         |
+| FirstPredicate | .NET 10.0          | 4096      |  7.1043 μs | 0.15805 μs | 0.09405 μs |  1.00 |    0.02 |
+| FirstPredicate | .NET 10.0 + Cilica | 4096      |  6.7846 μs | 0.08065 μs | 0.05334 μs |  0.96 |    0.01 |
+|                |                    |           |            |            |            |       |         |
+| Aggregate      | .NET 10.0          | 4096      | 30.6857 μs |  0.3194 μs | 0.21126 μs |  1.00 |    0.01 |
+| Aggregate      | .NET 10.0 + Cilica | 4096      | 12.1921 μs | 0.85662 μs |  0.5666 μs |  0.40 |    0.02 |
+|                |                    |           |            |            |            |       |         |
+| CountLetters   | .NET 10.0          | 4096      |  3.3553 μs | 0.01978 μs | 0.01177 μs |  1.00 |    0.00 |
+| CountLetters   | .NET 10.0 + Cilica | 4096      |  0.2108 μs | 0.00223 μs | 0.00147 μs |  0.06 |    0.00 |
+|                |                    |           |            |            |            |       |         |
+| RayTracer      | .NET 10.0          | 4096      |   9,013 μs |   200.1 μs |   119.1 μs |  1.00 |    0.02 |
+| RayTracer      | .NET 10.0 + Cilica | 4096      |   4,870 μs |   105.6 μs |    69.8 μs |  0.54 |    0.01 |
 
 ### Features
 
@@ -93,6 +133,7 @@ For a mutable `List<T>` source, the optimizer retains the relevant library stage
 
 - `ToList`, `ToArray`, `ToHashSet`, and `ToDictionary`.
 - `Aggregate` and predicate `Count`.
+- Non-nullable `int` and `long` `Sum` for staged queries and selector overloads.
 - `First` and `FirstOrDefault`.
 - Predicate `Any` and `All`.
 - Recognized consuming loops.
@@ -115,15 +156,53 @@ The pass preserves covariant array-store checks and declines loops whose span vi
 
 CIL preparation can select ordinary array instructions for bounded scalar accesses, exposing the array and index relationship to the runtime JIT. Vector accesses, reinterpretation, volatile or unaligned memory operations, and reference stores with unproven array-type compatibility retain pointer-based access.
 
+### Example
+
+A range check can prove that a loop touches only a valid prefix:
+
+```cs
+[Optimize]
+public static void FillPrefix(int[] values, int count)
+{
+    if ((uint)count > (uint)values.Length) {
+        throw new ArgumentOutOfRangeException(nameof(count));
+    }
+
+    for (int i = 0; i < count; i++) {
+        values[i] = 7;
+    }
+}
+```
+
+The scalar access pattern can use a shared base reference while retaining `count` as the loop bound:
+
+```cs
+public static void FillPrefix(int[] values, int count)
+{
+    if ((uint)count > (uint)values.Length) {
+        throw new ArgumentOutOfRangeException(nameof(count));
+    }
+
+    ref int first = ref MemoryMarshal.GetArrayDataReference(values);
+    for (int i = 0; i < count; i++) {
+        Unsafe.Add(ref first, i) = 7;
+    }
+}
+```
+
+Elements beyond the prefix remain unchanged. The same bound proof can enable vectorization without another array-length guard.
+
 ## Loop Vectorization
 
 Loop vectorization is enabled in the default pipeline. Eligible innermost loops use `Vector256<T>` operations, a runtime hardware-acceleration check, and a scalar tail. The scalar loop also handles execution when vector acceleration is unavailable.
 
 When an array extent cannot be proved statically, the pass adds a null check followed by a length check before the vector path. This allows pointwise loops over multiple arrays and loops bounded by a count parameter to vectorize. Each unknown array extent is checked once, and short loops skip these checks. Existing dominating range guards avoid redundant runtime checks.
 
-The original scalar loop serves both as the tail and as the fallback when a guard fails. A shorter or null array therefore retains the original exception timing and completed stores. This shares the scalar body instead of cloning a second scalar loop; reduction seeds and final counters are merged at the scalar entry.
+The original scalar loop serves both as the tail and as the fallback when a guard fails. A shorter or null array therefore retains the original exception timing and completed stores. Reduction seeds and final counter values are preserved on both paths.
 
 ### Examples
+
+#### Predicate counts
 
 A string predicate count with a simple comparison can use one mask lane per character:
 
@@ -165,6 +244,8 @@ public static int CountAsciiA(string text)
 }
 ```
 
+#### Generated sequences
+
 Array and by-value span loops can also generate a sequence from their induction variable:
 
 ```cs
@@ -203,29 +284,74 @@ public static void GenerateInts(Span<int> destination, int bias)
 }
 ```
 
+#### Runtime bounds guards
+
+Pointwise array loops can vectorize even when the destination length is unknown at compile time:
+
+```cs
+[Optimize]
+public static void Map(int[] source, int[] destination)
+{
+    for (int i = 0; i < source.Length; i++) {
+        destination[i] = unchecked(source[i] * 3 + 7);
+    }
+}
+```
+
+The vector path requires room for the whole traversal. A failed guard leaves the original scalar loop to perform its stores and raise any exception:
+
+```cs
+public static void Map(int[] source, int[] destination)
+{
+    int length = source.Length;
+    int index = 0;
+
+    if (length >= 8 && destination != null && destination.Length >= length &&
+        Vector256.IsHardwareAccelerated) {
+        ref int sourceBase = ref MemoryMarshal.GetArrayDataReference(source);
+        ref int destinationBase = ref MemoryMarshal.GetArrayDataReference(destination);
+        var scale = Vector256.Create(3);
+        var bias = Vector256.Create(7);
+
+        for (; (long)length - index >= 8; index += 8) {
+            ref int input = ref Unsafe.Add(ref sourceBase, index);
+            ref int output = ref Unsafe.Add(ref destinationBase, index);
+            var values = Unsafe.ReadUnaligned<Vector256<int>>(ref Unsafe.As<int, byte>(ref input));
+            Unsafe.WriteUnaligned(ref Unsafe.As<int, byte>(ref output), values * scale + bias);
+        }
+    }
+
+    for (; index < length; index++) {
+        destination[index] = unchecked(source[index] * 3 + 7);
+    }
+}
+```
+
+An empty source does not access the destination. A short destination receives the same completed stores before `IndexOutOfRangeException`. Passing the same array for both arguments is valid for this pointwise map; loops with dependencies between different indices remain scalar.
+
 ### Benchmarks
 
-[Source](/tests/Benchmarks/AutoVectorization.cs). The suite includes both eligible loops and kernels that exercise scalar fallback. `GenerateInts` contains potentially overflowing integer `Abs`; `CountLetters` includes promoted character-range arithmetic. Those operations can prevent vectorization. `NormalizeFloats` retains its scalar floating-point min/max reduction, while its pointwise normalization loop is eligible for vectorization.
+[Source](/tests/Benchmarks/AutoVectorization.cs). `CountLetters` uses vector character comparisons and population counts; `GenerateFloats` vectorizes its pointwise arithmetic. `GenerateInts` retains scalar integer `Abs` to preserve overflow exceptions. `NormalizeFloats` retains its scalar floating-point min/max reduction and vectorizes its pointwise normalization loop.
 
-| Method          | Toolchain          | ElemCount | Mean        | Error     | StdDev   | Ratio | Code Size |
-|---------------- |------------------- |---------- |------------:|----------:|---------:|------:|----------:|
-| CountLetters    | .NET 10.0          | 4096      |  3,243.1 ns |  33.03 ns | 21.85 ns |  1.00 |     450 B |
-| CountLetters    | .NET 10.0 + Cilica | 4096      |  2,477.5 ns |  19.86 ns | 13.14 ns |  0.76 |     211 B |
-|                 |                    |           |             |           |          |       |           |
-| GenerateInts    | .NET 10.0          | 4096      |  1,171.3 ns |  17.27 ns | 11.42 ns |  1.00 |      84 B |
-| GenerateInts    | .NET 10.0 + Cilica | 4096      |  1,177.9 ns |  12.14 ns |  7.23 ns |  1.01 |      84 B |
-|                 |                    |           |             |           |          |       |           |
-| GenerateFloats  | .NET 10.0          | 4096      |  2,747.0 ns |  26.91 ns | 17.80 ns |  1.00 |   1,724 B |
-| GenerateFloats  | .NET 10.0 + Cilica | 4096      |    606.8 ns |   3.27 ns |  2.17 ns |  0.22 |   1,861 B |
-|                 |                    |           |             |           |          |       |           |
-| NormalizeFloats | .NET 10.0          | 4096      | 11,142.0 ns |  32.92 ns | 19.59 ns |  1.00 |   1,798 B |
-| NormalizeFloats | .NET 10.0 + Cilica | 4096      | 10,595.0 ns | 115.48 ns | 76.38 ns |  0.95 |   1,868 B |
+| Method          | Toolchain          | ElemCount |        Mean |     Error |    StdDev | Ratio | Code Size |
+| --------------- | ------------------ | --------- | ----------: | --------: | --------: | ----: | --------: |
+| CountLetters    | .NET 10.0          | 4096      |  3,276.2 ns |  35.17 ns |  23.26 ns |  1.00 |     450 B |
+| CountLetters    | .NET 10.0 + Cilica | 4096      |    206.7 ns |   1.41 ns |   0.94 ns |  0.06 |     313 B |
+|                 |                    |           |             |           |           |       |           |
+| GenerateInts    | .NET 10.0          | 4096      |  1,182.6 ns |  10.93 ns |   7.23 ns |  1.00 |      84 B |
+| GenerateInts    | .NET 10.0 + Cilica | 4096      |  1,179.9 ns |   8.44 ns |   5.02 ns |  1.00 |      84 B |
+|                 |                    |           |             |           |           |       |           |
+| GenerateFloats  | .NET 10.0          | 4096      |  2,790.9 ns |  31.57 ns |  20.88 ns |  1.00 |   1,724 B |
+| GenerateFloats  | .NET 10.0 + Cilica | 4096      |    597.2 ns |   2.57 ns |   1.70 ns |  0.21 |   1,873 B |
+|                 |                    |           |             |           |           |       |           |
+| NormalizeFloats | .NET 10.0          | 4096      | 11,185.7 ns |  73.48 ns |  48.60 ns |  1.00 |   1,798 B |
+| NormalizeFloats | .NET 10.0 + Cilica | 4096      | 10,682.8 ns | 177.47 ns | 117.38 ns |  0.96 |   1,892 B |
 
 ### Features
 
 **Supported operations**
 
-- Memory: nonvolatile, unit-stride loads and stores with proven storage extents. Addresses use either an invariant base plus the counter or a sequential pointer counter.
+- Memory: nonvolatile, unit-stride loads and stores with storage extents proved statically or guarded at runtime. Addresses use either an invariant base plus the counter or a sequential pointer counter.
 - Arithmetic: unchecked `+`, `-`, `*`, floating-point `/`, negation, `&`, `|`, `^`, and `~`.
 - Shifts: `<<`, `>>`, and `>>>` with invariant scalar shift counts and compatible signedness.
 - Math: floating-point `Abs`, `Sqrt`, `Floor`, and `Ceiling`; integer `Min` and `Max`.
@@ -299,25 +425,25 @@ An `IReadOnlyList<T>` parameter alone does not establish the same contract: its 
 
 [Source](/tests/Benchmarks/ListArrayBuilding.cs). `DirectArray_Gen` provides a direct-allocation reference; `DynamicList_Gen` exercises a counting loop; `DynamicList_Enumer` intentionally enumerates through `IReadOnlyList<int>`.
 
-| Method             | Toolchain          | Count | Mean         | Error       | StdDev      | Ratio | RatioSD | Gen0   | Gen1   | Allocated | Alloc Ratio |
-|------------------- |------------------- |------ |-------------:|------------:|------------:|------:|--------:|-------:|-------:|----------:|------------:|
-| DirectArray_Gen    | .NET 10.0          | 4     |     4.250 ns |   0.2812 ns |   0.1860 ns |  1.00 |    0.06 | 0.0025 |      - |      40 B |        1.00 |
-| DirectArray_Gen    | .NET 10.0 + Cilica | 4     |     3.835 ns |   0.0960 ns |   0.0635 ns |  0.90 |    0.04 | 0.0025 |      - |      40 B |        1.00 |
-|                    |                    |       |              |             |             |       |         |        |        |           |             |
-| DirectArray_Gen    | .NET 10.0          | 1024  | 2,967.018 ns |  24.1653 ns |  15.9839 ns |  1.00 |    0.01 | 0.2485 |      - |    4120 B |        1.00 |
-| DirectArray_Gen    | .NET 10.0 + Cilica | 1024  | 2,983.729 ns |  52.3547 ns |  34.6294 ns |  1.01 |    0.01 | 0.2513 |      - |    4120 B |        1.00 |
-|                    |                    |       |              |             |             |       |         |        |        |           |             |
-| DynamicList_Gen    | .NET 10.0          | 4     |    12.103 ns |   0.2076 ns |   0.1086 ns |  1.00 |    0.01 | 0.0071 |      - |     112 B |        1.00 |
-| DynamicList_Gen    | .NET 10.0 + Cilica | 4     |     3.963 ns |   0.0811 ns |   0.0537 ns |  0.33 |    0.01 | 0.0025 |      - |      40 B |        0.36 |
-|                    |                    |       |              |             |             |       |         |        |        |           |             |
-| DynamicList_Gen    | .NET 10.0          | 1024  | 3,356.179 ns | 220.0201 ns | 145.5297 ns |  1.00 |    0.06 | 0.7861 |      - |   12544 B |        1.00 |
-| DynamicList_Gen    | .NET 10.0 + Cilica | 1024  | 3,024.206 ns |  59.5000 ns |  39.3556 ns |  0.90 |    0.04 | 0.2523 |      - |    4120 B |        0.33 |
-|                    |                    |       |              |             |             |       |         |        |        |           |             |
-| DynamicList_Enumer | .NET 10.0          | 4     |    12.642 ns |   0.4448 ns |   0.2942 ns |  1.00 |    0.03 | 0.0071 |      - |     112 B |        1.00 |
-| DynamicList_Enumer | .NET 10.0 + Cilica | 4     |    12.248 ns |   0.2347 ns |   0.1552 ns |  0.97 |    0.02 | 0.0071 |      - |     112 B |        1.00 |
-|                    |                    |       |              |             |             |       |         |        |        |           |             |
-| DynamicList_Enumer | .NET 10.0          | 1024  | 1,306.597 ns |  19.9740 ns |  13.2116 ns |  1.00 |    0.01 | 0.7956 | 0.0132 |   12544 B |        1.00 |
-| DynamicList_Enumer | .NET 10.0 + Cilica | 1024  | 1,347.235 ns |  55.7880 ns |  36.9003 ns |  1.03 |    0.03 | 0.7946 | 0.0129 |   12544 B |        1.00 |
+| Method             | Toolchain          | Count |         Mean |      Error |     StdDev | Ratio | RatioSD |   Gen0 |   Gen1 | Allocated | Alloc Ratio |
+| ------------------ | ------------------ | ----- | -----------: | ---------: | ---------: | ----: | ------: | -----: | -----: | --------: | ----------: |
+| DirectArray_Gen    | .NET 10.0          | 4     |     4.302 ns |  0.1499 ns |  0.0992 ns |  1.00 |    0.03 | 0.0025 |      - |      40 B |        1.00 |
+| DirectArray_Gen    | .NET 10.0 + Cilica | 4     |     4.123 ns |  0.1141 ns |  0.0755 ns |  0.96 |    0.03 | 0.0025 |      - |      40 B |        1.00 |
+|                    |                    |       |              |            |            |       |         |        |        |           |             |
+| DirectArray_Gen    | .NET 10.0          | 1024  | 2,991.820 ns | 23.7106 ns | 14.1098 ns |  1.00 |    0.01 | 0.2544 |      - |    4120 B |        1.00 |
+| DirectArray_Gen    | .NET 10.0 + Cilica | 1024  | 3,013.001 ns | 32.4651 ns | 21.4736 ns |  1.01 |    0.01 | 0.2612 |      - |    4120 B |        1.00 |
+|                    |                    |       |              |            |            |       |         |        |        |           |             |
+| DynamicList_Gen    | .NET 10.0          | 4     |    12.659 ns |  0.3230 ns |  0.2136 ns |  1.00 |    0.02 | 0.0071 |      - |     112 B |        1.00 |
+| DynamicList_Gen    | .NET 10.0 + Cilica | 4     |     4.240 ns |  0.1265 ns |  0.0837 ns |  0.34 |    0.01 | 0.0025 |      - |      40 B |        0.36 |
+|                    |                    |       |              |            |            |       |         |        |        |           |             |
+| DynamicList_Gen    | .NET 10.0          | 1024  | 3,259.718 ns | 38.5166 ns | 25.4763 ns |  1.00 |    0.01 | 0.7922 |      - |   12544 B |        1.00 |
+| DynamicList_Gen    | .NET 10.0 + Cilica | 1024  | 3,012.050 ns | 34.3305 ns | 22.7075 ns |  0.92 |    0.01 | 0.2546 |      - |    4120 B |        0.33 |
+|                    |                    |       |              |            |            |       |         |        |        |           |             |
+| DynamicList_Enumer | .NET 10.0          | 4     |    12.827 ns |  0.1651 ns |  0.0982 ns |  1.00 |    0.01 | 0.0071 |      - |     112 B |        1.00 |
+| DynamicList_Enumer | .NET 10.0 + Cilica | 4     |    12.680 ns |  0.2571 ns |  0.1701 ns |  0.99 |    0.01 | 0.0071 |      - |     112 B |        1.00 |
+|                    |                    |       |              |            |            |       |         |        |        |           |             |
+| DynamicList_Enumer | .NET 10.0          | 1024  | 1,323.260 ns | 13.2535 ns |  7.8869 ns |  1.00 |    0.01 | 0.7948 | 0.0132 |   12544 B |        1.00 |
+| DynamicList_Enumer | .NET 10.0 + Cilica | 1024  | 1,351.125 ns | 17.7084 ns | 11.7130 ns |  1.02 |    0.01 | 0.7959 | 0.0134 |   12544 B |        1.00 |
 
 ## Scalar Replacement
 
@@ -371,7 +497,7 @@ public static int SROA_ClassEnumerator(int[] array)
 }
 ```
 
-The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding.
+The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding. Constructor expansion follows the [inlining size policy](#inlining-policy), so an eligible allocation can remain when expanding its constructor would exceed the caller's budget.
 
 ## Common Sub-expression Elimination
 
@@ -380,8 +506,7 @@ CSE uses dominator-based global value numbering. It reuses dominating expression
 ### Example
 
 ```cs
-public static int SumTwice(int[] values, int index)
-    => values[index] + values[index];
+public static int SumTwice(int[] values, int index) => values[index] + values[index];
 ```
 
 With no intervening write or barrier, one load can supply both operands:
@@ -396,27 +521,109 @@ public static int SumTwice(int[] values, int index)
 
 Supported known-call contracts include selected dictionary lookups when comparer and mutation behavior are proved. Unknown calls, culture-sensitive operations, allocation identity, exceptions, ordering, and possible nontermination remain conservative. Dead-code elimination does not remove a call merely because its return value is unused.
 
+## Assertion Propagation
+
+Uses facts established by earlier branches and successful dereferences to simplify later comparisons and remove redundant null checks. A fact applies only on paths where it is guaranteed to hold. References merged from different branches can retain nullness facts shared by all incoming paths.
+
+### Example
+
+The `IndexOf()` call checks `text` for null, so its normal continuation does not need another null test:
+
+```cs
+[Optimize]
+public static int FindAsciiA(string text)
+{
+    int index = text.IndexOf('A');
+    return text != null ? index : -1;
+}
+```
+
+The redundant condition can disappear:
+
+```cs
+public static int FindAsciiA(string text)
+    => text.IndexOf('A');
+```
+
+## Devirtualization
+
+Devirtualization replaces virtual and interface dispatch with direct calls when Cilica can determine the target. It supports class overrides, instance and static interface members, and delegates with known targets. Resolving a target can also make the call eligible for inlining.
+
+### Example
+
+Although `reader` is declared as an interface, its concrete type is known:
+
+```cs
+interface IReader
+{
+    int Read();
+}
+
+sealed class ConstantReader : IReader
+{
+    public int Read() => 42;
+}
+
+[Optimize]
+public static int ReadValue()
+{
+    IReader reader = new ConstantReader();
+    return reader.Read();
+}
+```
+
+Cilica can replace the interface dispatch with a direct call to `ConstantReader.Read()`:
+
+```cs
+public static int ReadValue()
+{
+    var reader = new ConstantReader();
+    return reader.Read();
+}
+```
+
+Dispatch can be resolved even when the target is marked `NoInlining` or method inlining is disabled. When inlining and scalar replacement are also eligible, this example can reduce to `return 42;`.
+
 ## Method Inlining
 
-Inlining combines call-site benefits with callee costs. Direct calls and resolved virtual slots can expose constants, fields, and loop bodies to later passes. Callees are normalized and verified, and failed compilation results are not reused for inlining.
+Inlining exposes constants, fields, and loop bodies across method boundaries. It works together with devirtualization and simplification: inlining a factory can reveal a concrete receiver, resolving that receiver can expose another method body, and simplifying that body can enable further inlining. The process can continue through factory chains and calls to known delegate targets while useful work and budget remain.
 
-The default policy uses an initial budget of 80 plus half the caller's estimated cost, a per-call cost threshold of 250, and independent limits of 16 ancestor levels, 128 expansions, and 4096 expanded IR instructions. Ordinary IL candidates above 256 instructions are rejected early; `AggressiveInlining` raises that early limit to 4096. `NoInlining`, unsupported targets, and recursive ancestor chains prevent expansion.
+### Example
 
-Virtual-call null checks and required type initialization are preserved. Cross-assembly IPO is controlled by compilation settings. Access-check suppression permits inlining non-public references outside CoreLib; CoreLib inlining requires an access proof.
+Using the reader types from the [devirtualization example](#devirtualization), a helper can hide the concrete receiver from the caller:
 
-Instruction simplification coalesces an explicit null check with a following dereference of the same receiver when no observable operation or control-flow boundary intervenes. Exceptions retain their ordering relative to stores and other potentially throwing operations.
+```cs
+static IReader CreateReader() => new ConstantReader();
+
+[Optimize]
+public static int ReadFromFactory() => CreateReader().Read();
+```
+
+Inlining `CreateReader()` exposes `ConstantReader`, allowing the `Read()` call to resolve and inline. With the unused allocation removed by scalar replacement, the result is:
+
+```cs
+public static int ReadFromFactory() => 42;
+```
+
+### Inlining policy
+
+`NoInlining` prevents a method from being inlined. `AggressiveInlining` encourages inlining but does not guarantee it.
+
+The optimizer API exposes these controls:
+
+- `CompilationSettings.EnableInlining` controls method inlining and constructor expansion, including scalar replacement. It is enabled by default.
+- `CompilationSettings.AllowCrossAssemblyIPO` permits optimizations across assembly boundaries. It is enabled by default.
+- `CompilationSettings.MaxInlinedMethodILSize` limits caller IL growth during method inlining and constructor expansion, with a default of 32 KiB. Methods already above the limit can still accept inlining that does not increase their size.
 
 ## Pipeline and Compiler Benchmarks
 
-The default pipeline runs CFG simplification, SSA promotion, LINQ expansion, instruction simplification, devirtualization, inlining, dead-code elimination, scalar replacement, value numbering, assertion propagation, list presizing, loop strength reduction, and loop vectorization. Bounded simplification iterations follow transformations that expose more work. `ExtractThrows` is also available for custom pipelines.
+The default pipeline runs CFG simplification, SSA promotion, LINQ expansion, instruction simplification, devirtualization, inlining, dead-code elimination, scalar replacement, value numbering, assertion propagation, list presizing, loop strength reduction, and loop vectorization.
 
-Runtime benchmark pairs compare .NET 10 with the same runtime plus Cilica. The optimizer runs with strict failure handling and per-pass verification before the optimized executable is measured. Compiler benchmarks are selected separately:
+The optimizer runs with strict failure handling and per-pass verification before the optimized executable is measured. Compiler benchmarks are selected separately:
 
 ```sh
 dotnet run --project tests/Benchmarks -c Release -- --filter '*'
 dotnet run --project tests/Benchmarks -c Release -- --compiler --filter '*RepeatedLoads*'
 ```
 
-To use the measurement settings shown in the tables, add `--iterationCount 10 --warmupCount 3 --iterationTime 200 --launchCount 1` to the runtime benchmark command.
-
-`PassTimingInspector` reports invocations, changes, failures, elapsed time, allocations, and analysis-cache activity. The repeated-load benchmark measures compiler work in value numbering; it is separate from runtime application throughput. Measurements depend on the machine, runtime, workload, and enabled inspections, and are not correctness thresholds.
+`PassTimingInspector` reports invocations, changes, failures, elapsed time, allocations, and analysis-cache activity.
