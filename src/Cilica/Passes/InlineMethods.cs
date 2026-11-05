@@ -113,17 +113,10 @@ public class InlineMethods : IMethodPass
         var target = inlinee.Definition;
         if (target.Module != ctx.Compilation.Module && !ctx.Compilation.Settings.AllowCrossAssemblyIPO) return null;
 
-        // A constrained receiver is an address. Reference and unresolved
-        // generic receivers require dereferencing or boxing before a call;
-        // substituting that address for an object 'this' corrupts accesses.
-        // Only an exact value-type target has the same receiver convention.
+        // Static constraints must resolve before inlining; a default body may be overridden.
+        // Instance constraints require an exact value-type target with the same receiver convention.
         if (call.Constraint is { } constraint &&
-            (!constraint.IsValueType || constraint != inlinee.DeclaringType)) {
-            return null;
-        }
-
-        // TODO: support for static virtuals
-        if (target.Attribs.HasFlag(MethodAttributes.Static | MethodAttributes.Virtual)) {
+            (call.IsStatic || !constraint.IsValueType || constraint != inlinee.DeclaringType)) {
             return null;
         }
 

@@ -74,6 +74,7 @@ public class Devirtualize : IMethodPass
         // ldvirtftn on a boxed value can return an unboxing stub. An ordinary
         // ldftn of its value-type method has a different receiver convention.
         if (address.IsVirtual && type?.IsValueType == true) return;
+        if (type is PrimType primitive) type = primitive.GetDefinition(ctx.Compilation.Resolver);
         if (type is not TypeDefOrSpec nominal || !CanInspect(ctx, nominal) ||
             method.DeclaringType.IsInterface && TypeUtils.CanHaveDynamicInterfaces(nominal)) return;
         if (VirtualDispatch.Resolve(method, nominal) is not MethodDefOrSpec target || !CanCall(ctx, target) ||
