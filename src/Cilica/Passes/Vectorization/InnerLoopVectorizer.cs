@@ -72,8 +72,9 @@ internal sealed class InnerLoopVectorizer
                 return false;
             }
 
-            if (phi.Users().Any(u => _loop.Contains(u.Block) && u != iterOut)) {
-                logger?.Trace($"Loop {_loop.Header} vectorization declined: reduction {phi} is used outside its update.");
+            if (phi.Users().Any(u => _loop.Contains(u.Block) && u != iterOut) ||
+                iterOut.Users().Any(u => _loop.Contains(u.Block) && u != phi)) {
+                logger?.Trace($"Loop {_loop.Header} vectorization declined: intermediate reduction values are used in the loop.");
                 return false;
             }
 
