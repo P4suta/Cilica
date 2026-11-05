@@ -6,6 +6,24 @@ using Cilica.Attributes;
 [Optimize]
 public class StaticVirtualTests
 {
+    [Fact]
+    public void DefaultInstanceCallsRunTheInterfaceInitializer()
+    {
+        IInitializedInstance instance = new InitializedInstance();
+        instance.Touch();
+        Assert.Equal(1, s_InstanceInitializations);
+    }
+
+    static int s_InstanceInitializations;
+
+    interface IInitializedInstance
+    {
+        static IInitializedInstance() => s_InstanceInitializations++;
+        void Touch() { }
+    }
+
+    class InitializedInstance : IInitializedInstance { }
+
     [Fact, CheckCodeGenAfterRun]
     public void DefaultBodiesInlineAfterGenericSpecialization()
     {

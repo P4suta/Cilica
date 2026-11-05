@@ -17,9 +17,9 @@ public static class TypeUtils
             ?.Methods.Any(method => method.Name == ".cctor") == true;
 
     /// <summary> Whether invoking this method can run its declaring type's initializer. </summary>
-    /// <remarks> Constructors (including base constructor calls), static methods, and value-type instance methods trigger precise initialization. </remarks>
+    /// <remarks> Constructors (including base constructor calls), static methods, and value-type or interface instance methods trigger precise initialization. </remarks>
     public static bool RequiresTypeInitialization(this MethodDesc method)
-        => (method.IsStatic || method.IsConstructor || method.DeclaringType.IsValueType) &&
+        => (method.IsStatic || method.IsConstructor || method.DeclaringType.IsValueType || method.DeclaringType.IsInterface) &&
            method.DeclaringType.RequiresTypeInitialization();
 
     /// <summary> Checks if this type is defined in <c>System.Private.CoreLib</c>. </summary>
