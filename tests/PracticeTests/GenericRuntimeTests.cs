@@ -162,6 +162,22 @@ public class GenericRuntimeTests
         Assert.Equal(0, BoxNullable<decimal>(42m)!.CompareTo(42m));
     }
 
+    [Fact]
+    public void ConcreteNullablePrimitivesCanBePassedAsInterfaces()
+    {
+        int? number = 42;
+        char? character = 'A';
+        bool? flag = true;
+        Assert.Equal(0, CompareBoxed(number, 42));
+        Assert.Equal(0, CompareBoxed(character, 'A'));
+        Assert.Equal(0, CompareBoxed(flag, true));
+        number = null;
+        Assert.Null(CompareBoxed(number, 42));
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static int? CompareBoxed(IComparable? value, object other) => value?.CompareTo(other);
+
     [MethodImpl(MethodImplOptions.NoInlining)]
     static IComparable? BoxNullable<T>(T? value) where T : struct, IComparable => value;
 }

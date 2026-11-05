@@ -8,6 +8,27 @@ using Cilica.IR.Utils;
 public class IRVerifierTests(ModuleResolverFixture fixture)
 {
     [Theory]
+    [InlineData(TypeKind.Int32, false)]
+    [InlineData(TypeKind.Int32, true)]
+    [InlineData(TypeKind.Char, false)]
+    [InlineData(TypeKind.Char, true)]
+    [InlineData(TypeKind.Bool, false)]
+    [InlineData(TypeKind.Bool, true)]
+    [InlineData(TypeKind.Double, false)]
+    [InlineData(TypeKind.Double, true)]
+    public void BoxedPrimitivesImplementTheirRuntimeInterfaces(TypeKind kind, bool nullable)
+    {
+        TypeDesc source = PrimType.GetFromKind(kind);
+        if (nullable) source = fixture.Resolver.Import(typeof(Nullable<>)).GetSpec([source]);
+        var target = fixture.Resolver.Import(typeof(IComparable));
+        var body = Utils.CreateTestMethod(fixture.Resolver, target, source);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.Emit(new CilIntrinsic.Box(source, body.Args[0])));
+
+        Assert.Empty(IRVerifier.Diagnose(body));
+    }
+
+    [Theory]
     [InlineData(typeof(Func<>), false, false)]
     [InlineData(typeof(Func<>), true, true)]
     [InlineData(typeof(IReadOnlyList<>), true, true)]

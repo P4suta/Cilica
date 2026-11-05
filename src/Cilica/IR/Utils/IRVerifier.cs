@@ -313,6 +313,9 @@ public class IRVerifier
         source = source.GetSpec(new GenericContext(_method.Definition));
         if (source.IsCorelibType(typeof(Nullable<>))) return IsBoxAssignable(source.GenericParams[0], target, visiting);
         if (target == PrimType.Object || IsReferenceAssignable(source, target, new())) return true;
+        if (source is PrimType primitive) {
+            return IsReferenceAssignable(primitive.GetDefinition(_method.Definition.Module.Resolver), target, new());
+        }
         if (!visiting.Add(source)) return false;
 
         // IL tokens carry unbound parameters. Recover their constraints from the
