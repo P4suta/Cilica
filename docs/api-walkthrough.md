@@ -43,7 +43,11 @@ module.Save("Foo_out.dll", savePdb: true);
 
 Compilation operates on working copies. Results distinguish unchanged, optimized, unsupported, and failed methods. Failed methods retain their input bodies. The CLI's `--strict` option prevents saving when a selected method fails; `--verify-each` checks the output of every pass. Verification also runs before CIL emission.
 
-Assembly output preserves supported PE/CLR target properties and native resources, and uses deterministic PE/PDB identifiers. File output is staged, with rollback on publication failure. Signed and native-code images are rejected for rewriting.
+Semantic preservation assumes valid CIL and metadata, including valid unsafe or unverifiable IL. Invalid input has undefined behavior.
+
+Use `CompilationSettings.AllowCrossAssemblyIPO = false` when dependencies can be replaced independently. `EnableInlining` controls method inlining, while `MaxMethodInstructions` limits the input size of methods selected for optimization.
+
+Assembly output preserves supported PE/CLR target properties and native resources, and uses deterministic PE/PDB identifiers. File output is staged, with rollback on publication failure. Signed and native-code images require explicit `ModuleWriteOptions.StripSignatures` and `ModuleWriteOptions.StripReadyToRun` options where supported. Portable PDBs can be rewritten; use `savePdb: false` to discard unsupported classic Windows PDBs.
 
 The `ILGenerator` is able to generate reasonably compact IL by traversing expression trees that are implicitly built over the linear IR (by flagging SSA defs as leafs or branches). It also uses a register allocator based on a simple graph-coloring algorithm to reduce the final number of variables required.
 

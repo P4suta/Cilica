@@ -15,6 +15,7 @@ public class PassManager
     readonly Dictionary<MethodDef, ILMethodBody?> _originalIL = new();
     readonly Dictionary<MethodDef, long> _initialRevisions = new();
     readonly Dictionary<MethodDef, MethodCompilationResult> _results = new();
+    readonly HashSet<MethodDef> _preservedMethods = new();
     bool _running;
 
     /// <summary> Adds a new segment to the pass pipeline. </summary>
@@ -41,6 +42,7 @@ public class PassManager
         _originalIL.Clear();
         _initialRevisions.Clear();
         _results.Clear();
+        _preservedMethods.Clear();
 
         try {
             foreach (var inspector in Inspectors) {
@@ -51,7 +53,7 @@ public class PassManager
             ApplyPipeline(methods);
 
             foreach (var method in methods) {
-                if (method.Body == null || Compilation.HasFailed(method)) {
+                if (method.Body == null || Compilation.HasFailed(method) || _preservedMethods.Contains(method)) {
                     continue;
                 }
 
@@ -95,6 +97,15 @@ public class PassManager
             try {
                 if (import) {
                     _originalIL[method] = method.ILBody;
+                    if (method.ILBody != null && (method.IsRuntimeAsync ||
+                        method.ImplAttribs.HasFlag(System.Reflection.MethodImplAttributes.NoOptimization))) {
+                        _preservedMethods.Add(method);
+                        _results[method].Status = MethodCompilationStatus.Unchanged;
+                        continue;
+                    }
+                    if (method.ILBody is { } il && il.Instructions.Count > Compilation.Settings.MaxMethodInstructions) {
+                        throw new NotSupportedException("Method exceeds the configured instruction budget; input body retained");
+                    }
                 }
 
                 if (method.Body != null) {
@@ -168,7 +179,7 @@ public class PassManager
             var segments = Pipeline.AsSpan()[i..end];
 
             foreach (var method in candidates) {
-                if (method.Body == null || Compilation.HasFailed(method)) {
+                if (method.Body == null || Compilation.HasFailed(method) || _preservedMethods.Contains(method)) {
                     continue;
                 }
 

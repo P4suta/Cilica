@@ -251,7 +251,8 @@ public class ValueNumbering : IMethodPass
         //       For now, reference comparation will work in most cases,
         //       since we don't always create new instances.
         Reg<CallInst>(
-            comp: (a, b) => a.Method == b.Method && a.IsVirtual == b.IsVirtual && a.Constraint == b.Constraint && a.Args.SequenceEqual(b.Args),
+            comp: (a, b) => a.Method == b.Method && a.IsVirtual == b.IsVirtual && a.Constraint == b.Constraint &&
+                a.IsReadOnly == b.IsReadOnly && a.IsTailCall == b.IsTailCall && a.Args.SequenceEqual(b.Args),
             hash: (inst) => HashCode.Combine(inst.Method, inst.NumArgs > 0 ? inst.Args[0] : null)
         );
 

@@ -36,6 +36,7 @@ internal sealed class InliningAccess(TypeDef caller)
                 }
             }
             if (inst is CallInst { Constraint: { } constraint } && !CanUseType(constraint) ||
+                inst is FuncAddrInst { Constraint: { } addressConstraint } && !CanUseType(addressConstraint) ||
                 inst is GuardInst { CatchType: { } catchType } && !CanUseType(catchType) ||
                 inst is MemoryInst memory && !CanUseType(memory.ElemType)) return false;
         }
@@ -44,6 +45,8 @@ internal sealed class InliningAccess(TypeDef caller)
 
     public bool CanUseMember(MemberDesc member)
     {
+        // A bare MemberRef does not establish visibility of its target.
+        if (member is MethodReference reference) return reference.Parent is MethodDesc target && CanUseMember(target);
         if (!CanUseType(member.DeclaringType)) return false;
         int visibility;
         if (member is MethodDesc method) {
@@ -68,7 +71,8 @@ internal sealed class InliningAccess(TypeDef caller)
     private bool CanUseType(TypeDesc type)
     {
         if (type is PrimType or GenericParamType) return true;
-        if (type is CompoundType compound) return CanUseType(compound.ElemType);
+        if (type is CompoundType compound) return CanUseType(compound.ElemType) &&
+            compound.ElementModifiers.All(modifier => CanUseType(modifier.Type));
         if (type is FuncPtrType pointer) {
             return CanUseSignature(pointer.Signature.ReturnType) && pointer.Signature.ParamTypes.All(CanUseSignature);
         }

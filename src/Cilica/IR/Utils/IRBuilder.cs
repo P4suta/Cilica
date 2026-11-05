@@ -221,6 +221,16 @@ public class IRBuilder
         return CreateCall(helper, Emit(new CilIntrinsic.LoadHandle(Resolver, type)));
     }
 
+    /// <summary> Ensures the defining module is initialized before an inlined cross-module call. </summary>
+    public CallInst CreateModuleInitialization(TypeDesc type)
+    {
+        var typeClass = Resolver.Import(typeof(Type));
+        var typeObject = CreateCall(typeClass.FindMethod("GetTypeFromHandle"), Emit(new CilIntrinsic.LoadHandle(Resolver, type)));
+        var module = CreateCallVirt(typeClass.FindMethod("get_Module", searchBaseAndItfs: true), typeObject);
+        var handle = CreateCallVirt(Resolver.Import(typeof(System.Reflection.Module)).FindMethod("get_ModuleHandle"), module);
+        return CreateCall(Resolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers)).FindMethod("RunModuleConstructor"), handle);
+    }
+
     /// <summary> Searches for <paramref name="methodName"/> in the instance object type (first argument), and creates a callvirt instruction for it. </summary>
     public CallInst CreateCallVirt(string methodName, params Value[] args)
     {

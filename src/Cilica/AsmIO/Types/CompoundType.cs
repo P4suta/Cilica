@@ -4,6 +4,8 @@ namespace Cilica.AsmIO;
 public abstract class CompoundType : TypeDesc
 {
     public override TypeDesc ElemType { get; }
+    /// <summary> Custom modifiers on the element, inside the pointer or array signature. </summary>
+    public ImmutableArray<TypeModifier> ElementModifiers { get; }
     public override TypeDesc? BaseType => ElemType.BaseType;
     public override bool IsUnboundGeneric => ElemType.IsUnboundGeneric;
 
@@ -12,9 +14,10 @@ public abstract class CompoundType : TypeDesc
 
     protected abstract string Postfix { get; }
 
-    public CompoundType(TypeDesc elemType)
+    public CompoundType(TypeDesc elemType, ImmutableArray<TypeModifier> modifiers = default)
     {
         ElemType = elemType;
+        ElementModifiers = modifiers.EmptyIfDefault();
     }
     
     public override TypeDesc GetSpec(GenericContext context)
@@ -26,11 +29,12 @@ public abstract class CompoundType : TypeDesc
 
     public override void Print(PrintContext ctx, bool includeNs = false)
     {
-        ElemType.Print(ctx, includeNs);
+        new TypeSig(ElemType, ElementModifiers).Print(ctx, includeNs);
         ctx.Print(Postfix);
     }
 
     public override int GetHashCode() => HashCode.Combine(Kind, ElemType);
     public override bool Equals(TypeDesc? other) 
-        => other != null && other.GetType() == GetType() && ((CompoundType)other).ElemType == ElemType;
+        => other != null && other.GetType() == GetType() && ((CompoundType)other).ElemType == ElemType &&
+            ElementModifiers.SequenceEqual(((CompoundType)other).ElementModifiers);
 }

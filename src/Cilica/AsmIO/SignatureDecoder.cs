@@ -31,20 +31,23 @@ internal struct SignatureDecoder
                 return PrimType.GetFromSrmCode((PrimitiveTypeCode)code);
             }
             case SignatureTypeCode.Pointer: {
-                return DecodeType().CreatePointer();
+                var element = DecodeTypeSig();
+                return element.HasModifiers ? new PointerType(element.Type, element.Modifiers) : element.Type.CreatePointer();
             }
             case SignatureTypeCode.ByReference: {
-                return DecodeType().CreateByref();
+                var element = DecodeTypeSig();
+                return element.HasModifiers ? new ByrefType(element.Type, element.Modifiers) : element.Type.CreateByref();
             }
             case SignatureTypeCode.SZArray: {
-                return DecodeType().CreateArray();
+                var element = DecodeTypeSig();
+                return element.HasModifiers ? new ArrayType(element.Type, element.Modifiers) : element.Type.CreateArray();
             }
             case SignatureTypeCode.Array: {
-                var elemType = DecodeType();
+                var element = DecodeTypeSig();
                 int rank = Reader.ReadCompressedInteger();
                 var sizes = ReadIntArray(false);
                 var lowerBounds = ReadIntArray(true);
-                return new MDArrayType(elemType, rank, lowerBounds, sizes);
+                return new MDArrayType(element.Type, rank, lowerBounds, sizes, element.Modifiers);
             }
             case SignatureTypeCode.FunctionPointer: {
                 var sig = DecodeMethodSig();
@@ -68,7 +71,7 @@ internal struct SignatureDecoder
                 return (TypeDesc)_loader.GetEntity(handle);
             }
             default:
-                throw new NotSupportedException();
+                throw new NotSupportedException($"Unsupported signature element: {code}");
         }
     }
 
@@ -103,11 +106,20 @@ internal struct SignatureDecoder
         int numGenPars = header.IsGeneric ? Reader.ReadCompressedInteger() : 0;
         var paramTypes = new TypeSig[Reader.ReadCompressedInteger()];
         var retType = DecodeTypeSig();
+        int requiredParameters = paramTypes.Length;
 
         for (int i = 0; i < paramTypes.Length; i++) {
+            if (Reader.ReadSignatureTypeCode() == SignatureTypeCode.Sentinel) {
+                if (header.CallingConvention != SignatureCallingConvention.VarArgs || requiredParameters != paramTypes.Length) {
+                    throw new BadImageFormatException("Invalid vararg sentinel");
+                }
+                requiredParameters = i;
+            } else {
+                Reader.Offset--;
+            }
             paramTypes[i] = DecodeTypeSig();
         }
-        return new MethodSig(retType, paramTypes, header, numGenPars);
+        return new MethodSig(retType, paramTypes, header, numGenPars, requiredParameters);
     }
 
     public TypeSig DecodeTypeSig()

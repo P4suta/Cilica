@@ -402,19 +402,13 @@ Inlining combines call-site benefits with callee costs. Direct calls and resolve
 
 The default policy uses an initial budget of 80 plus half the caller's estimated cost, a per-call cost threshold of 250, and independent limits of 16 ancestor levels, 128 expansions, and 4096 expanded IR instructions. Ordinary IL candidates above 256 instructions are rejected early; `AggressiveInlining` raises that early limit to 4096. `NoInlining`, unsupported targets, and recursive ancestor chains prevent expansion.
 
-Virtual-call null checks and required type initialization are preserved. Cross-assembly IPO is controlled by compilation settings. When imported code requires access to private members or non-public referenced types, including generic arguments and signature types, the compilation adds `IgnoresAccessChecksToAttribute` metadata as needed and removes unused auxiliary artifacts.
-
-Constrained calls that require receiver dereferencing or boxing retain their calls. An exact value-type target remains eligible because its body uses the same receiver convention. CIL expression scheduling preserves calls before reads of memory they may write, including out arguments, and phi allocation preserves live values and their stack types.
-
-When optimizing `System.Private.CoreLib`, cross-type inlining accepts public and same-assembly internal references, including their type and signature dependencies. Private/protected cases without a simple access proof retain their calls. Scalar replacement applies the same rule to references that survive removal of the allocation. CoreLib cannot use the access-check suppression attribute: the runtime parses that attribute using CoreLib itself, which can recursively trigger compilation during startup. Other assemblies continue to use access-check suppression when needed.
+Virtual-call null checks and required type initialization are preserved. Cross-assembly IPO is controlled by compilation settings. Access-check suppression permits inlining non-public references outside CoreLib; CoreLib inlining requires an access proof.
 
 Instruction simplification coalesces an explicit null check with a following dereference of the same receiver when no observable operation or control-flow boundary intervenes. Exceptions retain their ordering relative to stores and other potentially throwing operations.
 
 ## Pipeline and Compiler Benchmarks
 
 The default pipeline runs CFG simplification, SSA promotion, LINQ expansion, instruction simplification, inlining, dead-code elimination, scalar replacement, value numbering, assertion propagation, list presizing, loop strength reduction, and loop vectorization. Bounded simplification iterations follow transformations that expose more work. `ExtractThrows` is also available for custom pipelines.
-
-Assertion propagation folds comparisons implied by dominating branches and successful object null checks. Phi inputs use facts from their incoming edges. Facts learned inside a protected block do not flow through its exception handlers, filters, finally/fault paths, or continuations reachable after a caught exception; facts already true on block entry remain available. Byref field addresses, constrained calls, and raw memory accesses are not treated as object null checks. Signed/unsigned and ordered/unordered comparisons retain their distinct semantics.
 
 Runtime benchmark pairs compare .NET 10 with the same runtime plus Cilica. The optimizer runs with strict failure handling and per-pass verification before the optimized executable is measured. Compiler benchmarks are selected separately:
 

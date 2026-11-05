@@ -19,6 +19,7 @@ internal partial class ModuleWriter
 
     readonly Dictionary<EntityDesc, EntityHandle> _handleMap = new();
     readonly Dictionary<string, ModuleReferenceHandle> _moduleRefs = new();
+    readonly Dictionary<FieldDef, int> _mappedFieldOffsets = new();
     // Generic parameters must be sorted based on the coded parent entity handle, we do that in a later pass.
     readonly List<EntityDesc> _genericDefs = new();
     readonly Dictionary<(StringHandle, BlobHandle, bool), AssemblyFileHandle> _fileRefHandles = new();
@@ -82,10 +83,43 @@ internal partial class ModuleWriter
         _handleMap.Add(_mod, mainAsmHandle);
 
         AllocHandles();
+        PreserveMappedFieldLayout();
         EmitEntities();
 
         EmitCustomAttribs(mainAsmHandle, _mod.GetCustomAttribs(forAssembly: true));
         EmitCustomAttribs(mainModHandle, _mod.GetCustomAttribs(forAssembly: false));
+    }
+
+    private void PreserveMappedFieldLayout()
+    {
+        if (_mod._loader is not { } loader) return;
+        var fields = _mod.TypeDefs.SelectMany(type => type.Fields).Where(field => field._originalRva != 0 &&
+            field.Attribs.HasFlag(FieldAttributes.HasFieldRVA) && field.MappedData?.Length == field._originalDataSize).ToArray();
+        if (fields.Length == 0) return;
+
+        // Field order is independent of RVA order, and fields can overlap.
+        // Relocate their shared storage once, preserving gaps and relative addresses.
+        int start = fields.Min(field => field._originalRva) & -ManagedPEBuilder.MappedFieldDataAlignment;
+        int end = fields.Max(field => checked(field._originalRva + field._originalDataSize));
+        var content = new byte[checked(end - start)];
+        foreach (var section in loader._pe.PEHeaders.SectionHeaders) {
+            int first = Math.Max(start, section.VirtualAddress);
+            int last = Math.Min(end, checked(section.VirtualAddress + section.SizeOfRawData));
+            if (first >= last) continue;
+            var data = loader._pe.GetSectionData(first);
+            data.GetContent(0, Math.Min(last - first, data.Length)).AsSpan().CopyTo(content.AsSpan(first - start));
+        }
+        foreach (var field in fields) {
+            int offset = field._originalRva - start;
+            var original = loader._pe.GetSectionData(field._originalRva).GetContent(0, field._originalDataSize);
+            if (!field.MappedData!.AsSpan().SequenceEqual(original.AsSpan())) {
+                field.MappedData!.CopyTo(content, offset);
+            }
+            _mappedFieldOffsets.Add(field, offset);
+        }
+        _fieldDataStream = new BlobBuilder();
+        _fieldDataStream.WriteBytes(content);
+        _fieldDataStream.Align(ManagedPEBuilder.MappedFieldDataAlignment);
     }
 
     private void EmitEntities()
@@ -199,9 +233,12 @@ internal partial class ModuleWriter
 
         if (field.Attribs.HasFlag(FieldAttributes.HasFieldRVA)) {
             _fieldDataStream ??= new();
-            _builder.AddFieldRelativeVirtualAddress(handle, _fieldDataStream.Count);
-            _fieldDataStream.WriteBytes(field.MappedData!);
-            _fieldDataStream.Align(ManagedPEBuilder.MappedFieldDataAlignment);
+            if (!_mappedFieldOffsets.TryGetValue(field, out int offset)) {
+                offset = _fieldDataStream.Count;
+                _fieldDataStream.WriteBytes(field.MappedData!);
+                _fieldDataStream.Align(ManagedPEBuilder.MappedFieldDataAlignment);
+            }
+            _builder.AddFieldRelativeVirtualAddress(handle, offset);
         }
         if (field.Attribs.HasFlag(FieldAttributes.HasFieldMarshal)) {
             _builder.AddMarshallingDescriptor(handle, _builder.GetOrAddBlob(field.MarshallingDesc!));

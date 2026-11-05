@@ -8,6 +8,7 @@ public class ScalarReplacement : IMethodPass
 {
     public MethodPassResult Run(MethodTransformContext ctx)
     {
+        if (!ctx.Compilation.Settings.EnableInlining) return MethodInvalidations.None;
         var allocs = new List<NewObjInst>();
         
         // Find non-escaping object allocations
@@ -71,6 +72,12 @@ public class ScalarReplacement : IMethodPass
         if (alloc.ResultType.IsValueType || HasFinalizer(alloc.ResultType)) {
             return false;
         }
+        for (var type = alloc.ResultType as TypeDefOrSpec; type != null; type = type.BaseType) {
+            // Separate locals cannot model overlapping fields. Large embedded
+            // values also must not turn a heap allocation into a huge stack frame.
+            if (type.Attribs.HasFlag(System.Reflection.TypeAttributes.ExplicitLayout) ||
+                type.Fields.Any(field => field.IsInstance && field.Type is TypeDefOrSpec { Definition.LayoutSize: > 1024 })) return false;
+        }
 
         var advisor = ctx.Compilation.GetAnalysis<InliningAdvisor>();
 
@@ -92,7 +99,7 @@ public class ScalarReplacement : IMethodPass
             u is FieldAddrInst addr && !AddressEscapes(addr) || (isCtor && IsObjectCtorCall(u)));
     }
 
-    private static bool AddressEscapes(TrackedValue address)
+    internal static bool AddressEscapes(TrackedValue address)
         => address.Uses().Any(use => use.Parent switch {
             LoadInst => use.OperIndex != 0,
             StoreInst => use.OperIndex != 0,
@@ -102,9 +109,11 @@ public class ScalarReplacement : IMethodPass
             _ => true
         });
 
-    private static bool HasFinalizer(TypeDesc type)
+    internal static bool HasFinalizer(TypeDesc type)
     {
-        for (TypeDesc? curr = type; curr != null && curr != PrimType.Object && !curr.IsCorelibType(typeof(object)); curr = curr.BaseType) {
+        // Primitive aliases and array types cannot declare a finalizer and do
+        // not expose a nominal method table through TypeDesc.Methods.
+        for (TypeDesc? curr = type; curr is TypeDefOrSpec && !curr.IsCorelibType(typeof(object)); curr = curr.BaseType) {
             if (curr.Methods.Any(m => m.Name == "Finalize" && m.IsInstance && m.ParamSig.Count == 1 &&
                 m.Attribs.HasFlag(System.Reflection.MethodAttributes.Virtual))) return true;
         }

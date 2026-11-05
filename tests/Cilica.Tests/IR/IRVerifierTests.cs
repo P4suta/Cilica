@@ -37,6 +37,32 @@ public class IRVerifierTests(ModuleResolverFixture fixture)
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void BoxedStructInterfacesRespectGenericVariance(bool referenceConstraint)
+    {
+        var constraint = fixture.Resolver.Import(typeof(IDisposable));
+        var parameter = new GenericParamType(0, true,
+            attribs: referenceConstraint ? System.Reflection.GenericParameterAttributes.ReferenceTypeConstraint : 0,
+            constraints: [new GenericParamConstraint(constraint, [])]);
+        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Void);
+        var source = fixture.Resolver.Import(typeof(System.Collections.Immutable.ImmutableArray<>))
+            .GetSpec(new GenericContext(typeArgs: [GenericParamType.GetUnboundM(0)]));
+        var target = fixture.Resolver.Import(typeof(IEnumerable<IDisposable>));
+        var method = body.Definition.DeclaringType.CreateMethod("Convert", target, [new ParamDef(source, "value")],
+            System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static, genericPars: [parameter]);
+        body = new MethodBody(method);
+        var block = body.CreateBlock();
+        var box = new CilIntrinsic.Box(source, body.Args[0]);
+        block.InsertLast(box);
+        block.SetBranch(new ReturnInst(box));
+
+        var diagnostics = IRVerifier.Diagnose(body);
+        if (referenceConstraint) Assert.Empty(diagnostics);
+        else Assert.Contains(diagnostics, d => d.Message!.Contains("Return value"));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void ValuesCanLeaveATryOnlyWhenTheHandlerCannotBypassTheirDefinition(bool handlerRejoins)
     {
         var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32, PrimType.Int32);

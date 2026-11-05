@@ -25,6 +25,9 @@ public class DominatorTree : IMethodAnalysis
         return GetNode(block).IDom.Block;
     }
 
+    /// <summary> Whether this block is reachable from the method entry. </summary>
+    public bool IsReachable(BasicBlock block) => _block2node.ContainsKey(block);
+
     /// <summary> Checks if all paths from the entry block must go through <paramref name="parent"/> before entering <paramref name="child"/>. </summary>
     public bool Dominates(BasicBlock parent, BasicBlock child)
     {
@@ -223,11 +226,12 @@ public class DominanceFrontier : IMethodAnalysis
     public DominanceFrontier(MethodBody method, DominatorTree domTree)
     {
         foreach (var block in method) {
-            if (block.NumPreds < 2) continue;
+            if (block.NumPreds < 2 || !domTree.IsReachable(block)) continue;
 
             var blockDom = domTree.IDom(block);
 
             foreach (var pred in block.Preds) {
+                if (!domTree.IsReachable(pred)) continue;
                 var runner = pred;
                 while (runner != blockDom) {
                     var frontier = _df.GetOrAddRef(runner) ??= new();

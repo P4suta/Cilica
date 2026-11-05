@@ -132,6 +132,7 @@ public class InliningAdvisor : IGlobalAnalysis
 
     public InlineRejectReason EarlyCheck(MethodDef method)
     {
+        if (method.CallConv == CallConvention.VarArgs) return InlineRejectReason.Ineligible;
         int maxInstrs = method.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining)
             ? 4096
             : 256;
@@ -140,12 +141,13 @@ public class InliningAdvisor : IGlobalAnalysis
             return InlineRejectReason.Overbudget;
         }
 
-        if (method.ImplAttribs.HasFlag(MethodImplAttributes.NoInlining)) {
+        if ((method.ImplAttribs & (MethodImplAttributes.NoInlining | MethodImplAttributes.NoOptimization | MethodImplAttributes.Synchronized)) != 0) {
             return InlineRejectReason.Ineligible;
         }
 
         if (method.Attribs.HasFlag(MethodAttributes.Abstract) || 
             method.Attribs.HasFlag(MethodAttributes.PinvokeImpl) ||
+            method.HasCustomAttrib("System.Runtime.InteropServices", "UnmanagedCallersOnlyAttribute") ||
             method.HasCustomAttrib("System.Runtime.CompilerServices", "IntrinsicAttribute")
         ) {
             return InlineRejectReason.UnknownTarget;
@@ -153,7 +155,7 @@ public class InliningAdvisor : IGlobalAnalysis
 
         // Don't bother inlining async methods because we don't gain anything
         // from doing so yet, and it might mess up stack traces.
-        if (method.HasCustomAttrib("System.Runtime.CompilerServices", "AsyncStateMachineAttribute")) {
+        if (method.IsRuntimeAsync || method.HasCustomAttrib("System.Runtime.CompilerServices", "AsyncStateMachineAttribute")) {
             return InlineRejectReason.Ineligible;
         }
 

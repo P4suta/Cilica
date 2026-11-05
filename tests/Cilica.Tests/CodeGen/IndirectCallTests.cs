@@ -42,17 +42,22 @@ public class IndirectCallTests(ModuleResolverFixture fixture)
         Assert.True(effects.MayDiverge && effects.MayAllocate && effects.MayThrow && effects.MayReadMem && effects.MayWriteMem && effects.HasMemoryBarrier);
     }
 
-    [Fact]
-    public void FunctionPointerSignaturesPreserveModifiersAndSpecializeGenerics()
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FunctionPointerSignaturesPreserveModifiersAndSpecializeGenerics(bool nestedModifier)
     {
         var modifier = fixture.Resolver.Import(typeof(System.Runtime.CompilerServices.CallConvCdecl));
         var parameter = GenericParamType.GetUnboundM(0);
         var signature = new FuncPtrType(new MethodSig(new TypeSig(parameter, [new TypeModifier(modifier, false)]),
-            [new TypeSig(parameter.CreateByref(), [new TypeModifier(modifier, false)])],
+            [new TypeSig(nestedModifier ? new ByrefType(parameter, [new TypeModifier(modifier, true)]) : parameter.CreateByref(),
+                [new TypeModifier(modifier, false)])],
             new SignatureHeader(SignatureKind.Method, SignatureCallingConvention.Unmanaged, 0)));
         var specialized = (FuncPtrType)signature.GetSpec(new GenericContext(methodArgs: [PrimType.Int32]));
         Assert.Equal(PrimType.Int32, specialized.Signature.ReturnType.Type);
-        Assert.Equal(PrimType.Int32.CreateByref(), specialized.Signature.ParamTypes[0].Type);
+        var specializedParameter = Assert.IsType<ByrefType>(specialized.Signature.ParamTypes[0].Type);
+        Assert.Equal(PrimType.Int32, specializedParameter.ElemType);
+        Assert.Equal(nestedModifier ? 1 : 0, specializedParameter.ElementModifiers.Length);
         Assert.Equal(signature.Signature.ReturnType.Modifiers, specialized.Signature.ReturnType.Modifiers);
         Assert.Equal(signature.Signature.ParamTypes[0].Modifiers, specialized.Signature.ParamTypes[0].Modifiers);
 
@@ -70,6 +75,9 @@ public class IndirectCallTests(ModuleResolverFixture fixture)
         Assert.Equal(CallConvention.Unmanaged, actual.Signature.CallConv);
         Assert.Equal(specialized.Signature.ReturnType.Modifiers[0].Type.Name, actual.Signature.ReturnType.Modifiers[0].Type.Name);
         Assert.Equal(specialized.Signature.ParamTypes[0].Modifiers[0].Type.Name, actual.Signature.ParamTypes[0].Modifiers[0].Type.Name);
+        var actualParameter = Assert.IsType<ByrefType>(actual.Signature.ParamTypes[0].Type);
+        Assert.Equal(specializedParameter.ElementModifiers.Select(m => (m.Type.Name, m.IsRequired)),
+            actualParameter.ElementModifiers.Select(m => (m.Type.Name, m.IsRequired)));
         Assert.Equal(specialized, new FuncPtrType(new MethodSig(specialized.Signature.ReturnType,
             specialized.Signature.ParamTypes.ToArray(), new SignatureHeader(SignatureKind.Method, SignatureCallingConvention.Unmanaged, 0))));
     }

@@ -11,6 +11,41 @@ using Cilica.CodeGen.Cil;
 [Collection("ModuleResolver")]
 public class PassManagerTests(ModuleResolverFixture fixture)
 {
+    [Fact]
+    public void OverBudgetMethodsKeepTheirExecutableInput()
+    {
+        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32);
+        body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        var original = body.Definition.ILBody = ILGenerator.GenerateCode(body);
+        body.Definition.Body = null;
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { MaxMethodInstructions = 1 });
+
+        var result = CompilationPipeline.CreateDefault(compilation).Run([body.Definition]);
+        Assert.Equal(MethodCompilationStatus.Unsupported, Assert.Single(result.Methods).Status);
+        Assert.Same(original, body.Definition.ILBody);
+        Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
+    public void RuntimeAsyncBodiesAreRetainedWithoutImportingTheirLogicalReturns()
+    {
+        var body = Utils.CreateTestMethod(fixture.Resolver, fixture.Resolver.Import(typeof(Task)));
+        var method = body.Definition;
+        method.ImplAttribs |= (MethodImplAttributes)0x2000;
+        var assembler = new ILAssembler();
+        assembler.Emit(ILCode.Ret);
+        var original = method.ILBody = assembler.Assemble(null);
+        method.Body = null;
+        var compilation = new Compilation(method.Module, new VoidLogger(), new());
+
+        var result = CompilationPipeline.CreateDefault(compilation).Run([method]);
+        Assert.True(result.Succeeded);
+        Assert.Equal(MethodCompilationStatus.Unchanged, Assert.Single(result.Methods).Status);
+        Assert.Same(original, method.ILBody);
+        Assert.Null(method.Body);
+        Assert.Equal(InlineRejectReason.Ineligible, compilation.GetAnalysis<InliningAdvisor>().EarlyCheck(method));
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

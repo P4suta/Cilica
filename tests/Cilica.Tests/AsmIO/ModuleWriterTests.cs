@@ -11,6 +11,54 @@ using Cilica.Util;
 [Collection("ModuleResolver")]
 public class ModuleWriterTests(ModuleResolverFixture fixture)
 {
+    [Fact]
+    public void VarArgDefinitionsAndCallSiteSentinelsRoundTrip()
+    {
+        using var directory = new TemporaryDirectory();
+        var module = CreateModule();
+        var owner = module.TypeDefs.Single(type => type.Name == "TestMethods");
+        var target = owner.CreateMethod("VarArgTarget", PrimType.Int32, [new ParamDef(PrimType.Int32, "fixedArg")],
+            System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static);
+        target.CallConv = CallConvention.VarArgs;
+        var il = new ILAssembler();
+        il.Emit(ILCode.Ldarg_0);
+        il.Emit(ILCode.Ret);
+        target.ILBody = il.Assemble(null);
+        var signature = new MethodSig(PrimType.Int32, [PrimType.Int32, PrimType.String],
+            new SignatureHeader(SignatureKind.Method, SignatureCallingConvention.VarArgs, 0), requiredParameterCount: 1);
+        var reference = new MethodReference(target, target.Name, signature);
+        var genericSite = new MethodReference(target, target.Name, new MethodSig(PrimType.Int32,
+            [PrimType.Int32, GenericParamType.GetUnboundM(0)], signature.Header, requiredParameterCount: 1));
+        var specializedSite = Assert.IsType<MethodReference>(genericSite.GetSpec(new GenericContext(methodArgs: [PrimType.String])));
+        Assert.Equal(PrimType.String, specializedSite.Signature.ParamTypes[1].Type);
+        var caller = owner.FindMethod("Run") as MethodDef;
+        il = new ILAssembler();
+        il.EmitLdcI4(42);
+        il.Emit(ILCode.Ldstr, "optional");
+        il.Emit(ILCode.Call, reference);
+        il.Emit(ILCode.Ret);
+        caller!.ILBody = il.Assemble(null);
+        caller.Body = null;
+        string path = Path.Combine(directory.Path, "varargs.dll");
+        module.Save(path, false);
+
+        for (int pass = 0; pass < 2; pass++) {
+            using var resolver = new ModuleResolver();
+            resolver.AddTrustedSearchPaths();
+            var loaded = resolver.Load(path);
+            var loadedTarget = loaded.MethodDefs().Single(method => method.Name == target.Name);
+            Assert.Equal(CallConvention.VarArgs, loadedTarget.CallConv);
+            var call = loaded.MethodDefs().Single(method => method.Name == "Run").ILBody!.Instructions.Single(inst => inst.OpCode == ILCode.Call);
+            var site = Assert.IsType<MethodReference>(call.Operand);
+            Assert.Same(loadedTarget, site.Parent);
+            Assert.Equal(1, site.Signature.RequiredParameterCount);
+            Assert.Equal(2, site.ParamSig.Count);
+            string next = Path.Combine(directory.Path, "pass" + pass + ".dll");
+            loaded.Save(next, false);
+            path = next;
+        }
+    }
+
     ModuleDef CreateModule(bool symbols = false)
     {
         var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32);

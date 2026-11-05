@@ -2,6 +2,25 @@ namespace Cilica.IR;
 
 public abstract class CilIntrinsic : IntrinsicInst
 {
+    /// <summary> Retrieves the enclosing vararg method's argument-list handle. </summary>
+    public class ArgList(ModuleResolver resolver) : CilIntrinsic(resolver.Import(typeof(RuntimeArgumentHandle)), [])
+    {
+        public override ILCode Opcode => ILCode.Arglist;
+    }
+
+    /// <summary> Pairs a managed reference with its runtime element type. </summary>
+    public class MkRefAny(TypeDesc type, Value address) : CilIntrinsic(PrimType.TypedRef, [type], [address])
+    {
+        public override ILCode Opcode => ILCode.Mkrefany;
+    }
+
+    /// <summary> Extracts a managed reference, checking the stored runtime type. </summary>
+    public class RefAnyVal(TypeDesc type, Value value) : CilIntrinsic(type.CreateByref(), [type], [value])
+    {
+        public override ILCode Opcode => ILCode.Refanyval;
+        public override bool MayThrow => true;
+    }
+
     /// <summary> Retrieves the runtime type handle carried by a typed reference. </summary>
     public class RefAnyType(ModuleResolver resolver, Value value) : CilIntrinsic(resolver.SysTypes.RuntimeTypeHandle, [value])
     {

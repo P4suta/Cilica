@@ -16,6 +16,31 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void InliningPreservesTailCallBoundaries(bool callerTail)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var owner = body.Definition.DeclaringType;
+        var leaf = owner.CreateMethod("Leaf", PrimType.Int32, [], MethodAttributes.Public | MethodAttributes.Static);
+        leaf.ImplAttribs |= MethodImplAttributes.NoInlining;
+        leaf.Body = new MethodBody(leaf);
+        leaf.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        var target = owner.CreateMethod("Forward", PrimType.Int32, [], MethodAttributes.Public | MethodAttributes.Static);
+        target.Body = new MethodBody(target);
+        var tb = new IRBuilder(target.Body.CreateBlock());
+        var forwarded = tb.Emit(new CallInst(leaf, []) { IsTailCall = !callerTail });
+        tb.CreateReturn(forwarded);
+        var ib = new IRBuilder(body.CreateBlock());
+        var call = ib.Emit(new CallInst(target, []) { IsTailCall = callerTail });
+        ib.CreateReturn(callerTail ? call : ib.CreateAdd(call, ConstInt.CreateI(1)));
+
+        Run(body, new InlineMethods());
+        Assert.Contains(call, body.Instructions());
+        Assert.Equal(callerTail ? 42 : 43, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void PublicGenericCallsAccountForNonPublicTypeArguments(bool nested)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Bool);

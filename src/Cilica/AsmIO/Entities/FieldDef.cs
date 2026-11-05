@@ -69,8 +69,9 @@ public class FieldDef : FieldDefOrSpec
     public int LayoutOffset { get; set; }
     public bool HasLayoutOffset => (DeclaringType.Attribs & TypeAttributes.ExplicitLayout) != 0;
 
-    /// <summary> Static data associated with the field. Attribs must have HasFieldRVA, and array length must be equal to the type layout size. </summary>
+    /// <summary> Static field data. Imported fields with an unspecified layout retain the remaining source data; new fields should supply their exact storage size. </summary>
     public byte[]? MappedData { get; set; }
+    internal int _originalRva, _originalDataSize;
 
     public byte[]? MarshallingDesc { get; set; }
 

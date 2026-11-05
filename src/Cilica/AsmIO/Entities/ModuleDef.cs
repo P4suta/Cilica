@@ -145,6 +145,11 @@ public class ModuleDef : EntityDesc
     /// <summary> Atomically writes the module with explicit signing and native-code removal options. </summary>
     public void Save(string path, bool savePdb, ModuleWriteOptions options, string? backupPath = null)
     {
+        if (savePdb && GetDebugSymbols() == null && _loader is { } loader &&
+            File.Exists(Path.ChangeExtension(loader._path, ".pdb")) && loader._pe.ReadDebugDirectory().Any(entry =>
+                entry.Type == System.Reflection.PortableExecutable.DebugDirectoryEntryType.CodeView && !entry.IsPortableCodeView)) {
+            throw new NotSupportedException("Native PDB symbols cannot be rewritten; retain the input assembly or explicitly discard symbols");
+        }
         using var output = new AtomicOutput();
         string pdbPath = Path.ChangeExtension(path, ".pdb");
         var pdbStream = savePdb && GetDebugSymbols() != null

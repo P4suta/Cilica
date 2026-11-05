@@ -12,6 +12,7 @@ public readonly struct MethodSig : IPrintable, IEquatable<MethodSig>
     public IReadOnlyList<TypeSig> ParamTypes { get; }
 
     public int NumGenericParams { get; }
+    public int RequiredParameterCount { get; }
 
     public bool? IsInstance => (_header.RawValue & (byte)kMaybeInstance) != 0 ? null : _header.IsInstance;
     public bool IsGeneric => _header.IsGeneric;
@@ -30,6 +31,7 @@ public readonly struct MethodSig : IPrintable, IEquatable<MethodSig>
         ReturnType = retType;
         ParamTypes = paramTypes;
         NumGenericParams = numGenPars;
+        RequiredParameterCount = paramTypes.Count;
         
         var attrs = isInstance == null ? kMaybeInstance : 
                     isInstance.Value ? SignatureAttributes.Instance : 
@@ -39,11 +41,13 @@ public readonly struct MethodSig : IPrintable, IEquatable<MethodSig>
     }
 
     /// <remarks> Note that <paramref name="paramTypes"/> should not include the instance type (<see langword="this"/> parameter). </remarks>
-    public MethodSig(TypeSig retType, IReadOnlyList<TypeSig> paramTypes, SignatureHeader header, int numGenPars = 0)
+    public MethodSig(TypeSig retType, IReadOnlyList<TypeSig> paramTypes, SignatureHeader header, int numGenPars = 0, int requiredParameterCount = -1)
     {
         ReturnType = retType;
         ParamTypes = paramTypes;
         NumGenericParams = numGenPars;
+        RequiredParameterCount = requiredParameterCount < 0 ? paramTypes.Count : requiredParameterCount;
+        Ensure.That(RequiredParameterCount <= paramTypes.Count);
         _header = header;
         Ensure.That(!header.Attributes.HasFlag(kMaybeInstance));
     }
@@ -52,16 +56,17 @@ public readonly struct MethodSig : IPrintable, IEquatable<MethodSig>
     {
         return method.GenericParams.Count == NumGenericParams &&
             (IsInstance == null || IsInstance == method.IsInstance) &&
+            CallConv == method.CallConv &&
             method.ReturnSig == ReturnType &&
             CompareParams(method);
     }
 
     public MethodSig GetSpec(GenericContext context)
-        => new(ReturnType.GetSpec(context), ParamTypes.Select(p => p.GetSpec(context)).ToArray(), _header, NumGenericParams);
+        => new(ReturnType.GetSpec(context), ParamTypes.Select(p => p.GetSpec(context)).ToArray(), _header, NumGenericParams, RequiredParameterCount);
 
     public bool Equals(MethodSig other)
         => IsNull || other.IsNull ? IsNull && other.IsNull :
-            _header == other._header && NumGenericParams == other.NumGenericParams &&
+            _header == other._header && NumGenericParams == other.NumGenericParams && RequiredParameterCount == other.RequiredParameterCount &&
             ReturnType == other.ReturnType && ParamTypes.SequenceEqual(other.ParamTypes);
 
     public override bool Equals(object? other) => other is MethodSig signature && Equals(signature);
@@ -72,6 +77,7 @@ public readonly struct MethodSig : IPrintable, IEquatable<MethodSig>
         var hash = new HashCode();
         hash.Add(_header);
         hash.Add(NumGenericParams);
+        hash.Add(RequiredParameterCount);
         hash.Add(ReturnType);
         foreach (var parameter in ParamTypes) hash.Add(parameter);
         return hash.ToHashCode();
@@ -82,10 +88,11 @@ public readonly struct MethodSig : IPrintable, IEquatable<MethodSig>
         var pars1 = method.ParamSig;
         int offset = method.IsInstance ? 1 : 0;
 
-        if ((pars1.Count - offset) != ParamTypes.Count) {
+        int count = CallConv == CallConvention.VarArgs ? RequiredParameterCount : ParamTypes.Count;
+        if ((pars1.Count - offset) != count) {
             return false;
         }
-        for (int i = 0; i < ParamTypes.Count; i++) {
+        for (int i = 0; i < count; i++) {
             var type1 = pars1[i + offset];
             if (type1 != ParamTypes[i]) {
                 return false;
