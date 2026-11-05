@@ -44,7 +44,7 @@ internal sealed class InnerLoopVectorizer
 
         if (vectorizer.BuildMappings(reportLogger) && vectorizer.CheckElementWidth(reportLogger)) {
             vectorizer.EmitVectorizedLoop(boundsChecks);
-            reportLogger?.Trace($"Vectorized loop: {256 / vectorizer._elemBitWidth} lanes (256-bit), {128 / vectorizer._elemBitWidth} lanes (128-bit), {vectorizer._reductionPhis.Count} reductions, {boundsChecks.Count} guarded arrays.");
+            reportLogger?.Trace($"Vectorized loop {loop.Header}: {vectorizer._elemBitWidth} bits element width, {vectorizer._reductionPhis.Count} reductions, {boundsChecks.Count} guarded arrays.");
 
             return true;
         }
@@ -68,19 +68,19 @@ internal sealed class InnerLoopVectorizer
             }
 
             if (phi.GetValue(_bodyBlock) is not Instruction iterOut || iterOut.Block != _bodyBlock) {
-                logger?.Trace($"Loop vectorization declined: reduction {phi} is not updated in the body block.");
+                logger?.Trace($"Loop {_loop.Header} vectorization declined: reduction {phi} is not updated in the body block.");
                 return false;
             }
 
             if (phi.Users().Any(u => _loop.Contains(u.Block) && u != iterOut)) {
-                logger?.Trace($"Loop vectorization declined: reduction {phi} is used outside its update.");
+                logger?.Trace($"Loop {_loop.Header} vectorization declined: reduction {phi} is used outside its update.");
                 return false;
             }
 
             var op = _trans.GetVectorOp(iterOut).Op;
 
             if (!IsSupportedReductionOp(op)) {
-                logger?.Trace($"Loop vectorization declined: unsupported reduction operation {iterOut}.");
+                logger?.Trace($"Loop {_loop.Header} vectorization declined: unsupported reduction operation {iterOut}.");
                 return false;
             }
 
@@ -100,7 +100,7 @@ internal sealed class InnerLoopVectorizer
                 }
                 case PtrOffsetInst addr: {
                     if ((!_loop.IsInvariant(addr.BasePtr) || addr.Index != _loop.Counter) && addr.BasePtr is not PhiInst) {
-                        logger?.Trace($"Loop vectorization declined: unsupported pointer addressing '{addr}'.");
+                        logger?.Trace($"Loop {_loop.Header} vectorization declined: unsupported pointer addressing '{addr}'.");
 
                         return false;
                     }
@@ -110,7 +110,7 @@ internal sealed class InnerLoopVectorizer
                 }
                 case MemoryInst acc: {
                     if (!VectorShape.IsSupportedElemType(acc.ElemType)) {
-                        logger?.Trace($"Loop vectorization declined: unsupported memory access type '{acc.ElemType}'.");
+                        logger?.Trace($"Loop {_loop.Header} vectorization declined: unsupported memory access type '{acc.ElemType}'.");
 
                         return false;
                     }
@@ -130,7 +130,7 @@ internal sealed class InnerLoopVectorizer
                     var (op, elemType) = _trans.GetVectorOp(inst);
 
                     if (op == VectorOp.Invalid) {
-                        logger?.Trace($"Loop vectorization declined: unsupported instruction '{inst}'.");
+                        logger?.Trace($"Loop {_loop.Header} vectorization declined: unsupported instruction '{inst}'.");
 
                         return false;
                     }
@@ -139,13 +139,13 @@ internal sealed class InnerLoopVectorizer
                         elemType = GetConditionalElemType(inst);
 
                         if (elemType == TypeKind.Void) {
-                            logger?.Trace($"Loop vectorization declined: conditional operands have incompatible element widths at {inst}.");
+                            logger?.Trace($"Loop {_loop.Header} vectorization declined: conditional operands have incompatible element widths at {inst}.");
 
                             return false;
                         }
 
                         if (!inst.Users().All(u => IsSupportedConditionalUse(u, elemType))) {
-                            logger?.Trace($"Loop vectorization declined: unsupported use of boolean result {inst}.");
+                            logger?.Trace($"Loop {_loop.Header} vectorization declined: unsupported use of boolean result {inst}.");
 
                             return false;
                         }
@@ -186,7 +186,7 @@ internal sealed class InnerLoopVectorizer
             if (commonElemSize == 0) {
                 commonElemSize = size;
             } else if (commonElemSize != size) {
-                logger?.Trace($"Loop vectorization declined: mixed element widths ({commonElemSize} and {size} bits).");
+                logger?.Trace($"Loop {_loop.Header} vectorization declined: mixed element widths ({commonElemSize} and {size} bits).");
                 return false;
             }
         }
