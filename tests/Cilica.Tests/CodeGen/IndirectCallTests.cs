@@ -8,11 +8,32 @@ using Cilica.CodeGen.Cil;
 using Cilica.Frontend;
 using Cilica.IR;
 using Cilica.IR.Utils;
+using Cilica.Passes;
 using MethodBody = Cilica.IR.MethodBody;
 
 [Collection("ModuleResolver")]
 public class IndirectCallTests(ModuleResolverFixture fixture)
 {
+    [Fact]
+    public void BoxedVirtualFunctionPointersKeepTheirUnboxingStub()
+    {
+        var type = fixture.Resolver.Import(typeof(Cilica.Tests.Passes.InlineMethodsTests.Counter));
+        var method = fixture.Resolver.Import(typeof(Cilica.Tests.Passes.InlineMethodsTests.ICounter)).FindMethod("Next");
+        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        var local = body.CreateVar(type);
+        builder.CreateInitObj(local);
+        var box = builder.Emit(new CilIntrinsic.Box(type, builder.CreateLoad(local)));
+        var address = builder.Emit(new FuncAddrInst(method, box));
+        var signature = new FuncPtrType(new MethodSig(PrimType.Int32, [], isInstance: true));
+        builder.CreateReturn(builder.Emit(new CilIntrinsic.CallIndirect(signature, address, [box])));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { VerifyEachPass = true });
+        PassRunner.Run(new Devirtualize(), new MethodTransformContext(compilation, body));
+        Assert.Contains(address, body.Instructions());
+        Assert.True(address.IsVirtual);
+        Assert.Equal(1, Utils.Compile<Func<int>>(body)());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

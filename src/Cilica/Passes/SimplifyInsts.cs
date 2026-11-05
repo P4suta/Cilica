@@ -9,6 +9,8 @@ using Cmp = IR.CompareOp;
 public partial class SimplifyInsts : IMethodPass
 {
     readonly TypeDefOrSpec t_Delegate, t_DictionaryOfTT;
+    // The inliner uses this to retain recursion ancestry through call rewrites.
+    internal Action<CallInst, CallInst>? OnCallReplaced { get; init; }
 
     public SimplifyInsts(ModuleResolver resolver)
     {

@@ -28,7 +28,7 @@ public class DevirtTests
         Assert.Equal(100, dfn.Invoke());
 
         // CHECK-NOT: newobj Func`1
-        // CHECK: callvirt DevirtTests+Deriv1::Foo
+        // CHECK: call DevirtTests+Deriv1::Foo
         // CHECK-NOT: newobj Func`1
         // CHECK: call DevirtTests+Base::Foo
     }

@@ -21,74 +21,87 @@ public class InlineMethods : IMethodPass
     public MethodPassResult Run(MethodTransformContext ctx)
     {
         if (!ctx.Compilation.Settings.EnableInlining) return MethodInvalidations.None;
-        var worklist = new Queue<(CallInst Call, ImmutableArray<MethodDef> Ancestors)>();
-
-        // Find initial calls
-        foreach (var inst in ctx.Method.Instructions()) {
-            if (inst is CallInst call) {
-                worklist.Enqueue((call, [ctx.Definition]));
-            }
-        }
+        long initialRevision = ctx.Method.Revision;
+        var root = ImmutableArray.Create(ctx.Definition);
+        var ancestry = new Dictionary<CallInst, ImmutableArray<MethodDef>>();
+        var worklist = new Queue<CallInst>();
+        EnqueueCalls();
 
         var advisor = ctx.Compilation.GetAnalysis<InliningAdvisor>();
         var ownMetrics = advisor.GetMetrics(ctx.Method).Metrics;
-
-        // Budget should be less than caller cost to avoid code duplication (eg. in forwarding methods).
         int budget = _opts.InitialBudget + (int)(ownMetrics == null ? 0 : ownMetrics.BaseCost * _opts.BudgetFactor);
-        int numChanges = 0;
-        int expandedInstructions = 0;
+        int expansions = 0, expandedInstructions = 0;
+        var devirtualize = new Devirtualize();
+        var simplify = new SimplifyInsts(ctx.Compilation.Resolver) {
+            OnCallReplaced = (previous, replacement) => ancestry[replacement] = ancestry.GetValueOrDefault(previous, root)
+        };
 
-        // Recursive inline
-        while (worklist.TryDequeue(out var item) && budget > 0 && numChanges < _opts.MaxExpansions) {
-            var (call, ancestors) = item;
+        // Keep one budget and each call's ancestry across the whole fixed point.
+        // A new factory result can make a previously rejected consumer inlinable.
+        while (true) {
+            long revision = ctx.Method.Revision;
+            PassRunner.Run(devirtualize, ctx);
 
-            if (call.Block == null || call.IsTailCall || call.IsReadOnly || ancestors.Length >= _opts.MaxDepth) {
-                continue;
+            while (HasBudget() && worklist.TryDequeue(out var call)) {
+                var ancestors = ancestry[call];
+                if (call.Block == null || call.IsTailCall || call.IsReadOnly || ancestors.Length >= _opts.MaxDepth) continue;
+
+                var inlinee = ResolveTarget(ctx, advisor, call);
+                var target = inlinee?.Definition;
+                if (target == null || ancestors.Contains(target)) continue;
+
+                int cost = advisor.EvaluateInliningCost(target.Body!, call.Args);
+                if (cost > _opts.CostThreshold || cost > budget) continue;
+                int instructionCount = target.Body!.Instructions().Count();
+                if (instructionCount > _opts.MaxExpandedInstructions - expandedInstructions) continue;
+
+                expandedInstructions += instructionCount;
+                budget -= Math.Max(cost, -_opts.NegativeCostLimit);
+                expansions++;
+                ctx.Logger.Trace($"Inlining '{target}' into '{ctx.Method}'. RemBudget={budget} Cost={cost}");
+
+                var chain = ancestors.Add(target);
+                var result = Inline(call, inlinee!, call.Args, ctx.Compilation, onNewCall: nested => {
+                    ancestry[nested] = chain;
+                    worklist.Enqueue(nested);
+                });
+                if (result != null) call.ReplaceUses(result);
+                call.Remove();
             }
 
-            var inlinee = ResolveTarget(ctx, advisor, call);
-            var target = inlinee?.Definition;
-
-            if (target == null || ancestors.Contains(target)) {
-                continue;
+            if (ctx.Method.Revision == revision) break;
+            // Expose concrete receivers and delegate targets hidden by the
+            // locals, return phis, and branches introduced by inlining.
+            PassRunner.Run(new SimplifyCFG(), ctx);
+            PassRunner.Run(new SsaPromotion(), ctx);
+            PassRunner.Run(simplify, ctx);
+            PassRunner.Run(new DeadCodeElim(), ctx);
+            if (!HasBudget()) {
+                PassRunner.Run(devirtualize, ctx);
+                break;
             }
-
-            int cost = advisor.EvaluateInliningCost(target.Body!, call.Args);
-            if (cost > _opts.CostThreshold || cost > budget) continue;
-
-            int instructionCount = target.Body!.Instructions().Count();
-
-            if (instructionCount > _opts.MaxExpandedInstructions - expandedInstructions) {
-                continue;
-            }
-
-            expandedInstructions += instructionCount;
-
-            budget -= Math.Max(cost, -_opts.NegativeCostLimit);
-
-            ctx.Logger.Trace($"Inlining '{target}' into '{ctx.Method}'. RemBudget={budget} Cost={cost}");
-
-            var chain = ancestors.Add(target);
-            var result = Inline(call, inlinee!, call.Args, ctx.Compilation,
-                onNewCall: nested => worklist.Enqueue((nested, chain)));
-
-            if (result != null) {
-                call.ReplaceUses(result);
-            }
-            call.Remove();
-            
-            numChanges++;
+            EnqueueCalls();
         }
 
-        if (numChanges > 0) {
-            advisor.InvalidateMetrics(ctx.Method);
-            return MethodInvalidations.Everything;
+        if (ctx.Method.Revision == initialRevision) return MethodInvalidations.None;
+        advisor.InvalidateMetrics(ctx.Method);
+        return MethodInvalidations.Everything;
+
+        bool HasBudget() => budget > 0 && expansions < _opts.MaxExpansions && expandedInstructions < _opts.MaxExpandedInstructions;
+
+        void EnqueueCalls()
+        {
+            worklist.Clear();
+            foreach (var call in ctx.Method.Instructions().OfType<CallInst>()) {
+                ancestry.TryAdd(call, root);
+                worklist.Enqueue(call);
+            }
         }
-        return MethodInvalidations.None;
     }
 
     private static MethodDefOrSpec? ResolveTarget(MethodTransformContext ctx, InliningAdvisor advisor, CallInst call)
     {
+        Devirtualize.TryDevirtualize(ctx, call);
         // Must be a non-recursive MethodDef
         var parent = ctx.Method.Definition;
 
@@ -96,6 +109,7 @@ public class InlineMethods : IMethodPass
             return null;
         }
         var target = inlinee.Definition;
+        if (target.Module != ctx.Compilation.Module && !ctx.Compilation.Settings.AllowCrossAssemblyIPO) return null;
 
         // A constrained receiver is an address. Reference and unresolved
         // generic receivers require dereferencing or boxing before a call;
@@ -113,9 +127,10 @@ public class InlineMethods : IMethodPass
 
         // Known virtual target
         if (call.IsVirtual && target.Attribs.HasFlag(MethodAttributes.Virtual) && !target.Attribs.HasFlag(MethodAttributes.Final)) {
-            if (TypeUtils.ResolveVirtualMethod(call.Method, call.Args[0]) is not MethodDefOrSpec actualTarget || actualTarget == parent) {
+            if (Devirtualize.ResolveTarget(ctx, call) is not MethodDefOrSpec actualTarget || actualTarget == parent) {
                 return null;
             }
+            if (actualTarget.DeclaringType.IsValueType && call.Args[0].ResultType.StackType != StackType.ByRef) return null;
             // CoreLib cannot persist a devirtualization that needs access-check
             // suppression. It can still inline the target if its body is safe.
             if (ctx.Compilation.Module != ctx.Compilation.Resolver.CoreLib ||
@@ -259,12 +274,9 @@ public class InlineMethods : IMethodPass
         {
             var clonedVal = base.CreateClone(inst);
 
-            if (onNewCall != null && clonedVal is CallInst { Method: MethodDefOrSpec method } call) {
-                // Ignore calls to recursive methods to prevent infinite loop.
-                if (method.Definition != target.Definition) {
-                    onNewCall.Invoke(call);
-                }
-            }
+            // Recursive calls also need their ancestry recorded so later
+            // fixed-point rounds cannot mistake them for fresh root calls.
+            if (clonedVal is CallInst call) onNewCall?.Invoke(call);
             return clonedVal;
         }
     }

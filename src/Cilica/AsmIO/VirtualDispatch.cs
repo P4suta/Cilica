@@ -2,129 +2,212 @@ namespace Cilica.AsmIO;
 
 using System.Reflection;
 
-/// <summary> Resolves class slots and class implementations of interface methods. </summary>
+/// <summary> Resolves class slots and exact interface implementations without runtime lookups. </summary>
 internal static class VirtualDispatch
 {
+    readonly record struct MethodKey(MethodDef Definition, TypeDefOrSpec Owner);
+    sealed class Slot(MethodDefOrSpec implementation)
+    {
+        public MethodDefOrSpec Implementation = implementation;
+        public bool PreserveBaseOverrides;
+    }
+
     public static MethodDesc? Resolve(MethodDesc method, TypeDefOrSpec actualType)
     {
-        if (method is not MethodDefOrSpec requested || method.IsStatic || !actualType.Inherits(method.DeclaringType)) {
-            return null;
-        }
-        // Open instantiations may collapse distinct interface implementations
-        // onto the same runtime slot once their arguments are substituted.
-        if (requested.DeclaringType.IsInterface && actualType.IsUnboundGeneric) return null;
+        var requested = DefinitionOf(method);
+        if (requested == null || !actualType.Inherits(method.DeclaringType) || !method.IsStatic && actualType.IsInterface) return null;
+        var resolver = new Resolver(requested.GenericParams, actualType);
+        return resolver.Resolve(requested);
+    }
 
-        var hierarchy = new List<TypeDefOrSpec>();
+    // A class MethodImpl can redirect a nonvirtual call as well. Resolve only
+    // in the declaring type here, not in the receiver's more-derived type.
+    public static MethodDesc? ResolveDirect(MethodDefOrSpec method)
+        => method.IsStatic || !method.Attribs.HasFlag(MethodAttributes.Virtual) || method.DeclaringType.IsInterface
+            ? method : new Resolver(method.GenericParams, method.DeclaringType).Resolve(method);
 
-        for (TypeDefOrSpec? type = actualType; type != null; type = type.BaseType) {
-            hierarchy.Add(type);
-        }
+    public static bool SameMethod(MethodDesc? a, MethodDesc? b)
+        => a is MethodDefOrSpec x && b is MethodDefOrSpec y && Key(x) == Key(y) &&
+           x.GenericParams.SequenceEqual(y.GenericParams);
 
-        hierarchy.Reverse();
-        // Class MethodImpl records can redirect several slots, with different
-        // propagation rules for PreserveBaseOverrides. Leave these to the CLR.
-        if (!requested.DeclaringType.IsInterface && hierarchy.Any(type => type.Definition.MethodImpls.Keys.Any(
-            declaration => !declaration.DeclaringType.IsInterface))) return null;
+    static MethodKey Key(MethodDefOrSpec method)
+        => new(method.Definition, Normalize(method.DeclaringType));
 
-        if (requested.DeclaringType.IsInterface) {
-            var interfaces = hierarchy.SelectMany(ImplementedInterfaces).Distinct().ToArray();
-            if (!interfaces.Contains(requested.DeclaringType)) {
-                var compatible = interfaces.Where(candidate => candidate.Definition == requested.DeclaringType.Definition &&
-                    candidate.IsAssignableTo(requested.DeclaringType)).ToArray();
-                if (compatible.Length != 1) return null;
-                var target = requested.Definition.GetSpec(new GenericContext(compatible[0].GenericParams, requested.GenericParams));
-                return Resolve(target, actualType);
+    static TypeDefOrSpec Normalize(TypeDefOrSpec type)
+        => type is TypeDef ? (TypeDefOrSpec)type.GetUnboundSpec() : type;
+
+    static MethodDefOrSpec? DefinitionOf(MethodDesc method)
+        => method as MethodDefOrSpec ?? (method as MethodReference)?.Target as MethodDefOrSpec;
+
+    sealed class Resolver(IReadOnlyList<TypeDesc> methodArguments, TypeDefOrSpec actualType)
+    {
+        readonly List<TypeDefOrSpec> _hierarchy = BuildHierarchy(actualType);
+        readonly List<Slot> _slots = new();
+        readonly Dictionary<MethodKey, int> _methodSlots = new();
+        readonly HashSet<MethodKey> _methodImplBodies = new();
+
+        MethodDefOrSpec Bind(MethodDef method, TypeDefOrSpec owner)
+            => method.GetSpec(new GenericContext(owner.GenericParams, methodArguments));
+
+        public MethodDesc? Resolve(MethodDefOrSpec requested)
+        {
+            if (!requested.IsStatic && !BuildClassSlots()) return null;
+            MethodDesc? result;
+            if (requested.DeclaringType.IsInterface) {
+                result = ResolveInterface(requested);
+            } else {
+                result = _methodSlots.TryGetValue(Key(requested), out int slot) ? _slots[slot].Implementation : null;
             }
+            return result?.Attribs.HasFlag(MethodAttributes.Abstract) == false ? result : null;
         }
 
-        var roots = new Dictionary<MethodDef, MethodDef>();
-        var implementations = new Dictionary<MethodDef, MethodDesc>();
-        var declarations = new List<MethodDefOrSpec>();
-        MethodDesc? interfaceImpl = null;
-        int interfaceOwnerIndex = -1;
-
-        for (int index = 0; index < hierarchy.Count; index++) {
-            var type = hierarchy[index];
-            var context = new GenericContext(type.GenericParams, method.GenericParams);
-
-            foreach (var definition in type.Definition.Methods) {
-                if (definition.Name != method.Name || definition.GenericParams.Length != method.GenericParams.Count ||
-                    !definition.Attribs.HasFlag(MethodAttributes.Virtual)) {
-                    continue;
-                }
-
-                var member = definition.GetSpec(context);
-                var overridden = definition.Attribs.HasFlag(MethodAttributes.NewSlot) ? null
-                    : declarations.LastOrDefault(candidate => SameSignature(member, candidate));
-                var root = overridden == null ? definition : roots[overridden.Definition];
-                roots[definition] = root;
-                implementations[root] = member;
-                declarations.Add(member);
-            }
-
-            bool explicitInterface = false;
-            int explicitMatches = 0;
-
-            foreach (var (declaration, definition) in type.Definition.MethodImpls) {
-                var boundDeclaration = declaration.GetSpec(context);
-                var implementation = definition.GetSpec(context);
-
-                if (SameMethod(boundDeclaration, requested) && requested.DeclaringType.IsInterface) {
-                    if (++explicitMatches > 1) return null;
-                    interfaceImpl = implementation;
-                    explicitInterface = true;
-                    interfaceOwnerIndex = index;
-                }
-
-                if (boundDeclaration is MethodDefOrSpec target && roots.TryGetValue(target.Definition, out var root)) {
-                    implementations[root] = implementation;
-                    roots[definition] = root;
-                }
-            }
-
-            if (requested.DeclaringType.IsInterface && !explicitInterface &&
-                ImplementedInterfaces(type).Contains(requested.DeclaringType)) {
-                MethodDesc? match = null;
-
-                // Preserve inherited explicit maps unless a newer class
-                // supplies a replacement. Searching behind their owner can
-                // incorrectly resurrect an older public implementation.
-                for (int parentIndex = index; parentIndex > interfaceOwnerIndex && match == null; parentIndex--) {
-                    var parent = hierarchy[parentIndex];
-
-                    foreach (var definition in parent.Definition.Methods) {
-                        if (!definition.IsPublic || definition.IsStatic || definition.Name != method.Name ||
-                            definition.GenericParams.Length != method.GenericParams.Count) {
-                            continue;
-                        }
-
-                        var member = definition.GetSpec(new GenericContext(parent.GenericParams, method.GenericParams));
-
-                        if (SameSignature(member, requested)) {
-                            if (match != null) return null;
-                            match = member;
+        bool BuildClassSlots()
+        {
+            for (int depth = 0; depth < _hierarchy.Count; depth++) {
+                var owner = _hierarchy[depth];
+                var previous = _slots.Select(slot => slot.Implementation).ToArray();
+                var changed = new HashSet<int>();
+                foreach (var definition in owner.Definition.Methods) {
+                    if (definition.IsStatic || !definition.Attribs.HasFlag(MethodAttributes.Virtual) ||
+                        definition.GenericParams.Length != methodArguments.Count) continue;
+                    var member = Bind(definition, owner);
+                    int slot = -1;
+                    if (!definition.Attribs.HasFlag(MethodAttributes.NewSlot)) {
+                        for (int parent = depth - 1; parent >= 0 && slot < 0; parent--) {
+                            foreach (var candidate in _hierarchy[parent].Definition.Methods) {
+                                if (candidate.IsStatic || !candidate.Attribs.HasFlag(MethodAttributes.Virtual) ||
+                                    candidate.GenericParams.Length != methodArguments.Count) continue;
+                                var bound = Bind(candidate, _hierarchy[parent]);
+                                if (!SameSignature(member, bound)) continue;
+                                int match = _methodSlots[Key(bound)];
+                                if (slot >= 0 && slot != match) return false;
+                                slot = match;
+                            }
                         }
                     }
+                    if (slot < 0) { slot = _slots.Count; _slots.Add(new Slot(member)); }
+                    else { _slots[slot].Implementation = member; changed.Add(slot); }
+                    _methodSlots.Add(Key(member), slot);
                 }
 
-                interfaceImpl = match ?? interfaceImpl;
-                if (interfaceImpl != null) interfaceOwnerIndex = index;
+                var context = new GenericContext(owner.GenericParams, methodArguments);
+                foreach (var (declaration, body) in owner.Definition.MethodImpls) {
+                    if (body.IsStatic || body.GenericParams.Length != methodArguments.Count) continue;
+                    var implementation = Bind(body, owner);
+                    _methodImplBodies.Add(Key(implementation));
+                    if (declaration.DeclaringType.IsInterface) continue;
+                    var target = ResolveDeclaration(declaration.GetSpec(context));
+                    if (target == null || !_methodSlots.TryGetValue(Key(target), out int slot)) return false;
+                    _slots[slot].Implementation = implementation;
+                    changed.Add(slot);
+                }
+
+                // Inherited aliases follow overrides of their implementation's
+                // own slot, unless this class explicitly replaced the alias.
+                for (int slot = 0; slot < previous.Length; slot++) {
+                    if (!changed.Contains(slot) && _methodSlots.TryGetValue(Key(previous[slot]), out int primary) && primary != slot)
+                        _slots[slot].Implementation = _slots[primary].Implementation;
+                }
+
+                // Match ClassLoader::PropagateCovariantReturnMethodImplSlots:
+                // the attribute belongs to a MethodImpl slot and is inherited.
+                for (int slot = 0; slot < _slots.Count; slot++) {
+                    var implementation = _slots[slot].Implementation;
+                    bool methodImpl = _methodImplBodies.Contains(Key(implementation));
+                    _slots[slot].PreserveBaseOverrides |= methodImpl && implementation.Definition.HasCustomAttrib(
+                        "System.Runtime.CompilerServices", "PreserveBaseOverridesAttribute");
+                    if (slot >= previous.Length || !methodImpl || !_slots[slot].PreserveBaseOverrides ||
+                        SameMethod(implementation, previous[slot])) continue;
+                    for (int alias = slot + 1; alias < previous.Length; alias++) {
+                        if (SameMethod(_slots[alias].Implementation, previous[slot]))
+                            _slots[alias].Implementation = implementation;
+                    }
+                }
             }
+            return true;
         }
 
-        MethodDesc? result;
-
-        if (requested.DeclaringType.IsInterface) {
-            result = interfaceImpl;
-
-            if (result is MethodDefOrSpec impl && roots.TryGetValue(impl.Definition, out var slot)) {
-                result = implementations[slot];
+        MethodDefOrSpec? ResolveDeclaration(MethodDesc method)
+        {
+            if (DefinitionOf(method) is { } definition) return definition;
+            // MemberRefs on an intermediate generic base use that type's
+            // parameter context. Search instantiated signatures, retaining
+            // ambiguity rather than choosing a declaration by metadata order.
+            for (var owner = method.DeclaringType as TypeDefOrSpec; owner != null; owner = owner.BaseType) {
+                var matches = owner.Definition.Methods.Where(candidate => candidate.GenericParams.Length == methodArguments.Count)
+                    .Select(candidate => Bind(candidate, owner)).Where(candidate => SameSignature(candidate, method)).ToArray();
+                if (matches.Length != 0) return matches.Length == 1 ? matches[0] : null;
             }
-        } else {
-            result = roots.TryGetValue(requested.Definition, out var slot) ? implementations[slot] : null;
+            return null;
         }
 
-        return result?.Attribs.HasFlag(MethodAttributes.Abstract) == false ? result : null;
+        MethodDesc? ResolveInterface(MethodDefOrSpec requested)
+        {
+            var interfaces = _hierarchy.SelectMany(ImplementedInterfaces)
+                .Concat(actualType.IsInterface ? [actualType] : Array.Empty<TypeDefOrSpec>()).Distinct().ToArray();
+            var alternatives = interfaces.Where(itf => itf.Definition == requested.DeclaringType.Definition).ToArray();
+            // Distinct open interfaces can collapse after substitution. An
+            // otherwise unique exact map is stable across generic instantiations.
+            if (actualType.IsUnboundGeneric && alternatives.Any(itf => itf != requested.DeclaringType &&
+                (itf.IsUnboundGeneric || requested.DeclaringType.IsUnboundGeneric))) return null;
+            if (!interfaces.Contains(requested.DeclaringType)) {
+                var compatible = alternatives.Where(itf => itf.IsAssignableTo(requested.DeclaringType)).ToArray();
+                if (compatible.Length != 1) return null;
+                requested = requested.Definition.GetSpec(new GenericContext(compatible[0].GenericParams, methodArguments));
+            }
+
+            MethodDefOrSpec? implementation = null;
+            int interfaceOwner = -1;
+            for (int depth = 0; depth < _hierarchy.Count; depth++) {
+                var owner = _hierarchy[depth];
+                var context = new GenericContext(owner.GenericParams, methodArguments);
+                var explicitMatches = owner.Definition.MethodImpls.Where(pair => SameMethod(
+                    ResolveDeclaration(pair.Key.GetSpec(context)), requested)).Select(pair => Bind(pair.Value, owner)).ToArray();
+                if (explicitMatches.Length > 1) return null;
+                if (explicitMatches.Length == 1) {
+                    implementation = explicitMatches[0]; interfaceOwner = depth;
+                } else if (!requested.IsStatic && (ImplementedInterfaces(owner).Contains(requested.DeclaringType) ||
+                    implementation == null && depth > 0 && _hierarchy[depth - 1].Attribs.HasFlag(TypeAttributes.Abstract) &&
+                    _hierarchy.Take(depth).SelectMany(ImplementedInterfaces).Contains(requested.DeclaringType))) {
+                    for (int parent = depth; parent > interfaceOwner; parent--) {
+                        var matches = _hierarchy[parent].Definition.Methods.Where(candidate => candidate.IsPublic && !candidate.IsStatic &&
+                            candidate.Attribs.HasFlag(MethodAttributes.Virtual) &&
+                            candidate.GenericParams.Length == methodArguments.Count)
+                            .Select(candidate => Bind(candidate, _hierarchy[parent])).Where(candidate => SameSignature(candidate, requested)).ToArray();
+                        if (matches.Length > 1) return null;
+                        if (matches.Length == 1) { implementation = matches[0]; interfaceOwner = depth; break; }
+                    }
+                }
+            }
+            if (implementation != null) {
+                return _methodSlots.TryGetValue(Key(implementation), out int slot) ? _slots[slot].Implementation : implementation;
+            }
+            return ResolveDefaultInterface(requested, interfaces);
+        }
+
+        MethodDesc? ResolveDefaultInterface(MethodDefOrSpec requested, TypeDefOrSpec[] interfaces)
+        {
+            var candidates = new List<(TypeDefOrSpec Owner, MethodDefOrSpec Method)>();
+            if (!requested.Attribs.HasFlag(MethodAttributes.Abstract)) candidates.Add((requested.DeclaringType, requested));
+            foreach (var itf in interfaces) {
+                var context = new GenericContext(itf.GenericParams, methodArguments);
+                foreach (var (declaration, body) in itf.Definition.MethodImpls) {
+                    if (SameMethod(ResolveDeclaration(declaration.GetSpec(context)), requested)) candidates.Add((itf, Bind(body, itf)));
+                }
+            }
+            var mostSpecific = candidates.Where(candidate => !candidates.Any(other => other.Owner != candidate.Owner &&
+                ImplementedInterfaces(other.Owner).Contains(candidate.Owner))).ToArray();
+            return mostSpecific.Length == 1 ? mostSpecific[0].Method : null;
+        }
+    }
+
+    static List<TypeDefOrSpec> BuildHierarchy(TypeDefOrSpec type)
+    {
+        var result = new List<TypeDefOrSpec>();
+        for (var current = type; current != null; current = current.BaseType)
+            result.Add(Normalize(current));
+        result.Reverse();
+        return result;
     }
 
     static IEnumerable<TypeDefOrSpec> ImplementedInterfaces(TypeDefOrSpec type)
@@ -138,11 +221,8 @@ internal static class VirtualDispatch
         }
     }
 
-    static bool SameMethod(MethodDesc a, MethodDefOrSpec b)
-        => a is MethodDefOrSpec definition && definition.Definition == b.Definition &&
-           a.DeclaringType == b.DeclaringType && a.GenericParams.SequenceEqual(b.GenericParams);
-
     static bool SameSignature(MethodDesc a, MethodDesc b)
-        => a.Name == b.Name && a.ReturnSig == b.ReturnSig && a.GenericParams.Count == b.GenericParams.Count &&
-           a.ParamSig.Skip(1).SequenceEqual(b.ParamSig.Skip(1));
+        => a.Name == b.Name && a.IsStatic == b.IsStatic && a.ReturnSig == b.ReturnSig &&
+           a.GenericParams.Count == b.GenericParams.Count &&
+           a.ParamSig.Skip(a.IsInstance ? 1 : 0).SequenceEqual(b.ParamSig.Skip(b.IsInstance ? 1 : 0));
 }

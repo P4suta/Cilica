@@ -140,7 +140,7 @@ public class Compilation
     internal bool CanInlineBody(MethodDef caller, MethodDefOrSpec callee, bool scalarReplacement = false)
     {
         var body = Ensure.NotNull(callee.Definition.Body);
-        if (TypeUtils.HasClassMethodImpls(callee)) return false;
+        if (TypeUtils.HasClassMethodImpls(callee) && !VirtualDispatch.SameMethod(VirtualDispatch.ResolveDirect(callee), callee)) return false;
         if (body.LocalVars().Any(slot => slot.Type is TypeDefOrSpec { IsValueType: false } type &&
             Passes.ScalarReplacement.HasFinalizer(type))) return false;
         bool differentExceptionPolicy = caller.Module != callee.Module && WrapsNonExceptions(caller.Module) != WrapsNonExceptions(callee.Module);

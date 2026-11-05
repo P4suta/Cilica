@@ -27,7 +27,7 @@ partial class SimplifyInsts
     //  BB_Result:
     //    r5 = ldfld Data::Instance -> Data
     //    r25 = call Data::Lambda1(Data: r5, int: r24) -> bool
-    private static bool DevirtualizeLambda(CallInst call)
+    private bool DevirtualizeLambda(CallInst call)
     {
         if (call is not { Method.Name: "Invoke", IsStatic: false, Args: [var lambdaInstance, ..] }) return false;
 
@@ -59,7 +59,7 @@ partial class SimplifyInsts
         }
         return false;
 
-        static bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc, LoadInst? cacheLoad = null)
+        bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc, LoadInst? cacheLoad = null)
         {
             if (alloc is not { Args: [var instanceObj, FuncAddrInst { Method: var method } addr] }) return false;
             if (addr.Constraint != null) return false;
@@ -71,7 +71,9 @@ partial class SimplifyInsts
             if (addr.IsVirtual && addr.Object != instanceObj) return false;
 
             if (instanceObj is ConstNull) {
-                call.ReplaceWith(new CallInst(method, call.Args[1..].ToArray()) { IsTailCall = call.IsTailCall }, insertIfInst: true);
+                var replacement = new CallInst(method, call.Args[1..].ToArray()) { IsTailCall = call.IsTailCall };
+                OnCallReplaced?.Invoke(call, replacement);
+                call.ReplaceWith(replacement, insertIfInst: true);
                 return true;
             } else if (method.IsInstance) {
                 // Cached instance targets must be available on both phi edges.
