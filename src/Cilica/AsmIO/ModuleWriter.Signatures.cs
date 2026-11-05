@@ -121,7 +121,7 @@ partial class ModuleWriter
 
     private BlobHandle EncodeFieldSig(FieldDef field)
     {
-        return EncodeSig(b => EncodeType(b.FieldSignature(), field.Type));
+        return EncodeSig(b => EncodeType(b.FieldSignature(), field.Sig));
     }
 
     private BlobHandle EncodeSig(Action<BlobEncoder> encode)

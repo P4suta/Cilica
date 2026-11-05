@@ -12,6 +12,36 @@ using Cilica.Util;
 public class ModuleWriterTests(ModuleResolverFixture fixture)
 {
     [Theory]
+    [InlineData(true)]
+    [InlineData(false)]
+    public void FieldCustomModifiersRoundTrip(bool required)
+    {
+        using var directory = new TemporaryDirectory();
+        var module = CreateModule();
+        var owner = module.TypeDefs.Single(type => type.Name == "TestMethods");
+        var modifier = module.Resolver.Import(typeof(System.Runtime.CompilerServices.IsVolatile));
+        owner.CreateField("Value", new TypeSig(PrimType.Int32, [new TypeModifier(modifier, required)]),
+            System.Reflection.FieldAttributes.Public | System.Reflection.FieldAttributes.Static);
+        var path = Path.Combine(directory.Path, "fields.dll");
+        module.Save(path, savePdb: false);
+
+        for (int pass = 0; pass < 2; pass++) {
+            var assembly = System.Reflection.Assembly.Load(File.ReadAllBytes(path));
+            var field = assembly.GetType("TestMethods")!.GetField("Value")!;
+            Assert.Equal([typeof(System.Runtime.CompilerServices.IsVolatile)], required
+                ? field.GetRequiredCustomModifiers() : field.GetOptionalCustomModifiers());
+            field.SetValue(null, 42);
+            Assert.Equal(42, field.GetValue(null));
+            using var resolver = new ModuleResolver();
+            resolver.AddTrustedSearchPaths();
+            var rewritten = resolver.Load(path);
+            var next = Path.Combine(directory.Path, "pass" + pass + ".dll");
+            rewritten.Save(next, savePdb: false);
+            path = next;
+        }
+    }
+
+    [Theory]
     [InlineData(null)]
     [InlineData("")]
     [InlineData("result")]
