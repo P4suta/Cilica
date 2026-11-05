@@ -5,7 +5,7 @@ public class Argument : TrackedValue
 {
     public ParamDef Param { get; private set; }
     public int Index { get; }
-    public string Name => Param.Name;
+    public string Name => Param.Name ?? "arg" + Index;
 
     public Argument(ParamDef param, int index)
     {

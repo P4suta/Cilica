@@ -138,7 +138,7 @@ public class MethodDef : MethodDefOrSpec
         GenericParamType[]? genericParams = null)
     {
         DeclaringType = declaringType;
-        ReturnParam = new ParamDef(retSig, "", ParameterAttributes.Retval);
+        ReturnParam = new ParamDef(retSig, null);
         Params = pars;
         Name = name;
         Attribs = attribs;
@@ -298,7 +298,7 @@ public sealed class MethodReference : MethodDesc
 public class ParamDef
 {
     public TypeSig Sig { get; set; }
-    public string Name { get; set; }
+    public string? Name { get; set; }
     public ParameterAttributes Attribs { get; set; }
     public object? DefaultValue { get; set; }
     public byte[]? MarshallingDesc { get; set; }
@@ -307,7 +307,7 @@ public class ParamDef
 
     internal IList<CustomAttrib>? _customAttribs;
 
-    public ParamDef(TypeSig sig, string name, ParameterAttributes attribs = default)
+    public ParamDef(TypeSig sig, string? name, ParameterAttributes attribs = default)
     {
         Sig = sig;
         Name = name;

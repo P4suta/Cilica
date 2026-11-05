@@ -291,6 +291,7 @@ internal partial class ModuleWriter
 
     private void EmitParam(ParamDef par, int index)
     {
+        if (par.Name == null && par.Attribs == 0 && par.GetCustomAttribs().Count == 0) return;
         var handle = _builder.AddParameter(par.Attribs, AddString(par.Name), index);
 
         if (par.Attribs.HasFlag(ParameterAttributes.HasDefault)) {

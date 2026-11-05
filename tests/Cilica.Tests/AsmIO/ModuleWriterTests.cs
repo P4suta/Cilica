@@ -11,6 +11,41 @@ using Cilica.Util;
 [Collection("ModuleResolver")]
 public class ModuleWriterTests(ModuleResolverFixture fixture)
 {
+    [Theory]
+    [InlineData(null)]
+    [InlineData("")]
+    [InlineData("result")]
+    public void ParameterMetadataNamesRoundTrip(string? name)
+    {
+        using var directory = new TemporaryDirectory();
+        var module = CreateModule();
+        var owner = module.TypeDefs.Single(type => type.Name == "TestMethods");
+        var method = owner.CreateMethod("Identity", PrimType.Int32, [new ParamDef(PrimType.Int32, name)],
+            System.Reflection.MethodAttributes.Public | System.Reflection.MethodAttributes.Static);
+        method.ReturnParam.Name = name;
+        var il = new ILAssembler();
+        il.Emit(ILCode.Ldarg_0);
+        il.Emit(ILCode.Ret);
+        method.ILBody = il.Assemble(null);
+        var path = Path.Combine(directory.Path, "parameters.dll");
+        module.Save(path, savePdb: false);
+
+        for (int pass = 0; pass < 2; pass++) {
+            var loaded = System.Reflection.Assembly.Load(File.ReadAllBytes(path));
+            var reflected = loaded.GetType("TestMethods")!.GetMethod("Identity")!;
+            Assert.Equal(name, reflected.ReturnParameter.Name);
+            Assert.Equal(name, reflected.GetParameters()[0].Name);
+            Assert.Equal(System.Reflection.ParameterAttributes.None, reflected.ReturnParameter.Attributes);
+            Assert.Equal(42, reflected.Invoke(null, [42]));
+            using var resolver = new ModuleResolver();
+            resolver.AddTrustedSearchPaths();
+            var rewritten = resolver.Load(path);
+            var next = Path.Combine(directory.Path, "pass" + pass + ".dll");
+            rewritten.Save(next, savePdb: false);
+            path = next;
+        }
+    }
+
     [Fact]
     public void VarArgDefinitionsAndCallSiteSentinelsRoundTrip()
     {

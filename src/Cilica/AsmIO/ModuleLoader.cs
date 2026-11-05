@@ -290,7 +290,7 @@ internal class ModuleLoader
                 pars.Add(new ParamDef(instanceType.IsValueType ? instanceType.CreateByref() : instanceType, "this"));
             }
             for (int i = 0; i < numParams; i++) {
-                pars.Add(new ParamDef(sigDec.DecodeTypeSig(), "", 0));
+                pars.Add(new ParamDef(sigDec.DecodeTypeSig(), null, 0));
             }
 
             var method = new MethodDef(
@@ -328,10 +328,10 @@ internal class ModuleLoader
 
             if (index > 0 && index <= method.Params.Length) {
                 par = method.Params[index - (method.IsStatic ? 1 : 0)]; // we always have a `this` param
-                par.Name = _reader.GetString(parInfo.Name);
             } else {
                 par = method.ReturnParam;
             }
+            par.Name = _reader.GetString(parInfo.Name);
             par.Attribs = parInfo.Attributes;
 
             if (par.Attribs.HasFlag(ParameterAttributes.HasDefault)) {
