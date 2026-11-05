@@ -6,11 +6,11 @@ public class SimplifyCFG : IMethodPass
 {
     public MethodPassResult Run(MethodTransformContext ctx)
     {
-        bool everChanged = false;
         long revision = ctx.Method.Revision;
         int blocksBefore = ctx.Method.NumBlocks;
         int branchesBefore = ctx.Logger.IsEnabled(LogLevel.Trace)
             ? ctx.Method.Instructions().Count(inst => inst is BranchInst or SwitchInst) : 0;
+        bool everChanged = ControlFlowUtils.RemoveUnreachableBlocks(ctx.Method);
 
         // Canonicalization
         everChanged |= SinkReturnsAndJumpThreads(ctx.Compilation, ctx.Method);

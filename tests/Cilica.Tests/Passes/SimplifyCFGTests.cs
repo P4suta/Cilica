@@ -14,6 +14,23 @@ using MethodBody = Cilica.IR.MethodBody;
 public class SimplifyCFGTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Fact]
+    public void UnreachableStoresDoNotParticipateInSsaPromotion()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var value = body.CreateVar(PrimType.Int32);
+        var entry = new IRBuilder(body.CreateBlock());
+        entry.CreateStore(value, ConstInt.CreateI(42));
+        entry.CreateReturn(entry.CreateLoad(value));
+        var unreachable = new IRBuilder(body.CreateBlock());
+        unreachable.CreateStore(value, ConstInt.CreateI(7));
+        unreachable.Emit(new ThrowInst(ConstNull.Create()));
+
+        Run(body, new SimplifyCFG(), new SsaPromotion());
+
+        Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
     public void Test_SimplifyCFG() => CheckIR("SimplifyCFG.ethil", new SimplifyCFG());
 
     [Fact]
