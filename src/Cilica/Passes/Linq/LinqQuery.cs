@@ -87,10 +87,10 @@ internal abstract class LinqStageNode
 
     protected virtual void DeleteSubject()
     {
-        if (SubjectCall is { NumUses: < 2 }) {
+        Drain?.DeleteSubject();
+        if (SubjectCall is { NumUses: 0 }) {
             SubjectCall.Remove();
         }
-        Drain?.DeleteSubject();
     }
     public LinqSink GetSink()
     {
