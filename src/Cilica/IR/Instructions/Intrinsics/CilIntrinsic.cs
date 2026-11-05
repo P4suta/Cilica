@@ -2,6 +2,12 @@ namespace Cilica.IR;
 
 public abstract class CilIntrinsic : IntrinsicInst
 {
+    /// <summary> Produces default(T) without exposing temporary storage in the optimization IR. </summary>
+    public class DefaultValue(TypeDesc type) : CilIntrinsic(type, [])
+    {
+        public override ILCode Opcode => ILCode.Nop;
+    }
+
     /// <summary> Retrieves the enclosing vararg method's argument-list handle. </summary>
     public class ArgList(ModuleResolver resolver) : CilIntrinsic(resolver.Import(typeof(RuntimeArgumentHandle)), [])
     {

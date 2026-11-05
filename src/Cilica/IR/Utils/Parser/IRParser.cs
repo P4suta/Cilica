@@ -616,6 +616,7 @@ public partial class IRParser
         // TODO: design a proper registry or something to de-couple intrinsic parsing
         // TODO: check for matching signatures
         return (ns, name) switch {
+            ("CIL", "DefaultValue") => new CilIntrinsic.DefaultValue(type),
             ("CIL", "NullCheck") => new CilIntrinsic.NullCheck(args[0]),
             ("CIL", "ArrayLen") => new CilIntrinsic.ArrayLen(args[0]),
             ("CIL", "NewArray") => new CilIntrinsic.NewArray((type as ArrayType)!.ElemType, args[0]),

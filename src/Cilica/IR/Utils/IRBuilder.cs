@@ -316,25 +316,17 @@ public class IRBuilder
     /// <summary> Creates the <see langword="default"/> value for the given type. </summary>
     public Value CreateDefaultOf(TypeDesc type)
     {
-        if (type.StackType == StackType.Struct || type is GenericParamType) {
-            var slot = Method.CreateVar(type, "tmpZeroInit");
-            Emit(new CilIntrinsic.MemSet(slot, type));
-            return CreateLoad(slot);
-        }
-        if (type.IsPointerLike()) {
-            return Emit(new ConvertInst(ConstInt.CreateI(0), PrimType.IntPtr));
-        }
-        return Const.CreateZero(type);
+        var value = new CilIntrinsic.DefaultValue(type);
+        var folded = ConstFolding.FoldIntrinsic(value) ?? value;
+        return folded is Instruction inst ? Emit(inst) : folded;
     }
 
     /// <summary> Creates an instruction that stores the <see langword="default"/> value into the given address. </summary>
-    public Instruction CreateInitObj(Value addr, TypeDesc? objType = null)
+    public Instruction CreateInitObj(Value addr, TypeDesc? objType = null, PointerFlags flags = default)
     {
         objType ??= ((PointerType)addr.ResultType).ElemType;
         
-        return objType.Kind == TypeKind.Struct
-            ? Emit(new CilIntrinsic.MemSet(addr, objType))
-            : CreateStore(addr, Const.CreateZero(objType));
+        return CreateStore(addr, CreateDefaultOf(objType), objType, flags);
     }
 
     public IntrinsicInst CreateBox(TypeDesc valueType, Value val)

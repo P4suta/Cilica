@@ -8,6 +8,20 @@ using Cilica.IR;
 [Collection("ModuleResolver")]
 public class MethodResolvingTests
 {
+    [Theory]
+    [InlineData(typeof(Func<int, int>), true)]
+    [InlineData(typeof(Func<int?>), true)]
+    [InlineData(typeof(Action<ValueTuple<string>>), true)]
+    [InlineData(typeof(Func<int, object>), false)]
+    [InlineData(typeof(Func<string, int>), false)]
+    [InlineData(typeof(Func<object>), false)]
+    [InlineData(typeof(Func<>), false)]
+    public void SealedDelegateTypesAreExactOnlyWhenVarianceCannotApply(Type type, bool expected)
+    {
+        var body = Utils.CreateDummyMethodBody(PrimType.Void, _modResolver.Import(type));
+        Assert.Equal(expected, TypeUtils.HasConcreteType(body.Args[0]));
+    }
+
     public interface IValue { int Read(); }
 
     public class Base : IValue { public virtual int Read() => 1; }

@@ -12,6 +12,42 @@ using System.Reflection;
 public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Fact]
+    public void DeepExpressionsAreEmittedWithoutExhaustingTheCompilerStack()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        Value sum = body.Args[0];
+        for (int i = 0; i < 5000; i++) sum = builder.CreateAdd(sum, body.Args[0]);
+        builder.CreateReturn(sum);
+        var run = Utils.Compile<Func<int, int>>(body);
+        Assert.Equal(15003, run(3));
+        Assert.Equal(unchecked(5001 * int.MaxValue), run(int.MaxValue));
+    }
+
+    [Fact]
+    public void TypedDefaultStoresDoNotMaterializeStructTemporaries()
+    {
+        var type = _modResolver.Import(typeof(ValueTuple<int, string>));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, type.CreateByref());
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateInitObj(body.Args[0]);
+        builder.CreateReturn();
+
+        for (int round = 0; round < 2; round++) {
+            var il = ILGenerator.GenerateCode(body);
+            Assert.Empty(il.Locals);
+            Assert.Single(il.Instructions.Where(inst => inst.OpCode == ILCode.Initobj));
+            var run = Utils.Compile<ResetValue<ValueTuple<int, string>>>(body);
+            var value = (42, "value");
+            run(ref value);
+            Assert.Equal(default, value);
+            body = Cilica.Frontend.ILImporter.ParseCode(body.Definition);
+        }
+    }
+
+    public delegate void ResetValue<T>(ref T value);
+
+    [Fact]
     public unsafe void PointerLoadsAndStoresSurviveRepeatedCompilation()
     {
         var pointer = PrimType.Byte.CreatePointer();

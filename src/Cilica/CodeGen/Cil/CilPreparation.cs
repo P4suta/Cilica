@@ -34,6 +34,26 @@ internal sealed class CilPreparation
     private static void Legalize(MethodBody method)
     {
         foreach (var inst in method.Instructions().ToArray()) {
+            if (inst is CilIntrinsic.DefaultValue) {
+                // Store a default directly with initobj, avoiding a temporary
+                // and a full struct copy for address-exposed storage.
+                foreach (var (user, operandIndex) in inst.Uses().AsEnumerable().ToArray()) {
+                    if (operandIndex == 1 && user is StoreInst store && store.ElemType == inst.ResultType) {
+                        store.ReplaceWith(new CilIntrinsic.MemSet(store.Address, store.ElemType, store.Flags) {
+                            DebugLocation = store.DebugLocation
+                        }, insertIfInst: true);
+                    }
+                }
+                if (inst.NumUses == 0) {
+                    inst.Remove();
+                    continue;
+                }
+                var init = new IRBuilder(inst, InsertionDir.Before).SetNextDebugLocation(inst.DebugLocation);
+                var slot = method.CreateVar(inst.ResultType, "tmpZeroInit");
+                init.Emit(new CilIntrinsic.MemSet(slot, inst.ResultType));
+                inst.ReplaceWith(init.CreateLoad(slot));
+                continue;
+            }
             if (inst is not CompareInst { Op: CompareOp.FOne or CompareOp.FUeq } compare) {
                 continue;
             }

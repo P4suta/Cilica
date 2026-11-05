@@ -76,9 +76,20 @@ public static class TypeUtils
     public static bool HasConcreteType(Value obj)
     {
         // TODO: could probably build a more sophisticated analysis for this, with propagation / use chain scan
-        return obj.ResultType is TypeDefOrSpec def && def.Attribs.HasFlag(TypeAttributes.Sealed) &&
-                   !def.Definition.GenericParams.Any(parameter => parameter.IsCovariant || parameter.IsContravariant) ||
-               obj is NewObjInst { ResultType: not MDArrayType };
+        return obj is NewObjInst { ResultType: not MDArrayType } || IsExactType(obj.ResultType);
+    }
+
+    internal static bool IsExactType(TypeDesc type)
+    {
+        if (type is not TypeDefOrSpec def || !def.Attribs.HasFlag(TypeAttributes.Sealed)) return false;
+
+        // Variance applies only to reference-type arguments. A sealed delegate
+        // such as Func<int, int> still has an exact runtime type.
+        for (int i = 0; i < def.Definition.GenericParams.Length; i++) {
+            var parameter = def.Definition.GenericParams[i];
+            if ((parameter.IsCovariant || parameter.IsContravariant) && !def.GenericParams[i].IsValueType) return false;
+        }
+        return true;
     }
 
     // Class MethodImpl records can redirect even nonvirtual calls to virtual

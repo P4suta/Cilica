@@ -9,6 +9,10 @@ public class ForestAnalysis : IMethodAnalysis
     // Leaf membership identifies values emitted as operands of their expression roots.
     readonly RefSet<Instruction> _leafs = new();
 
+    // CIL emission recursively visits each expression. Split deep trees into
+    // ordinary roots so input size cannot exhaust the compiler's native stack.
+    const int MaxExpressionDepth = 128;
+
     public ForestAnalysis(MethodBody method, AliasAnalysis? aa = null)
     {
         aa ??= new(method);
@@ -27,8 +31,9 @@ public class ForestAnalysis : IMethodAnalysis
     static IMethodAnalysis IMethodAnalysis.Create(IMethodAnalysisManager mgr)
         => new ForestAnalysis(mgr.Method, mgr.GetAnalysis<AliasAnalysis>());
 
-    private void InlineOperands(Instruction inst, Instruction root, AliasAnalysis aa)
+    private void InlineOperands(Instruction inst, Instruction root, AliasAnalysis aa, int depth = 0)
     {
+        if (depth >= MaxExpressionDepth) return;
         var opers = inst.Operands;
 
         if (inst is StoreInst { Flags: 0 } && opers[0] is FieldAddrInst or ArrayAddrInst) {
@@ -57,7 +62,7 @@ public class ForestAnalysis : IMethodAnalysis
 
             // Recursively inline defs, except when rematerializing
             if (_leafs.Add(oper) && oper.NumUses == 1) {
-                InlineOperands(oper, root, aa);
+                InlineOperands(oper, root, aa, depth + 1);
             }
         }
     }

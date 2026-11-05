@@ -13,6 +13,48 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class SsaPromotionTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Fact]
+    public void TypedDefaultsArePromotedLikeOtherAssignments()
+    {
+        Verify((byte)42);
+        Verify(42);
+        Verify(long.MaxValue);
+        Verify((nint)42);
+        Verify(nuint.MaxValue);
+        Verify(-0.0f);
+        Verify(-0.0);
+        Verify("value");
+        Verify((42, "value"));
+        Verify<int?>(42);
+
+        void Verify<T>(T initial)
+        {
+            var type = _modResolver.Import(typeof(T));
+            var body = Utils.CreateTestMethod(_modResolver, type, type, PrimType.Bool);
+            body.InitLocals = false;
+            var entry = body.CreateBlock();
+            var reset = body.CreateBlock();
+            var exit = body.CreateBlock();
+            var slot = body.CreateVar(type);
+            var builder = new IRBuilder(entry);
+            builder.CreateStore(slot, body.Args[0]);
+            entry.SetBranch(new BranchInst(body.Args[1], reset, exit));
+            new IRBuilder(reset).CreateInitObj(slot);
+            reset.SetBranch(exit);
+            var finish = new IRBuilder(exit);
+            finish.CreateReturn(finish.CreateLoad(slot));
+
+            for (int round = 0; round < 2; round++) {
+                Run(body, new SsaPromotion());
+                Assert.Empty(body.LocalVars());
+                var run = Utils.Compile<Func<T, bool, T>>(body);
+                Assert.Equal(initial, run(initial, false));
+                Assert.Equal(default, run(initial, true));
+                body = Cilica.Frontend.ILImporter.ParseCode(body.Definition);
+            }
+        }
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

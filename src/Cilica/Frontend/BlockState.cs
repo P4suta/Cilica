@@ -521,7 +521,8 @@ internal class BlockState
                     Push(new CilIntrinsic.RefAnyVal((TypeDesc)inst.Operand!, Pop()));
                     break;
                 case ILCode.Initobj:
-                    Emit(new CilIntrinsic.MemSet(Pop(), (TypeDesc)inst.Operand!, PopPointerFlags()));
+                    new IR.Utils.IRBuilder(Block, IR.Utils.InsertionDir.After).SetNextDebugLocation(_currDebugLoc)
+                        .CreateInitObj(Pop(), (TypeDesc)inst.Operand!, PopPointerFlags());
                     break;
                 case ILCode.Initblk:
                     Emit(new CilIntrinsic.MemSet(numBytes: Pop(), value: Pop(), destPtr: Pop(), flags: PopPointerFlags()));

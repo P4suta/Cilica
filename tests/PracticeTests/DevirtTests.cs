@@ -15,7 +15,8 @@ public class DevirtTests
     {
         Func<int,int> fn = choose ? s_Alternative : new Func<int,int>(Negate);
         Assert.Equal(expected, fn(5));
-        // CHECK: callvirt Func`2[int, int]::Invoke
+        // CHECK: CIL::NullCheck
+        // CHECK: call Func`2[int, int]::Invoke
     }
 
     [Fact]

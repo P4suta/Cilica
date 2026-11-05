@@ -7,6 +7,73 @@ using Cilica.Attributes;
 [Optimize]
 public class GenericRuntimeTests
 {
+    [Theory, CheckCodeGenAfterRun]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(7)]
+    [InlineData(8)]
+    [InlineData(9)]
+    [InlineData(17)]
+    [InlineData(257)]
+    public void GenericDefaultSeedsVectorizedReduction(int count)
+    {
+        var a = Enumerable.Repeat(int.MaxValue, count).ToArray();
+        var b = Enumerable.Repeat(3, count).ToArray();
+        int result = Aggregate(a, b, (x, y) => x * y, (x, y) => x + y);
+        Assert.Equal(unchecked(int.MaxValue * 3 * count), result);
+        // CHECK: Vector256
+        // CHECK-NOT: CIL::MemSet
+        // CHECK-NOT: ::Invoke
+    }
+
+    [Theory, CheckCodeGenAfterRun]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(4)]
+    [InlineData(5)]
+    [InlineData(17)]
+    public void GenericDefaultSeedsWideVectorizedReduction(int count)
+    {
+        var a = Enumerable.Repeat(long.MaxValue, count).ToArray();
+        var b = Enumerable.Repeat(3L, count).ToArray();
+        long result = Aggregate(a, b, (x, y) => x * y, (x, y) => x + y);
+        Assert.Equal(unchecked(long.MaxValue * 3 * count), result);
+        // CHECK: Vector256
+        // CHECK-NOT: CIL::MemSet
+        // CHECK-NOT: ::Invoke
+    }
+
+    [Fact, CheckCodeGenAfterRun]
+    public void GenericFloatingReductionPreservesEvaluationOrder()
+    {
+        double[] a = [1e20, 1, -1e20, 1, 1e20, 1, -1e20, 1, 1e20, 1, -1e20, 1, 1e20, 1, -1e20, 1];
+        var b = Enumerable.Repeat(1.0, a.Length).ToArray();
+        Assert.Equal(1.0, Aggregate(a, b, (x, y) => x * y, (x, y) => x + y));
+        // CHECK-NOT: Vector256
+        // CHECK-NOT: ::Invoke
+        // CHECK-NOT: ::Aggregate
+    }
+
+    [Fact]
+    public void GenericAggregationPreservesLengthAndNullChecks()
+    {
+        Assert.Throws<ArgumentException>(() => Aggregate(new int[17], new int[16], (x, y) => x * y, (x, y) => x + y));
+        Assert.Throws<NullReferenceException>(() => Aggregate<int>(null!, [], (x, y) => x * y, (x, y) => x + y));
+        Assert.Throws<NullReferenceException>(() => Aggregate<int>([], null!, (x, y) => x * y, (x, y) => x + y));
+    }
+
+    static T Aggregate<T>(T[] a, T[] b, Func<T, T, T> selector, Func<T, T, T> aggregator) where T : struct
+    {
+        if (a.Length != b.Length)
+            throw new ArgumentException("Arrays must have the same length.");
+
+        T result = default;
+        for (int i = 0; i < a.Length; i++)
+            result = aggregator(result, selector(a[i], b[i]));
+        return result;
+    }
+
     [Fact]
     public void ConstrainedClassCallsReadTheReferencedInstance()
     {

@@ -323,6 +323,13 @@ public class ConstFolding
 
     public static Value? FoldIntrinsic(IntrinsicInst intrin)
     {
+        if (intrin is CilIntrinsic.DefaultValue) {
+            var defaultType = intrin.ResultType;
+            if (defaultType is GenericParamType || defaultType.StackType == StackType.Struct) return null;
+            return defaultType.IsPointerLike()
+                ? new ConvertInst(ConstInt.CreateI(0), PrimType.IntPtr)
+                : Const.CreateZero(defaultType);
+        }
         if (intrin is CilIntrinsic.RefCast reference &&
             (reference.Args[0] is ConstNull || reference.Args[0].ResultType.IsAssignableTo(reference.ResultType))) {
             return reference.Args[0];

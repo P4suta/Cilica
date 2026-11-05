@@ -23,7 +23,7 @@ internal static class VirtualDispatch
     // A class MethodImpl can redirect a nonvirtual call as well. Resolve only
     // in the declaring type here, not in the receiver's more-derived type.
     public static MethodDesc? ResolveDirect(MethodDefOrSpec method)
-        => method.IsStatic || !method.Attribs.HasFlag(MethodAttributes.Virtual) || method.DeclaringType.IsInterface
+        => method.IsStatic || method.DeclaringType.IsInterface || !TypeUtils.HasClassMethodImpls(method)
             ? method : new Resolver(method.GenericParams, method.DeclaringType).Resolve(method);
 
     public static bool SameMethod(MethodDesc? a, MethodDesc? b)
@@ -63,6 +63,7 @@ internal static class VirtualDispatch
 
         bool BuildClassSlots()
         {
+            var methodsByName = _hierarchy.Select(type => type.Definition.Methods.ToLookup(method => method.Name)).ToArray();
             for (int depth = 0; depth < _hierarchy.Count; depth++) {
                 var owner = _hierarchy[depth];
                 var previous = _slots.Select(slot => slot.Implementation).ToArray();
@@ -74,7 +75,7 @@ internal static class VirtualDispatch
                     int slot = -1;
                     if (!definition.Attribs.HasFlag(MethodAttributes.NewSlot)) {
                         for (int parent = depth - 1; parent >= 0 && slot < 0; parent--) {
-                            foreach (var candidate in _hierarchy[parent].Definition.Methods) {
+                            foreach (var candidate in methodsByName[parent][definition.Name]) {
                                 if (candidate.IsStatic || !candidate.Attribs.HasFlag(MethodAttributes.Virtual) ||
                                     candidate.GenericParams.Length != methodArguments.Count) continue;
                                 var bound = Bind(candidate, _hierarchy[parent]);

@@ -23,9 +23,7 @@ public class Devirtualize : IMethodPass
         if (!method.Attribs.HasFlag(MethodAttributes.Virtual)) return method;
         if (!call.IsVirtual && call.Constraint == null) return VirtualDispatch.ResolveDirect(method) as MethodDefOrSpec;
         var type = call.Constraint;
-        if (type != null && !call.IsStatic && !type.IsValueType &&
-            !(type is TypeDefOrSpec reference && reference.Attribs.HasFlag(TypeAttributes.Sealed) &&
-              !reference.Definition.GenericParams.Any(parameter => parameter.IsCovariant || parameter.IsContravariant))) type = null;
+        if (type != null && !call.IsStatic && !type.IsValueType && !TypeUtils.IsExactType(type)) type = null;
         type ??= call.Constraint == null && !call.IsStatic ? ExactType(call.Args[0]) : null;
         if (type is PrimType primitive) type = primitive.GetDefinition(ctx.Compilation.Resolver);
         if (type is TypeDefOrSpec nominal && CanInspect(ctx, nominal)) {
