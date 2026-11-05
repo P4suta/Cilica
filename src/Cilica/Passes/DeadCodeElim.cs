@@ -49,18 +49,20 @@ public class DeadCodeElim : IMethodPass
     {
         var worklist = new DiscreteStack<Instruction>();
 
-        // Mark useful instructions
-        foreach (var inst in method.Instructions()) {
-            if (inst.SafeToRemove) continue;
-            if (funcInfo != null && IsSafeToRemoveCall(inst, funcInfo)) continue;
+        // Marking does not mutate bodies, so effect queries can share validation.
+        using (funcInfo?.BeginRead()) {
+            foreach (var inst in method.Instructions()) {
+                if (inst.SafeToRemove) continue;
+                if (funcInfo != null && IsSafeToRemoveCall(inst, funcInfo)) continue;
 
-            // Mark `inst` and its entire dependency chain
-            worklist.Push(inst);
+                // Mark `inst` and its entire dependency chain
+                worklist.Push(inst);
 
-            while (worklist.TryPop(out var chainInst)) {
-                foreach (var oper in chainInst.Operands) {
-                    if (oper is Instruction operI) {
-                        worklist.Push(operI);
+                while (worklist.TryPop(out var chainInst)) {
+                    foreach (var oper in chainInst.Operands) {
+                        if (oper is Instruction operI) {
+                            worklist.Push(operI);
+                        }
                     }
                 }
             }

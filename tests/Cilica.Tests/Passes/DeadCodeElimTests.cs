@@ -14,6 +14,36 @@ using MethodBody = Cilica.IR.MethodBody;
 public class DeadCodeElimTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Fact]
+    public void EliminationObservesCalleeChangesBetweenRuns()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.DeclaringType;
+        var effect = type.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var callee = type.CreateMethod("Callee", PrimType.Void, [], MethodAttributes.Public | MethodAttributes.Static);
+        callee.Body = new MethodBody(callee);
+        callee.Body.CreateBlock().SetBranch(new ReturnInst());
+        var builder = new IRBuilder(body.CreateBlock());
+        var call = builder.CreateCall(callee);
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+        var effects = new Compilation(body.Definition.Module, new VoidLogger(), new()).GetAnalysis<GlobalFunctionEffects>();
+
+        DeadCodeElim.RemoveUselessCode(body, effects);
+        Assert.Null(call.Block);
+
+        new IRBuilder(callee.Body.EntryBlock.Last, InsertionDir.Before).CreateFieldStore(effect, null, ConstInt.CreateI(42));
+        new IRBuilder(body.EntryBlock.First, InsertionDir.Before).CreateCall(callee);
+        DeadCodeElim.RemoveUselessCode(body, effects);
+        Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+
+        callee.Body = new MethodBody(callee);
+        var replacement = new IRBuilder(callee.Body.CreateBlock());
+        replacement.CreateFieldStore(effect, null, ConstInt.CreateI(7));
+        replacement.CreateReturn();
+        DeadCodeElim.RemoveUselessCode(body, effects);
+        Assert.Equal(7, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
     public void DeadCodeElimPreservesStoredLocalAddresses()
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);

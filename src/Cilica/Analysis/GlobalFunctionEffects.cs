@@ -10,7 +10,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     readonly Stack<MethodDef> _pendingChecks = new();
     readonly HashSet<MethodDef> _validatedMethods = new();
     readonly Compilation _comp;
-    int _queryDepth, _remainingWork;
+    int _queryDepth, _remainingWork, _readScopeDepth;
 
     public long Computations { get; private set; }
 
@@ -30,7 +30,22 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         try {
             return GetEffectsCore(method);
         } finally {
-            if (--_queryDepth == 0) _validatedMethods.Clear();
+            if (--_queryDepth == 0 && _readScopeDepth == 0) _validatedMethods.Clear();
+        }
+    }
+
+    /// <summary> Reuses dependency validation across queries while method bodies remain unchanged. </summary>
+    internal ReadScope BeginRead()
+    {
+        _readScopeDepth++;
+        return new(this);
+    }
+
+    internal readonly struct ReadScope(GlobalFunctionEffects analysis) : IDisposable
+    {
+        public void Dispose()
+        {
+            if (--analysis._readScopeDepth == 0 && analysis._queryDepth == 0) analysis._validatedMethods.Clear();
         }
     }
 
