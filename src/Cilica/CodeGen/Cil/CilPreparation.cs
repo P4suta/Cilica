@@ -38,7 +38,7 @@ internal sealed class CilPreparation
                 // Store a default directly with initobj, avoiding a temporary
                 // and a full struct copy for address-exposed storage.
                 foreach (var (user, operandIndex) in inst.Uses().AsEnumerable().ToArray()) {
-                    if (operandIndex == 1 && user is StoreInst store && store.ElemType == inst.ResultType) {
+                    if (operandIndex == 1 && user is StoreInst { Flags: PointerFlags.None } store && store.ElemType == inst.ResultType) {
                         store.ReplaceWith(new CilIntrinsic.MemSet(store.Address, store.ElemType, store.Flags) {
                             DebugLocation = store.DebugLocation
                         }, insertIfInst: true);

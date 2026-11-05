@@ -47,6 +47,27 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
 
     public delegate void ResetValue<T>(ref T value);
 
+    [Theory]
+    [InlineData(PointerFlags.Volatile)]
+    [InlineData(PointerFlags.Unaligned)]
+    [InlineData(PointerFlags.Volatile | PointerFlags.Unaligned)]
+    public void PrefixedDefaultStoresPreserveTheirMemoryAccess(PointerFlags flags)
+    {
+        var type = _modResolver.Import(typeof(ValueTuple<int, string>));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void, type.CreateByref());
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateInitObj(body.Args[0], flags: flags);
+        builder.CreateReturn();
+
+        for (int round = 0; round < 2; round++) {
+            var run = Utils.Compile<ResetValue<ValueTuple<int, string>>>(body);
+            var value = (42, "value");
+            run(ref value);
+            Assert.Equal(default, value);
+            body = Cilica.Frontend.ILImporter.ParseCode(body.Definition);
+        }
+    }
+
     [Fact]
     public unsafe void PointerLoadsAndStoresSurviveRepeatedCompilation()
     {
