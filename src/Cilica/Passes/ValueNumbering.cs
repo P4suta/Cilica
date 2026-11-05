@@ -140,7 +140,7 @@ public class ValueNumbering : IMethodPass
         // Checks if `inst` may clobber the result value of `def`.
         private bool MayClobberDef(Instruction def, Instruction inst)
         {
-            if (inst.IsMemoryBarrier) return true;
+            if (inst is GuardInst || inst.IsMemoryBarrier) return true;
             if (inst is StoreInst store) {
                 if (def is MemoryInst access) {
                     return AliasAnalysis.MayAlias(store.Address, access.Address);

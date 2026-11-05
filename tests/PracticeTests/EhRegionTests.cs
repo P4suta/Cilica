@@ -7,6 +7,25 @@ using System.Runtime.CompilerServices;
 public class EhRegionTests
 {
     [Fact]
+    public void FinallyWritesSurviveAnEnclosingCatch()
+    {
+        var value = new Pair();
+        try {
+            try {
+                throw new InvalidOperationException();
+            } finally {
+                value = CreatePair();
+            }
+        } catch (InvalidOperationException) { }
+        Assert.Equal(100, value.X + value.Y);
+    }
+
+    struct Pair { public short X, Y; }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static Pair CreatePair() => new() { X = 75, Y = 25 };
+
+    [Fact]
     public void FilterCallsRetainTheirOwnExceptionRegions()
     {
         var trace = new List<int>();

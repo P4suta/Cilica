@@ -15,7 +15,9 @@ public sealed class MemoryAccessAnalysis : IMethodAnalysis
             foreach (var instruction in block) {
                 int before = writes?.Count ?? 0;
 
-                if (instruction.MayWriteToMemory || instruction.IsMemoryBarrier) {
+                // Exceptional edges leave from guards rather than from every instruction
+                // in the protected region, including nested handlers that can mutate memory.
+                if (instruction is GuardInst || instruction.MayWriteToMemory || instruction.IsMemoryBarrier) {
                     (writes ??= new()).Add(instruction);
                 }
 
