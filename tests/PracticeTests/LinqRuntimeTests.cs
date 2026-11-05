@@ -6,6 +6,23 @@ using System.Runtime.CompilerServices;
 [Optimize]
 public class LinqRuntimeTests
 {
+    [Theory]
+    [InlineData(0)]
+    [InlineData(3)]
+    public void MaterializedArraysShareEmptyStorage(int count)
+    {
+        var source = Enumerable.Range(1, count).ToArray();
+        var first = source.Select(value => value * 2).ToArray();
+        var second = source.Select(value => value * 2).ToArray();
+        Assert.Equal(source.Select(value => value * 2), first);
+        if (count == 0) {
+            Assert.Same(Array.Empty<int>(), first);
+            Assert.Same(first, second);
+        } else {
+            Assert.NotSame(first, second);
+        }
+    }
+
     [Fact]
     public void GenericEnumerableSourcesSupportReferenceAndValueTypes()
     {

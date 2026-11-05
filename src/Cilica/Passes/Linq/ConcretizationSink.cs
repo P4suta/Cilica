@@ -84,6 +84,11 @@ internal class ListOrArraySink : ConcretizationSink
 
     protected override Value WrapContainer(IRBuilder builder, Value container)
     {
+        if (container.ResultType is ArrayType array) {
+            var empty = builder.Resolver.SysTypes.Array.FindMethod("Empty").GetSpec([array.ElemType]);
+            return builder.CreateSelect(builder.CreateEq(builder.CreateArrayLen(container), ConstInt.CreateI(0)),
+                builder.CreateCall(empty), container);
+        }
         if (container.ResultType == SubjectCall.ResultType) {
             return container;
         }
