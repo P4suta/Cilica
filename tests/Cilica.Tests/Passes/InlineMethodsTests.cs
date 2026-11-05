@@ -1,6 +1,7 @@
 namespace Cilica.Tests.Passes;
 
 using System.Reflection;
+using System.Runtime.CompilerServices;
 using Cilica.Analysis;
 using Cilica.AsmIO;
 using Cilica.CodeGen.Cil;
@@ -13,6 +14,271 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    public interface ICounter { int Next(); }
+    public struct Counter : ICounter
+    {
+        int _value;
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public int Next() => ++_value;
+    }
+    public class Reader
+    {
+        [System.Runtime.CompilerServices.MethodImpl(System.Runtime.CompilerServices.MethodImplOptions.NoInlining)]
+        public virtual int Read() => 42;
+    }
+    public sealed class SealedReader : Reader { }
+
+    public abstract class FactoryBase
+    {
+        public abstract ProductBase Create();
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public static FactoryBase Start() => Forward();
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static FactoryBase Forward() => new ConcreteFactory();
+    }
+    public sealed class ConcreteFactory : FactoryBase
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public override ProductBase Create() => Forward();
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static ProductBase Forward() => new ConcreteProduct();
+    }
+    public abstract class ProductBase
+    {
+        public abstract int Read();
+        public abstract ProductBase Next();
+    }
+    public sealed class ConcreteProduct : ProductBase
+    {
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public override int Read() => 42;
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        public override ProductBase Next() => Forward();
+        [MethodImpl(MethodImplOptions.AggressiveInlining)]
+        static ProductBase Forward() => new ConcreteProduct();
+    }
+
+    [Fact]
+    public void CallOptimizationRevisitsConsumersAfterFactoryInlining()
+    {
+        var body = CreateFactoryChain();
+        Run(body, new InlineMethods(new() { InitialBudget = 1000, BudgetFactor = 0 }));
+        Assert.Empty(body.Instructions().OfType<CallInst>());
+        Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+        long revision = body.Revision;
+        Run(body, new InlineMethods());
+        Assert.Equal(revision, body.Revision);
+    }
+
+    [Fact]
+    public void CallOptimizationConvergesAcrossLongDependentChains()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        var type = _modResolver.Import(typeof(ProductBase));
+        Value product = builder.CreateNewObj(_modResolver.Import(typeof(ConcreteProduct)).FindMethod(".ctor"));
+        for (int i = 0; i < 24; i++) product = builder.CreateCallVirt(type.FindMethod("Next"), product);
+        builder.CreateReturn(builder.CreateCallVirt(type.FindMethod("Read"), product));
+        Run(body, new InlineMethods(new() { InitialBudget = 10000, BudgetFactor = 0 }));
+        Assert.Empty(body.Instructions().OfType<CallInst>());
+        Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
+    public void FixedPointDoesNotReplenishTheExpansionBudget()
+    {
+        var body = CreateFactoryChain();
+        Run(body, new InlineMethods(new() { MaxExpansions = 2, InitialBudget = 1000, BudgetFactor = 0 }));
+        Assert.Contains(body.Instructions().OfType<CallInst>(), call => call.Method.Name == "Create");
+        Assert.Contains(body.Instructions().OfType<CallInst>(), call => call.Method.Name == "Read");
+        Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+    }
+
+    MethodBody CreateFactoryChain()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        var factoryType = _modResolver.Import(typeof(FactoryBase));
+        var factory = builder.CreateCall(factoryType.FindMethod("Start"));
+        var product = builder.CreateCallVirt(factoryType.FindMethod("Create"), factory);
+        builder.CreateReturn(builder.CreateCallVirt(_modResolver.Import(typeof(ProductBase)).FindMethod("Read"), product));
+        return body;
+    }
+
+    [Fact]
+    public void DelegateSimplificationRetainsRecursiveInliningAncestry()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var recursive = body.Definition.DeclaringType.CreateMethod("Recursive", PrimType.Int32,
+            [new ParamDef(PrimType.Int32, "value")], MethodAttributes.Public | MethodAttributes.Static);
+        recursive.Body = new MethodBody(recursive);
+        var builder = new IRBuilder(recursive.Body.CreateBlock());
+        var delegateType = _modResolver.Import(typeof(Func<int, int>));
+        var address = builder.Emit(new FuncAddrInst(recursive));
+        var function = builder.CreateNewObj(delegateType.FindMethod(".ctor"), ConstNull.Create(), address);
+        var invocation = builder.CreateCallVirt(delegateType.FindMethod("Invoke"), function, recursive.Body.Args[0]);
+        builder.CreateReturn(builder.CreateAdd(invocation, ConstInt.CreateI(1)));
+        var root = new IRBuilder(body.CreateBlock());
+        root.CreateReturn(root.CreateCall(recursive, ConstInt.CreateI(0)));
+
+        Run(body, new InlineMethods(new() { InitialBudget = 1000, BudgetFactor = 0 }));
+        Assert.Equal(recursive, Assert.Single(body.Instructions().OfType<CallInst>()).Method);
+        var result = Assert.IsType<BinaryInst>(Assert.Single(body.Instructions().OfType<ReturnInst>()).Value);
+        Assert.Equal(1, Assert.IsType<ConstInt>(result.Right).Value);
+    }
+
+    [Fact]
+    public void DevirtualizationUsesExactPhiInputsWithoutLosingNullChecks()
+    {
+        var type = _modResolver.Import(typeof(SealedReader));
+        var method = _modResolver.Import(typeof(Reader)).FindMethod("Read");
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);
+        var entry = body.CreateBlock();
+        var present = body.CreateBlock();
+        var absent = body.CreateBlock();
+        var merge = body.CreateBlock();
+        entry.SetBranch(new BranchInst(body.Args[0], present, absent));
+        var allocation = new IRBuilder(present).CreateNewObj(type.FindMethod(".ctor"));
+        present.SetBranch(merge);
+        absent.SetBranch(merge);
+        var receiver = merge.InsertPhi(new PhiInst(method.DeclaringType,
+            (present, allocation), (absent, ConstNull.Create())));
+        var builder = new IRBuilder(merge, InsertionDir.After);
+        var call = builder.CreateCallVirt(method, receiver);
+        builder.CreateReturn(call);
+        Run(body, new Devirtualize());
+        Assert.False(call.IsVirtual);
+        var compiled = Utils.Compile<Func<bool, int>>(body);
+        Assert.Equal(42, compiled(true));
+        Assert.Throws<NullReferenceException>(() => compiled(false));
+    }
+
+    [Fact]
+    public void VersionSafeCallsDoNotReuseImportedForeignBodies()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var library = _modResolver.Create("Replaceable_" + Guid.NewGuid().ToString("N"));
+        var owner = library.CreateType(null, "Library", TypeAttributes.Sealed);
+        var method = owner.CreateMethod("Value", PrimType.Int32, [], MethodAttributes.Public | MethodAttributes.Static);
+        method.Body = new MethodBody(method);
+        method.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        var builder = new IRBuilder(body.CreateBlock());
+        var call = builder.CreateCall(method);
+        builder.CreateReturn(call);
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { AllowCrossAssemblyIPO = false });
+        PassRunner.Run(new InlineMethods(), new MethodTransformContext(compilation, body));
+        Assert.Contains(call, body.Instructions());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StaticInterfaceDevirtualizationPreservesInitialization(bool explicitImplementation)
+    {
+        Assert.Equal(Execute(false), Execute(true));
+
+        int Execute(bool devirtualize)
+        {
+            var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+            var module = body.Definition.Module;
+            var itf = (TypeDefOrSpec)_modResolver.Import(typeof(Cilica.Tests.Util.MethodResolvingTests.IStaticDefault));
+            var slot = itf.FindMethod("Read");
+            var type = module.CreateType(null, "Implementation");
+            type.Interfaces.Add(itf);
+            var counter = body.Definition.DeclaringType.CreateField("Counter", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+            var initializer = type.CreateMethod(".cctor", PrimType.Void, [],
+                MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+            initializer.Body = new MethodBody(initializer);
+            var initialize = new IRBuilder(initializer.Body.CreateBlock());
+            initialize.CreateFieldStore(counter, null, ConstInt.CreateI(100));
+            initialize.CreateReturn();
+            if (explicitImplementation) {
+                var implementation = type.CreateMethod("Read", PrimType.Int32, [], MethodAttributes.Public | MethodAttributes.Static);
+                implementation.Body = new MethodBody(implementation);
+                implementation.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(11)));
+                type.MethodImpls.Add(slot, implementation);
+            }
+            var builder = new IRBuilder(body.CreateBlock());
+            var call = builder.Emit(new CallInst(slot, [], constraint: type));
+            builder.CreateReturn(builder.CreateAdd(call, builder.CreateFieldLoad(counter)));
+            if (devirtualize) {
+                Run(body, new Devirtualize());
+                Assert.Null(call.Constraint);
+            }
+            return Utils.Compile<Func<int>>(body)();
+        }
+    }
+
+    [Fact]
+    public void UnsealedReferenceConstraintDoesNotProveAnExactReceiver()
+    {
+        var type = _modResolver.Import(typeof(Reader));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, type.CreateByref());
+        var builder = new IRBuilder(body.CreateBlock());
+        var call = builder.Emit(new CallInst(type.FindMethod("Read"), [body.Args[0]], true, type));
+        builder.CreateReturn(call);
+        Run(body, new Devirtualize());
+        Assert.True(call.IsVirtual);
+        Assert.Equal(type, call.Constraint);
+    }
+
+    [Fact]
+    public void NullableBoxKeepsTheCallvirtNullCheck()
+    {
+        var type = _modResolver.Import(typeof(int?));
+        var body = Utils.CreateTestMethod(_modResolver, _modResolver.Import(typeof(Type)), type);
+        var builder = new IRBuilder(body.CreateBlock());
+        var receiver = builder.Emit(new CilIntrinsic.Box(type, body.Args[0]));
+        var call = builder.CreateCallVirt(_modResolver.Import(typeof(object)).FindMethod("GetType"), receiver);
+        builder.CreateReturn(call);
+        Run(body, new Devirtualize());
+        Assert.False(call.IsVirtual);
+        Assert.Single(body.Instructions().OfType<CilIntrinsic.NullCheck>());
+        var compiled = Utils.Compile<Func<int?, Type>>(body);
+        Assert.Equal(typeof(int), compiled(1));
+        Assert.Throws<NullReferenceException>(() => compiled(null));
+    }
+
+    [Fact]
+    public void DevirtualizationDoesNotRequireInliningAndPreservesNullChecks()
+    {
+        var type = _modResolver.Import(typeof(SealedReader));
+        var method = _modResolver.Import(typeof(Reader)).FindMethod("Read");
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, type);
+        var builder = new IRBuilder(body.CreateBlock());
+        var call = builder.CreateCallVirt(method, body.Args[0]);
+        builder.CreateReturn(call);
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { EnableInlining = false });
+        PassRunner.Run(new Devirtualize(), new MethodTransformContext(compilation, body));
+        Assert.False(call.IsVirtual);
+        Assert.Single(body.Instructions().OfType<CilIntrinsic.NullCheck>());
+        var compiled = Utils.Compile<Func<SealedReader, int>>(body);
+        Assert.Equal(42, compiled(new SealedReader()));
+        Assert.Throws<NullReferenceException>(() => compiled(null!));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void DevirtualizationPreservesStructReceiverStorage(bool boxed)
+    {
+        var type = _modResolver.Import(typeof(Counter));
+        var method = _modResolver.Import(typeof(ICounter)).FindMethod("Next");
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        var local = body.CreateVar(type);
+        builder.CreateInitObj(local);
+        Value receiver = boxed ? builder.Emit(new CilIntrinsic.Box(type, builder.CreateLoad(local))) : local;
+        var first = builder.Emit(new CallInst(method, [receiver], true, boxed ? null : type));
+        var second = builder.Emit(new CallInst(method, [receiver], true, boxed ? null : type));
+        builder.CreateReturn(builder.CreateAdd(first, second));
+        Run(body, new Devirtualize());
+        Assert.False(first.IsVirtual);
+        Assert.False(second.IsVirtual);
+        Assert.Null(first.Constraint);
+        Assert.Equal(3, Utils.Compile<Func<int>>(body)());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -77,8 +343,17 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
         ib.CreateReturn(call);
 
         Run(caller.Body, new InlineMethods());
-        Assert.Contains(call, caller.Body.Instructions());
-        Assert.Same(node, call.Constraint);
+        Assert.DoesNotContain(call, caller.Body.Instructions());
+        var receiver = Assert.Single(caller.Body.Instructions().OfType<LoadInst>(), load => load.Address == caller.Body.Args[0]);
+        Assert.Equal(node, receiver.ResultType);
+        var access = Assert.Single(caller.Body.Instructions().OfType<FieldAddrInst>());
+        Assert.Same(receiver, access.Obj);
+        Assert.False(access.InBounds);
+        var root = new IRBuilder(body.CreateBlock());
+        var value = body.CreateVar(node);
+        root.CreateInitObj(value);
+        root.CreateReturn(root.CreateCall(caller, value));
+        Assert.Throws<NullReferenceException>(() => Utils.Compile<Func<int>>(body)());
     }
 
     [Theory]

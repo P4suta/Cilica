@@ -408,7 +408,7 @@ Instruction simplification coalesces an explicit null check with a following der
 
 ## Pipeline and Compiler Benchmarks
 
-The default pipeline runs CFG simplification, SSA promotion, LINQ expansion, instruction simplification, inlining, dead-code elimination, scalar replacement, value numbering, assertion propagation, list presizing, loop strength reduction, and loop vectorization. Bounded simplification iterations follow transformations that expose more work. `ExtractThrows` is also available for custom pipelines.
+The default pipeline runs CFG simplification, SSA promotion, LINQ expansion, instruction simplification, devirtualization, inlining, dead-code elimination, scalar replacement, value numbering, assertion propagation, list presizing, loop strength reduction, and loop vectorization. Bounded simplification iterations follow transformations that expose more work. `ExtractThrows` is also available for custom pipelines.
 
 Runtime benchmark pairs compare .NET 10 with the same runtime plus Cilica. The optimizer runs with strict failure handling and per-pass verification before the optimized executable is measured. Compiler benchmarks are selected separately:
 

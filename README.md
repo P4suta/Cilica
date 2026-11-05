@@ -12,7 +12,7 @@ Cilica is a continuation of [DistIL](https://github.com/dubiousconst282/DistIL).
 - Loop Strength Reduction
 - Loop Vectorization
 - List Pre-sizing
-- Lambda Devirtualization
+- Devirtualization
 - Method Inlining
 - Scalar Replacement
 
