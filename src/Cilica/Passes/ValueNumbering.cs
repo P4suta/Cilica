@@ -28,7 +28,6 @@ public class ValueNumbering : IMethodPass
             }
         }
 
-        if (removed != 0) ctx.Logger.Trace($"Eliminated {removed} redundant computations or loads.");
         return removed != 0 ? MethodInvalidations.DataFlow : 0;
     }
 
@@ -53,7 +52,7 @@ public class ValueNumbering : IMethodPass
             if (inst is not StoreInst) {
                 foreach (var otherDef in availDefs) {
                     if (!CheckAvail(otherDef, inst)) continue;
-
+                    Context.Logger.Trace($"Eliminated redundant '{inst}' in '{inst.Block}' by replacing with '{otherDef}' from '{otherDef.Block}'.");
                     var repl = otherDef is StoreInst store ? store.Value : otherDef;
                     Debug.Assert(repl.ResultType.IsStackAssignableTo(inst.ResultType));
                     inst.ReplaceWith(repl);

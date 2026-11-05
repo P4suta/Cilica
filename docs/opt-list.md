@@ -5,13 +5,14 @@
 - [Loop Vectorization](#loop-vectorization)
 - [Pre-size Lists / Array Builder Opts](#pre-size-lists--array-builder-opts)
 - [Scalar Replacement](#scalar-replacement)
+- [Algebraic Simplification](#algebraic-simplification)
 - [Common Sub-expression Elimination](#common-sub-expression-elimination)
 - [Assertion Propagation](#assertion-propagation)
 - [Devirtualization](#devirtualization)
 - [Method Inlining](#method-inlining)
 - [Pipeline and Compiler Benchmarks](#pipeline-and-compiler-benchmarks)
 
-Cilica also implements canonicalization, SSA promotion, control-flow simplification, and dead-code elimination. This list describes the larger transformations. The default pipeline is defined by `CompilationPipeline.CreateDefault()`.
+Cilica also implements canonicalization, SSA promotion, control-flow simplification, and dead-code elimination. The default pipeline is defined by `CompilationPipeline.CreateDefault()`.
 
 Code examples show source and representative equivalent output, with compiler-generated delegate setup and temporary names simplified for readability. Decompiled unsafe operations correspond to lifted IL instructions; exact output depends on the surrounding method and subsequent simplification.
 
@@ -532,6 +533,31 @@ public static int SROA_ClassEnumerator(int[] array)
 ```
 
 The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding. Constructor expansion follows the [inlining size policy](#inlining-policy), so an eligible allocation can remain when expanding its constructor would exceed the caller's budget.
+
+## Algebraic Simplification
+
+Simplifies fixed-width 32-bit and 64-bit integer expressions using common factors and constant contributions.
+
+For example, `x * a + x * b` can reduce to `x * (a + b)`, and `x * a - x` can reduce to `x * (a - 1)`.
+
+### Bitwise expressions
+
+Simplifies 32-bit and 64-bit integer expressions with common operands and constant masks. Conditional single-bit sets, clears, and toggles can become direct bitwise operations, including inverted tests and tests of the sign bit. Repeated masked contributions from the same value can combine into one mask.
+
+For example, these conditional flag updates:
+
+```cs
+if ((flags & 16) != 0) value |= 16;
+if ((flags & 256) != 0) value |= 256;
+```
+
+can reduce to:
+
+```cs
+value |= flags & 272;
+```
+
+Common operands also simplify expressions such as `(x & a) | (x & b)` into `x & (a | b)`, while constant contributions can simplify `(x | 1) & 2` into `x & 2`.
 
 ## Common Sub-expression Elimination
 

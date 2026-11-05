@@ -13,7 +13,6 @@ public class AssertionProp : IMethodPass
         readonly Dictionary<Value, List<Assertion>> _assertions = new();
         readonly Dictionary<BasicBlock, HashSet<BasicBlock>> _exceptionalPaths = new();
         DominatorTree _domTree = null!;
-        int _propagatedUses, _removedNullChecks;
 
         // Entry facts also hold in handlers. Facts learned while executing a
         // block require normal completion of the instructions preceding them.
@@ -24,9 +23,6 @@ public class AssertionProp : IMethodPass
             long revision = ctx.Method.Revision;
             _domTree = ctx.GetAnalysis<DominatorTree>();
             _domTree.Traverse(preVisit: ProcessBlock);
-
-            if (_propagatedUses != 0 || _removedNullChecks != 0)
-                ctx.Logger.Trace($"Propagated {_propagatedUses} condition uses and removed {_removedNullChecks} null checks.");
             return ctx.Method.Revision != revision ? MethodInvalidations.DataFlow : MethodInvalidations.None;
         }
 
@@ -59,20 +55,24 @@ public class AssertionProp : IMethodPass
             foreach (var inst in block.NonPhis()) {
                 if (inst is CompareInst { ResultType.Kind: TypeKind.Bool } compare) {
                     if (Evaluate(compare.Op, compare.Left, compare.Right, block) is bool result) {
-                        _propagatedUses += compare.NumUses;
+                        ctx.Logger.Trace($"Propagated '{compare}' in '{block}' as constant '{result}'.");
                         compare.ReplaceUses(ConstInt.CreateI(result ? 1 : 0));
                     }
                 } else if (GetNullCheckedValue(inst) is { } obj) {
                     if (Evaluate(CompareOp.Ne, obj, ConstNull.Create(), block) == true) {
                         switch (inst) {
                             case FieldAddrInst address:
-                                _removedNullChecks += address.InBounds ? 0 : 1;
+                                if (!address.InBounds) {
+                                    ctx.Logger.Trace($"Removed null check in '{block}' by propagating '{address}'.");
+                                }
                                 address.InBounds = true; break;
                             case CallInst call:
-                                _removedNullChecks += call.InBounds ? 0 : 1;
+                                if (!call.InBounds) {
+                                    ctx.Logger.Trace($"Removed null check in '{block}' by propagating '{call}'.");
+                                }
                                 call.InBounds = true; break;
                             case CilIntrinsic.NullCheck check:
-                                _removedNullChecks++;
+                                ctx.Logger.Trace($"Removed null check for in '{block}' by propagating '{check}'.");
                                 check.Remove(); break;
                         }
                     } else {
@@ -109,7 +109,7 @@ public class AssertionProp : IMethodPass
                 if (_domTree.Dominates(block, useBlock) ||
                     use.Parent is PhiInst { Block: var target } && target == block) {
                     use.Operand = constant;
-                    _propagatedUses++;
+                    ctx.Logger.Trace($"Propagated '{compare}' in '{block}' as constant '{result}' to '{use.Parent}' in '{useBlock}'.");
                 }
             }
         }

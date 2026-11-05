@@ -18,6 +18,9 @@ public class ConstFolding
 
     public static Value? FoldBinary(BinaryOp op, Value left, Value right)
     {
+        if (op.IsCommutative() && left is Const && right is not Const) {
+            (left, right) = (right, left);
+        }
         switch (left, right, op) {
             case (ConstInt i1, ConstInt i2, _): {
                 long v1 = i1.SignedStackValue;
@@ -69,11 +72,16 @@ public class ConstFolding
             // x op 0, x * 1, x & ~0 = x
             case (_, ConstInt { Value: 0 }, BinaryOp.Add or BinaryOp.Sub or BinaryOp.Or or BinaryOp.Xor or BinaryOp.Shl or BinaryOp.Shra or BinaryOp.Shrl):
             case (_, ConstInt { Value: 1 }, BinaryOp.Mul):
-            case (_, ConstInt { Value: ~0L }, BinaryOp.And): {
+            case (_, ConstInt { SignedStackValue: -1 }, BinaryOp.And): {
                 return left;
             }
+            case (_, ConstInt { SignedStackValue: -1 }, BinaryOp.Or)
+                when left.ResultType.StackType == right.ResultType.StackType: {
+                return right;
+            }
             // x * 0, x & 0 = 0
-            case (_, ConstInt { Value: 0 }, BinaryOp.Mul or BinaryOp.And): {
+            case (_, ConstInt { Value: 0 }, BinaryOp.Mul or BinaryOp.And)
+                when left.ResultType.StackType == right.ResultType.StackType: {
                 return right;
             }
             // x - x, x ^ x = 0
@@ -81,6 +89,9 @@ public class ConstFolding
                 // Native-sized results need an explicit conversion in the IR.
                 if (left.ResultType.IsPointerLike()) return null;
                 return ConstInt.Create(left.ResultType, 0);
+            }
+            case (_, _, BinaryOp.And or BinaryOp.Or) when left.Equals(right): {
+                return left;
             }
         }
         return null;

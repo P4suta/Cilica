@@ -24,10 +24,9 @@ public partial class SimplifyInsts : IMethodPass
     public MethodPassResult Run(MethodTransformContext ctx)
     {
         long revision = ctx.Method.Revision;
-        int simplified = 0;
 
         foreach (var inst in ctx.Method.Instructions()) {
-            long before = ctx.Method.Revision;
+            var oldInst = inst.ToString();
             var newValue = inst switch {
                 BinaryInst c    => SimplifyBinary(c),
                 CompareInst c   => SimplifyCompare(c),
@@ -40,11 +39,10 @@ public partial class SimplifyInsts : IMethodPass
             };
             if (newValue != null) {
                 inst.ReplaceWith(newValue, insertIfInst: true);
+                ctx.Logger.Trace($"Simplified '{oldInst}' to '{inst}'.");
             }
-            simplified += ctx.Method.Revision != before ? 1 : 0;
         }
 
-        if (simplified != 0) ctx.Logger.Trace($"Simplified {simplified} instructions.");
         return ctx.Method.Revision != revision ? MethodInvalidations.DataFlow : MethodInvalidations.None;
     }
 
@@ -145,10 +143,16 @@ public partial class SimplifyInsts : IMethodPass
             inst.Left = l_nc_c.Left;
             inst.Right = lr_op_r;
         }
+        if (ConstFolding.FoldBinary(inst.Op, inst.Left, inst.Right) is { } folded) {
+            return folded;
+        }
+        if (SimplifyDistributive(inst) is { } distributed) {
+            return distributed;
+        }
         if (inst.ResultType.IsPointerLike() && SimplifyAddress(inst) is { } addr) {
             return addr;
         }
-        return ConstFolding.FoldBinary(inst.Op, inst.Left, inst.Right);
+        return null;
     }
 
     private Value? SimplifyCompare(CompareInst inst)
@@ -200,7 +204,7 @@ public partial class SimplifyInsts : IMethodPass
 
     private Value? SimplifySelect(SelectInst inst)
     {
-        return ConstFolding.FoldSelect(inst.Cond, inst.IfTrue, inst.IfFalse);
+        return ConstFolding.FoldSelect(inst.Cond, inst.IfTrue, inst.IfFalse) ?? SimplifyDistributiveSelect(inst);
     }
 
     // Fold native-width offset arithmetic without changing intermediate conversions.
