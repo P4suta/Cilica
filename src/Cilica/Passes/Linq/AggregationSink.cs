@@ -28,10 +28,11 @@ internal class AggregationSink : LinqSink
         var skipBlock = loopData.SkipBlock;
 
         if (_seed is not Undef) {
-            _accumulator = loopData.CreateAccum(_seed!, emitUpdate: curr => Accumulate(builder, curr, currItem, skipBlock));
+            var type = SubjectCall.NumArgs >= 3 ? SubjectCall.Method.ParamSig[1].Type : SubjectCall.ResultType;
+            _accumulator = loopData.CreateAccum(_seed!, curr => Accumulate(builder, curr, currItem, skipBlock), type);
             return;
         }
-        Debug.Assert(SubjectCall.ResultType == currItem.ResultType);
+        Debug.Assert(currItem.ResultType.IsAssignableTo(SubjectCall.ResultType));
 
         _hasData = loopData.CreateAccum(ConstInt.Create(PrimType.Bool, 0), emitUpdate: hasData => {
             var gotData = default(Value);

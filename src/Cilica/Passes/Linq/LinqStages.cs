@@ -151,8 +151,8 @@ internal class FlattenStage : LinqStageNode
             Enumeration = enumeration,
             Limits = innerLimits,
             SkipBlock = innerLoop.Latch.Block,
-            CreateAccum = (seed, emitUpdate) => 
-                loopData.CreateAccum(seed, curr => innerLoop.CreateAccum(curr, emitUpdate))
+            CreateAccum = (seed, emitUpdate, resultType) =>
+                loopData.CreateAccum(seed, curr => innerLoop.CreateAccum(curr, emitUpdate, resultType), resultType)
         };
 
         innerLoop.Build(

@@ -81,7 +81,7 @@ public class LoopBuilder
         if (values.TryGetValue(block, out var value)) return value;
         Debug.Assert(block.NumPreds > 0);
 
-        var phi = block.InsertPhi(def.ResultType);
+        var phi = block.InsertPhi(dom.ResultType);
         values.Add(block, phi);
         foreach (var pred in block.Preds) {
             phi.AddArg(pred, InsertAccumPhis(pred, def, dom, values));
@@ -91,8 +91,12 @@ public class LoopBuilder
 
     /// <summary> Creates a loop accumulator/induction variable. </summary>
     public PhiInst CreateAccum(Value seed, Func<Value, Value> emitUpdate)
+        => CreateAccum(seed, emitUpdate, seed.ResultType);
+
+    /// <summary> Creates a loop accumulator with the given type, or the seed type when null. </summary>
+    public PhiInst CreateAccum(Value seed, Func<Value, Value> emitUpdate, TypeDesc? resultType)
     {
-        var phi = Header.CreatePhi(seed.ResultType);
+        var phi = Header.CreatePhi(resultType ?? seed.ResultType);
         var next = emitUpdate(phi);
 
         if (next is Instruction nextI && nextI.Block != Latch.Block) {

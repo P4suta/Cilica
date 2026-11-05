@@ -209,7 +209,7 @@ internal record BodyLoopData
 
     public BasicBlock GetExitTarget(BasicBlock target) => Enumeration?.GetExitTarget(target) ?? target;
 }
-internal delegate Value LoopAccumVarFactory(Value seed, Func<Value, Value> emitUpdate);
+internal delegate Value LoopAccumVarFactory(Value seed, Func<Value, Value> emitUpdate, TypeDesc? resultType = null);
 
 internal struct EstimatedSourceLen
 {
