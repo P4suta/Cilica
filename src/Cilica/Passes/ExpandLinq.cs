@@ -90,7 +90,8 @@ public class ExpandLinq : IMethodPass
             return method.Name switch {
                 "ToList" or "ToArray"       => new ListOrArraySink(call),
                 "ToHashSet"                 => new HashSetSink(call),
-                "ToDictionary"              => new DictionarySink(call),
+                "ToDictionary" when method.ParamSig is [_, { Type.Name: "Func`2" }, ..]
+                                           => new DictionarySink(call),
                 "Aggregate"                 => new AggregationSink(call),
                 "Count"                     => new CountSink(call),
                 "Sum" when SumSink.IsSupported(call) => new SumSink(call),

@@ -108,7 +108,7 @@ internal class DictionarySink : ConcretizationSink
         var key = builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem);
         var value = currItem;
         // Signature: ToDictionary(source, keySelector, [elementSelector], [comparer])
-        if (SubjectCall.Args is [_, _, { ResultType.Name: not "IEqualityComparer`1" }, ..]) {
+        if (SubjectCall.Method.ParamSig is [_, _, { Type.Name: "Func`2" }, ..]) {
             value = builder.CreateLambdaInvoke(SubjectCall.Args[2], currItem);
         }
         builder.CreateCallVirt("Add", container, key, value);

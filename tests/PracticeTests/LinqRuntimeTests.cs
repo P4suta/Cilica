@@ -6,6 +6,38 @@ using System.Runtime.CompilerServices;
 [Optimize]
 public class LinqRuntimeTests
 {
+    [Fact]
+    public void ToDictionaryDistinguishesComparersFromElementSelectors()
+    {
+        string[] source = ["Alpha", "Beta"];
+        var comparer = StringComparer.OrdinalIgnoreCase;
+        var values = source.ToDictionary(value => value, comparer);
+        var lengths = source.ToDictionary(value => value, value => value.Length, comparer);
+        var defaultComparer = source.ToDictionary(value => value, (IEqualityComparer<string>?)null);
+
+        Assert.Same(comparer, values.Comparer);
+        Assert.Equal("Alpha", values["ALPHA"]);
+        Assert.Equal(4, lengths["BETA"]);
+        Assert.Equal("Alpha", defaultComparer["Alpha"]);
+        Assert.False(defaultComparer.ContainsKey("ALPHA"));
+    }
+
+    [Fact]
+    public void ToDictionaryAcceptsKeyValuePairsAndTuples()
+    {
+        KeyValuePair<string, int>[] pairs = [new("Alpha", 1), new("Beta", 2)];
+        (string, int)[] tuples = [("Alpha", 1), ("Beta", 2)];
+        var pairValues = pairs.ToDictionary();
+        var tupleValues = tuples.ToDictionary();
+        var pairsWithComparer = pairs.ToDictionary(StringComparer.OrdinalIgnoreCase);
+        var tuplesWithComparer = tuples.ToDictionary(StringComparer.OrdinalIgnoreCase);
+
+        Assert.Equal(1, pairValues["Alpha"]);
+        Assert.Equal(2, tupleValues["Beta"]);
+        Assert.Equal(1, pairsWithComparer["ALPHA"]);
+        Assert.Equal(2, tuplesWithComparer["BETA"]);
+    }
+
     [Theory]
     [InlineData(0)]
     [InlineData(1)]
