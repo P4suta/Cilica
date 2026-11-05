@@ -214,7 +214,7 @@ public class ILAssembler
                 HandlerEnd = GetBlockOffset(region.HandlerRange.End)
             };
             if (clause.Kind == EHRegionKind.Catch) {
-                clause.CatchType = (TypeDefOrSpec?)guard.CatchType;
+                clause.CatchType = guard.CatchType;
             }
             if (guard.HasFilter) {
                 Debug.Assert(GetBlockOffset(region.FilterRange.End) == clause.HandlerStart);

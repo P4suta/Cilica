@@ -8,11 +8,11 @@ public class PointerType : CompoundType
     public override TypeDesc? BaseType => null;
     protected override string Postfix => "*";
 
-    internal PointerType(TypeDesc elemType)
-        : base(elemType) { }
+    internal PointerType(TypeDesc elemType, ImmutableArray<TypeModifier> modifiers = default)
+        : base(elemType, modifiers) { }
 
     protected override CompoundType New(TypeDesc specElemType)
-        => new PointerType(specElemType);
+        => new PointerType(specElemType, ElementModifiers);
 }
 
 /// <summary> Represents a managed reference/pointer type. </summary>
@@ -23,9 +23,9 @@ public class ByrefType : PointerType
     public override TypeDesc? BaseType => null;
     protected override string Postfix => "&";
 
-    internal ByrefType(TypeDesc elemType)
-        : base(elemType) { }
+    internal ByrefType(TypeDesc elemType, ImmutableArray<TypeModifier> modifiers = default)
+        : base(elemType, modifiers) { }
 
     protected override CompoundType New(TypeDesc specElemType)
-        => new ByrefType(specElemType);
+        => new ByrefType(specElemType, ElementModifiers);
 }

@@ -46,8 +46,13 @@ partial class ModuleWriter
                 );
             }
             case MethodDesc method: {
+                if (method is MethodReference { GenericDefinition: { } genericDefinition } genericReference) {
+                    return _builder.AddMethodSpecification(GetHandle(genericDefinition), EncodeMethodSpecSig(genericReference));
+                }
+                var parent = method is MethodReference reference ? reference.Parent : method.DeclaringType;
+                if (parent is MethodDef definition && definition.Module != _mod) parent = definition.DeclaringType;
                 var defHandle = _builder.AddMemberReference(
-                    GetHandle(method.DeclaringType),
+                    GetHandle(parent),
                     AddString(method.Name),
                     EncodeMethodSig((method as MethodDefOrSpec)?.Definition ?? method)
                 );

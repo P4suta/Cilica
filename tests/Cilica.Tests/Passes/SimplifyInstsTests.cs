@@ -20,6 +20,101 @@ public class SimplifyInstsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void UnaryOperationsPromoteSmallIntegersBeforeTruncation(bool wide)
+    {
+        var type = wide ? PrimType.UInt16 : PrimType.Byte;
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Bool, type, type);
+        var builder = new IRBuilder(body.CreateBlock());
+        var complement = builder.Emit(new UnaryInst(UnaryOp.Not, body.Args[0]));
+        builder.CreateReturn(builder.CreateEq(builder.CreateConvert(complement, type), body.Args[1]));
+        Run(body, new SimplifyInsts(_modResolver));
+        if (wide) Assert.True(Utils.Compile<Func<ushort, ushort, bool>>(body)(8, 65527));
+        else Assert.True(Utils.Compile<Func<byte, byte, bool>>(body)(8, 247));
+        var constant = Assert.IsType<ConstInt>(ConstFolding.FoldUnary(UnaryOp.Not, ConstInt.Create(type, 8)));
+        Assert.Equal(PrimType.Int32, constant.ResultType);
+        Assert.Equal(-9, constant.Value);
+    }
+
+    [Fact]
+    public void UnboxingPreservesBoxMutationsAcrossLoopIterations()
+    {
+        var type = _modResolver.Import(typeof(ValueTuple<int>));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, type);
+        var builder = new IRBuilder(body.CreateBlock());
+        var box = builder.Emit(new CilIntrinsic.Box(type, body.Args[0]));
+        var loop = new LoopBuilder(builder.Block);
+        builder.Block.SetBranch(loop.EntryBlock);
+        var index = loop.CreateInductor();
+        Value sum = null!;
+        loop.Build(header => header.CreateSlt(index, ConstInt.CreateI(3)), items => {
+            var address = items.Emit(new CilIntrinsic.UnboxRef(type, box));
+            var field = type.FindField("Item1");
+            var next = items.CreateAdd(items.CreateFieldLoad(field, address), ConstInt.CreateI(1));
+            items.CreateFieldStore(field, address, next);
+            sum = loop.CreateAccum(ConstInt.CreateI(0), current => items.CreateAdd(current, next));
+        });
+        loop.Exit.CreateReturn(sum);
+        Run(body, new SimplifyInsts(_modResolver));
+        Assert.Equal(36, Utils.Compile<Func<ValueTuple<int>, int>>(body)(new(10)));
+    }
+
+    [Fact]
+    public void StructDelegateTargetsUseAnUnboxedReceiver()
+    {
+        var type = _modResolver.Import(typeof(DateTime));
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, type);
+        var builder = new IRBuilder(body.CreateBlock());
+        var box = builder.Emit(new CilIntrinsic.Box(type, body.Args[0]));
+        var target = builder.Emit(new FuncAddrInst(type.FindMethod("get_Year")));
+        var func = _modResolver.Import(typeof(Func<int>));
+        var allocation = builder.CreateNewObj(func.FindMethod(".ctor"), box, target);
+        builder.CreateReturn(builder.CreateCallVirt("Invoke", allocation));
+        Run(body, new SimplifyInsts(_modResolver));
+        Assert.Single(body.Instructions().OfType<CilIntrinsic.UnboxRef>());
+        Assert.Equal(2026, Utils.Compile<Func<DateTime, int>>(body)(new DateTime(2026, 11, 5)));
+    }
+
+    [Fact]
+    public void ReturnedBoxAddressesRetainTheirHeapStorage()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32.CreateByref(), PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        var box = builder.Emit(new CilIntrinsic.Box(PrimType.Int32, body.Args[0]));
+        builder.CreateReturn(builder.Emit(new CilIntrinsic.UnboxRef(PrimType.Int32, box)));
+        Run(body, new SimplifyInsts(_modResolver));
+        Assert.Single(body.Instructions().OfType<CilIntrinsic.Box>());
+        var run = Utils.Compile<RefGetter>(body);
+        ref int value = ref run(42);
+        GC.Collect();
+        Assert.Equal(42, value);
+    }
+
+    public delegate ref int RefGetter(int value);
+
+    [Theory]
+    [InlineData(false, 4)]
+    [InlineData(true, 4)]
+    [InlineData(true, -1)]
+    public void PointerAddressSimplificationPreservesProductWidthAndSign(bool nativeProduct, int scale)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.IntPtr, PrimType.IntPtr, PrimType.Int32);
+        var ib = new IRBuilder(body.CreateBlock());
+        Value index = nativeProduct ? ib.CreateConvert(body.Args[1], PrimType.IntPtr) : body.Args[1];
+        var product = ib.CreateMul(index, ConstInt.CreateI(scale));
+        var displacement = nativeProduct ? product : ib.CreateConvert(product, PrimType.IntPtr);
+        ib.CreateReturn(ib.CreateAdd(body.Args[0], displacement));
+
+        Run(body, new SimplifyInsts(_modResolver));
+        var run = Utils.Compile<Func<nint, int, nint>>(body);
+        foreach (int value in new[] { int.MinValue, -1, 0, 1, int.MaxValue }) {
+            nint expected = nativeProduct ? unchecked(100 + (nint)value * scale) : unchecked(100 + (nint)(value * scale));
+            Assert.Equal(expected, run(100, value));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void CachedLambdaReceiversMoveOnlyAfterTheirTypeHasInitialized(bool separateReceiverType)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);

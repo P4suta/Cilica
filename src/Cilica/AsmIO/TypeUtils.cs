@@ -7,9 +7,14 @@ public static class TypeUtils
     /// <summary> Whether accessing this type can execute a type initializer. </summary>
     /// <param name="fieldAccess">Field accesses trigger initialization even for BeforeFieldInit types.</param>
     public static bool RequiresTypeInitialization(this TypeDesc type, bool fieldAccess = false)
-        => type is TypeDefOrSpec def &&
+        => fieldAccess && type.RequiresModuleInitialization() || type is TypeDefOrSpec def &&
            (fieldAccess || !def.Attribs.HasFlag(TypeAttributes.BeforeFieldInit)) &&
            def.Methods.Any(m => m.Name == ".cctor");
+
+    /// <summary> Whether this type's module defines a module initializer. </summary>
+    public static bool RequiresModuleInitialization(this TypeDesc type)
+        => type is TypeDefOrSpec def && def.Module.TypeDefs.FirstOrDefault(candidate => candidate.Name == "<Module>")
+            ?.Methods.Any(method => method.Name == ".cctor") == true;
 
     /// <summary> Whether invoking this method can run its declaring type's initializer. </summary>
     /// <remarks> Constructors (including base constructor calls), static methods, and value-type instance methods trigger precise initialization. </remarks>
@@ -71,8 +76,20 @@ public static class TypeUtils
     public static bool HasConcreteType(Value obj)
     {
         // TODO: could probably build a more sophisticated analysis for this, with propagation / use chain scan
-        return obj.ResultType is TypeDefOrSpec def && def.Attribs.HasFlag(TypeAttributes.Sealed) ||
-               obj is NewObjInst;
+        return obj.ResultType is TypeDefOrSpec def && def.Attribs.HasFlag(TypeAttributes.Sealed) &&
+                   !def.Definition.GenericParams.Any(parameter => parameter.IsCovariant || parameter.IsContravariant) ||
+               obj is NewObjInst { ResultType: not MDArrayType };
+    }
+
+    // Class MethodImpl records can redirect even nonvirtual calls to virtual
+    // methods. The CLR owns those entry-point mappings until we model them.
+    internal static bool HasClassMethodImpls(MethodDesc method)
+    {
+        if (!method.Attribs.HasFlag(MethodAttributes.Virtual)) return false;
+        for (var type = method.DeclaringType as TypeDefOrSpec; type != null; type = type.BaseType) {
+            if (type.Definition.MethodImpls.Keys.Any(declaration => !declaration.DeclaringType.IsInterface)) return true;
+        }
+        return false;
     }
 
     public static MethodDesc? ResolveVirtualMethod(MethodDesc method, Value instanceObj)
@@ -93,6 +110,8 @@ public static class TypeUtils
     {
         var srcType = obj.ResultType;
         bool castable = srcType.IsAssignableTo(destType);
+        if (!castable && (srcType.IsUnboundGeneric || destType.IsUnboundGeneric)) return null;
+        if (!castable && destType.IsInterface && CanHaveDynamicInterfaces(srcType)) return null;
 
         // If the object type is known or already assignable to `destType`, we don't need to look further.
         if (castable || HasConcreteType(obj)) {
@@ -112,6 +131,21 @@ public static class TypeUtils
 
         // No idea
         return null;
+    }
+
+    internal static bool CanHaveDynamicInterfaces(TypeDesc type)
+    {
+        var pending = new Stack<TypeDesc>();
+        var visited = new HashSet<TypeDesc>();
+        pending.Push(type);
+        while (pending.TryPop(out var current)) {
+            if (!visited.Add(current)) continue;
+            if (current is TypeDefOrSpec nominal && nominal.Attribs.HasFlag(TypeAttributes.Import) ||
+                current.IsCorelibType() && current.Name is "__ComObject" or "IDynamicInterfaceCastable" or "ICastable") return true;
+            foreach (var itf in current.Interfaces) pending.Push(itf);
+            if (current.BaseType != null) pending.Push(current.BaseType);
+        }
+        return false;
     }
 
     /// <summary> Checks if this type is or contains managed references. May return null if the type is an open generic. </summary>

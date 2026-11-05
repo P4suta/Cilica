@@ -69,18 +69,21 @@ public partial class SimplifyInsts : IMethodPass
 
         // unbox_obj(T, box(T, value))  ->  value
         // unbox_ref(T, box(T, value))  ->  store $tmp, value;  $tmp
-        if (inst is CilIntrinsic.UnboxObj or CilIntrinsic.UnboxRef && inst.Args[0] is CilIntrinsic.Box box && box.NumUses == 1) {
+        if (inst is CilIntrinsic.UnboxObj or CilIntrinsic.UnboxRef && inst.Args[0] is CilIntrinsic.Box box && box.NumUses == 1 &&
+            (inst is not CilIntrinsic.UnboxRef || !ScalarReplacement.AddressEscapes(inst))) {
             var unboxType = inst is CilIntrinsic.UnboxRef ? inst.ResultType.ElemType : inst.ResultType;
 
             if (box.Args[0].ResultType == box.SourceType && box.SourceType == unboxType) {
-                box.Remove();
-
                 if (inst is CilIntrinsic.UnboxRef) {
                     var slot = inst.Block.Method.CreateVar(box.SourceType, "boxFoldCopy");
                     var copy = new StoreInst(slot, box.Args[0]);
-                    copy.InsertBefore(inst);
+                    // Initialize at the original boxing point. The unbox may
+                    // execute repeatedly and mutate the same boxed value.
+                    copy.InsertBefore(box);
+                    box.Remove();
                     return slot;
                 } else {
+                    box.Remove();
                     return box.Args[0];
                 }
             }
@@ -194,36 +197,21 @@ public partial class SimplifyInsts : IMethodPass
         return ConstFolding.FoldSelect(inst.Cond, inst.IfTrue, inst.IfFalse);
     }
 
-    // r5 = conv r18 -> long         (?)
-    // r6 = mul r5, stride -> long
-    // r7 = conv r6 -> nint          (?)
-    // r8 = add basePtr, r7 -> nint
-    //
-    // -> lea basePtr + r18 * stride
+    // Fold native-width offset arithmetic without changing intermediate conversions.
     private static Value? SimplifyAddress(BinaryInst? inst)
     {
         if (!IRMatcher.Add(inst, out var basePtr, out var disp)) return null;
 
-        if (disp is ConvertInst { ResultType.StackType: StackType.NInt } conv1) {
-            disp = conv1.Value;
-        }
-        if (!IRMatcher.Mul(disp, out var index, out var stride)) {
-            if (disp is ConstInt { Value: > 0 and <= 8 and var cdisp }) {
-                return new PtrOffsetInst(basePtr, ConstInt.CreateI(1), (int)cdisp);
+        // Only native-width multiplication has pointer-offset arithmetic.
+        // Keep conversions and narrower products intact: they may sign-extend,
+        // zero-extend, truncate, overflow, or throw before the pointer addition.
+        if (disp.ResultType.StackType == StackType.NInt && IRMatcher.Mul(disp, out var index, out var stride)) {
+            if (stride is CilIntrinsic.SizeOf sz) {
+                return new PtrOffsetInst(basePtr, index, sz.ObjType);
+            } else if (stride is ConstInt { Value: > 0 and <= int.MaxValue } cstride) {
+                return new PtrOffsetInst(basePtr, index, (int)cstride.Value);
             }
-            // Byte addressing
-            return new PtrOffsetInst(basePtr, disp, stride: 1);
         }
-
-        if (index is ConvertInst { IsTruncation: false } conv2) {
-            index = conv2.Value;
-        }
-
-        if (stride is CilIntrinsic.SizeOf sz) {
-            return new PtrOffsetInst(basePtr, index, sz.ObjType);
-        } else if (stride is ConstInt cstride) {
-            return new PtrOffsetInst(basePtr, index, (int)cstride.Value);
-        }
-        return null;
+        return new PtrOffsetInst(basePtr, disp, stride: 1);
     }
 }

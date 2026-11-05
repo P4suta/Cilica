@@ -27,6 +27,10 @@ public class CallInst : Instruction
 
     private bool _isTailCall;
 
+    /// <summary> Preserves readonly. on runtime array Address calls. </summary>
+    public bool IsReadOnly { get => _isReadOnly; set => SetProperty(ref _isReadOnly, value); }
+    private bool _isReadOnly;
+
     /// <summary> For virtual calls, indicates if the instance object is known to be non-null. </summary>
     public bool InBounds { get => _inBounds; set => SetProperty(ref _inBounds, value); }
 
@@ -118,11 +122,13 @@ public class NewObjInst : Instruction
 
 public class FuncAddrInst : Instruction
 {
-    public override bool MayThrow => IsVirtual;
+    public override bool MayThrow => IsVirtual || Constraint != null;
 
     public MethodDesc Method { get => _method; set => SetProperty(ref _method, value); }
 
     private MethodDesc _method = default!;
+    private TypeDesc? _constraint;
+    public TypeDesc? Constraint { get => _constraint; set => SetProperty(ref _constraint, value); }
 
     public Value? Object {
         get => IsVirtual ? Operands[0] : null;
@@ -136,11 +142,12 @@ public class FuncAddrInst : Instruction
 
     public override string InstName => IsVirtual ? "virtfuncaddr" : "funcaddr";
 
-    public FuncAddrInst(MethodDesc method, Value? obj = null)
+    public FuncAddrInst(MethodDesc method, Value? obj = null, TypeDesc? constraint = null)
         : base(obj == null ? [] : [obj])
     {
         ResultType = PrimType.Void.CreatePointer();
         Method = method;
+        Constraint = constraint;
     }
 
     protected override void PrintOperands(PrintContext ctx)
@@ -151,6 +158,11 @@ public class FuncAddrInst : Instruction
         if (Object != null) {
             ctx.Print(", ");
             ctx.Print(Object);
+        }
+        if (Constraint != null) {
+            ctx.Print(" constrained(");
+            ctx.Print(Constraint);
+            ctx.Print(")");
         }
     }
 

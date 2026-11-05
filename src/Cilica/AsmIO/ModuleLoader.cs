@@ -49,11 +49,11 @@ internal class ModuleLoader
             type._handle = handle;
             type._customAttribs = LoadCustomAttribs(info.GetCustomAttributes());
 
-            if ((type.Attribs & (TypeAttributes.SequentialLayout | TypeAttributes.ExplicitLayout)) != 0) {
-                var layout = info.GetLayout();
-                type.LayoutPack = layout.PackingSize;
-                type.LayoutSize = layout.Size;
-            }
+            // Preserve reflection-visible size and packing independently of
+            // the layout flags when round-tripping metadata.
+            var layout = info.GetLayout();
+            type.LayoutPack = layout.PackingSize;
+            type.LayoutSize = layout.Size;
             if (type.IsNested) {
                 // ECMA says that nested type rows should come after their parents,
                 // thus doing this here should be fine for conforming files.
@@ -173,21 +173,34 @@ internal class ModuleLoader
 
     private MethodDesc ResolveMethod(MemberReference info)
     {
-        var rootParent = (TypeDesc)GetEntity(info.Parent);
+        var entity = GetEntity(info.Parent);
         string name = _reader.GetString(info.Name);
         var signature = new SignatureDecoder(this, info.Signature).DecodeMethodSig();
 
+        if (entity is MethodDef or GenericParamType or TypeDef { IsGeneric: true }) return new MethodReference(entity, name, signature);
+        var rootParent = (TypeDesc)entity;
+
+        var visited = new HashSet<TypeDesc>();
         for (var parent = rootParent; parent != null; parent = parent.BaseType) {
+            if (parent is PrimType primitive) parent = primitive.GetDefinition(_mod.Resolver);
+            if (!visited.Add(parent)) break;
             var method = parent.FindMethod(name, signature, throwIfNotFound: false);
             if (method != null) {
-                return method;
-            }
-            if (parent.BaseType is TypeSpec) {
-                // TODO: ResolveMethod() for generic type inheritance
-                throw new NotImplementedException();
+                if (parent != rootParent && rootParent is not PrimType) {
+                    // An inherited MemberRef's type variables belong to its
+                    // lookup type, not the base definition. Keep that context;
+                    // a different generic mapping is not a proven target.
+                    bool genericSignature = signature.ReturnType.Type.IsUnboundGeneric ||
+                        signature.ParamTypes.Any(parameter => parameter.Type.IsUnboundGeneric);
+                    var target = !genericSignature || rootParent.GenericParams.SequenceEqual(parent.GenericParams) ? method : null;
+                    return new MethodReference(entity, name, signature, resolvedTarget: target);
+                }
+                return signature.CallConv == CallConvention.VarArgs ? new MethodReference(entity, name, signature, resolvedTarget: method) : method;
             }
         }
-        throw new InvalidOperationException($"Could not resolve referenced method '{rootParent}::{name}'");
+        // Preserve the call-site signature when no definition is available
+        // to the resolver.
+        return new MethodReference(entity, name, signature);
     }
     private FieldDesc ResolveField(MemberReference info)
     {
@@ -227,7 +240,10 @@ internal class ModuleLoader
                 int rva = info.GetRelativeVirtualAddress();
                 var data = _pe.GetSectionData(rva);
                 int size = FieldDef.GetMappedDataSize(field.Type);
-                unsafe { field.MappedData = new Span<byte>(data.Pointer, size).ToArray(); }
+                if (size == 0) size = data.Length;
+                field.MappedData = data.GetContent(0, size).ToArray();
+                field._originalRva = rva;
+                field._originalDataSize = size;
             }
             if (field.Attribs.HasFlag(FieldAttributes.HasFieldMarshal)) {
                 field.MarshallingDesc = _reader.GetBlobBytes(info.GetMarshallingDescriptor());
@@ -281,6 +297,7 @@ internal class ModuleLoader
                 parent, retSig, pars.MoveToImmutable(),
                 _reader.GetString(info.Name), info.Attributes, info.ImplAttributes, genPars
             );
+            method.CallConv = (CallConvention)header.CallingConvention;
 
             LoadParams(method, info);
             method._handle = handle;
@@ -564,7 +581,7 @@ internal class ModuleLoader
             }
             case HandleKind.MethodSpecification: {
                 var info = _reader.GetMethodSpecification((MethodSpecificationHandle)handle);
-                var method = (MethodDefOrSpec)GetEntity(info.Method);
+                var method = (MethodDesc)GetEntity(info.Method);
 
                 var sigDec = new SignatureDecoder(this, info.Signature);
                 sigDec.ExpectHeader(SignatureKind.MethodSpecification);

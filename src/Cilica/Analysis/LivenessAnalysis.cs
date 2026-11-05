@@ -75,17 +75,22 @@ public class LivenessAnalysis : IMethodAnalysis, IPrintDecorator
         BasicBlock[] GetProtectedBlocks(BasicBlock handler)
         {
             var guard = handler.Users().OfType<GuardInst>().First();
-            if (protectedBlocks.TryGetValue(guard.Block, out var blocks)) return blocks;
+            if (protectedBlocks.TryGetValue(handler, out var blocks)) return blocks;
 
             regions ??= new ProtectedRegionAnalysis(method);
             var pending = new Stack<ProtectedRegion>();
             var result = new List<BasicBlock>();
             pending.Push(regions.GetBlockRegion(guard.Block));
+            // A successful filter resumes into its handler. Guard edges do
+            // not express that transfer, but handler values must survive it.
+            if (guard.HasFilter && handler == guard.HandlerBlock) {
+                pending.Push(regions.GetBlockRegion(guard.FilterBlock));
+            }
             while (pending.TryPop(out var region)) {
                 foreach (var block in region.Blocks) result.Add(block);
                 foreach (var child in region.Children) pending.Push(child);
             }
-            return protectedBlocks[guard.Block] = result.ToArray();
+            return protectedBlocks[handler] = result.ToArray();
         }
     }
 

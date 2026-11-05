@@ -177,7 +177,7 @@ public class SimplifyCFG : IMethodPass
             var valT = phi.GetValue(succT == null ? block : br.Then);
             var valF = phi.GetValue(succF == null ? block : br.Else!);
 
-            if (br.Cond is CompareInst cond) {
+            if (br.Cond is CompareInst cond && phi.ResultType.StackType == StackType.Int) {
                 // select x ? 0 : y  ->  !x & y
                 // select x ? 1 : y  ->   x | y
                 // select x ? y : 0  ->   x & y
@@ -216,7 +216,11 @@ public class SimplifyCFG : IMethodPass
 
         foreach (var block in method) {
             if (block.Last is ReturnInst) {
-                exitBlocks.Add(block);
+                // A tail call must return directly; routing it through a
+                // common exit would invalidate the tail-call contract.
+                if (block.Last.Prev is not (CallInst { IsTailCall: true } or CilIntrinsic.CallIndirect { IsTailCall: true })) {
+                    exitBlocks.Add(block);
+                }
             } else {
                 CollapseJumps(block);
             }
@@ -250,7 +254,7 @@ public class SimplifyCFG : IMethodPass
 
         // Don't mess with handler blocks for now.
         // (Future note: they cannot have guards.)
-        if (block.IsHandlerEntry || succ.HasGuards) return false;
+        if (succ == block || block.IsHandlerEntry || succ.HasGuards) return false;
 
         // Transform is only valid if either the successor has no phis, or if threading won't introduce a duplicate edge
         if (!succ.HasPhis || (block.NumPreds == 1 && !block.Preds.First().IsUsedByPhis)) {

@@ -17,6 +17,70 @@ public class SimplifyCFGTests(ModuleResolverFixture fixture) : PassTestBase(fixt
     public void Test_SimplifyCFG() => CheckIR("SimplifyCFG.ethil", new SimplifyCFG());
 
     [Fact]
+    public void BooleanValuedLongReturnsKeepTheirStackWidth()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int64, PrimType.Int32);
+        var entry = body.CreateBlock();
+        var yes = body.CreateBlock();
+        var no = body.CreateBlock();
+        var condition = new IRBuilder(entry).CreateSgt(body.Args[0], ConstInt.CreateI(0));
+        entry.SetBranch(new BranchInst(condition, yes, no));
+        yes.SetBranch(new ReturnInst(ConstInt.CreateL(1)));
+        no.SetBranch(new ReturnInst(ConstInt.CreateL(0)));
+        Run(body, new SimplifyCFG());
+        var run = Utils.Compile<Func<int, long>>(body);
+        Assert.Equal(0L, run(-1));
+        Assert.Equal(1L, run(1));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void JumpThreadingRetainsInfiniteLoopTargets(bool twoBlocks)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);
+        var entry = body.CreateBlock();
+        var loop = body.CreateBlock();
+        var exit = body.CreateBlock();
+        entry.SetBranch(new BranchInst(body.Args[0], loop, exit));
+        if (twoBlocks) {
+            var backedge = body.CreateBlock();
+            loop.SetBranch(backedge);
+            backedge.SetBranch(loop);
+        } else {
+            loop.SetBranch(loop);
+        }
+        exit.SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+
+        Run(body, new SimplifyCFG(), new DeadCodeElim());
+        Assert.Contains(body.Instructions().OfType<BranchInst>(), branch => branch.IsJump && branch.Then == branch.Block);
+        Assert.Equal(42, Utils.Compile<Func<bool, int>>(body)(false));
+    }
+
+    [Fact]
+    public void TailCallsKeepTheirImmediateReturns()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);
+        var target = body.Definition.DeclaringType.CreateMethod("Target", PrimType.Int32, [],
+            MethodAttributes.Public | MethodAttributes.Static);
+        target.Body = new MethodBody(target);
+        target.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        var entry = body.CreateBlock();
+        var tail = body.CreateBlock();
+        var other = body.CreateBlock();
+        entry.SetBranch(new BranchInst(body.Args[0], tail, other));
+        var call = new IRBuilder(tail).Emit(new CallInst(target, []) { IsTailCall = true });
+        tail.SetBranch(new ReturnInst(call));
+        other.SetBranch(new ReturnInst(ConstInt.CreateI(7)));
+
+        Run(body, new SimplifyCFG());
+        Assert.IsType<ReturnInst>(call.Next);
+        var run = Utils.Compile<Func<bool, int>>(body);
+        Assert.Equal(42, run(true));
+        Assert.Equal(7, run(false));
+    }
+
+    [Fact]
     public void JumpThreadingCanReplaceAnAncestorsTerminator()
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);

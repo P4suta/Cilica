@@ -89,8 +89,8 @@ public class ConstFolding
     public static Value? FoldUnary(UnaryOp op, Value value)
     {
         return (op, value) switch {
-            (UnaryOp.Neg, ConstInt v)   => ConstInt.Create(v.ResultType, -v.Value),
-            (UnaryOp.Not, ConstInt v)   => ConstInt.Create(v.ResultType, ~v.Value),
+            (UnaryOp.Neg, ConstInt v)   => ConstInt.Create(UnaryInst.GetResultType(v.ResultType), -v.SignedStackValue),
+            (UnaryOp.Not, ConstInt v)   => ConstInt.Create(UnaryInst.GetResultType(v.ResultType), ~v.SignedStackValue),
             (UnaryOp.FNeg, ConstFloat v) => ConstFloat.Create(v.ResultType, -v.Value),
             _ => null
         };
@@ -111,11 +111,26 @@ public class ConstFolding
         return (srcValue, simpleDstType) switch {
             (ConstInt c, StackType.Int)     => ConstInt.Create(dstType,
                 dstType.Kind == TypeKind.UInt64 ? (long)c.UnsignedStackValue : c.SignedStackValue),
+            (ConstInt c, StackType.Float) when dstType == PrimType.Single
+                => ConstFloat.CreateS(srcUnsigned ? (float)c.UnsignedStackValue : (float)c.SignedStackValue),
             (ConstInt c, StackType.Float)   => ConstFloat.Create(dstType, srcUnsigned ? c.UnsignedStackValue : c.SignedStackValue),
-            (ConstFloat c, StackType.Int)   => ConstInt.Create(dstType, dstType.Kind.IsUnsigned() ? (long)(ulong)c.Value : (long)c.Value),
+            (ConstFloat c, StackType.Int)   => FoldFloatToInteger(c.Value, dstType),
             (ConstFloat c, StackType.Float) => ConstFloat.Create(dstType, c.Value),
             _ => null
         };
+    }
+
+    private static Value? FoldFloatToInteger(double value, TypeDesc destination)
+    {
+        // Out-of-range unchecked conversion results depend on the target CLR.
+        // Preserve the instruction instead of folding through a wider host integer.
+        int bits = destination.Kind.BitSize();
+        if (bits == 0 || !double.IsFinite(value)) return null;
+        bool unsigned = destination.Kind.IsUnsigned();
+        double truncated = Math.Truncate(value);
+        double limit = Math.ScaleB(1.0, unsigned ? bits : bits - 1);
+        if (truncated < (unsigned ? 0 : -limit) || truncated >= limit) return null;
+        return ConstInt.Create(destination, unsigned ? unchecked((long)(ulong)truncated) : (long)truncated);
     }
 
     public static Value? FoldCompare(CompareOp op, Value left, Value right)
@@ -312,7 +327,7 @@ public class ConstFolding
             (reference.Args[0] is ConstNull || reference.Args[0].ResultType.IsAssignableTo(reference.ResultType))) {
             return reference.Args[0];
         }
-        if (intrin is CilIntrinsic.SizeOf { ObjType.Kind: >= TypeKind.Bool and <= TypeKind.Double and var type }) {
+        if (intrin is CilIntrinsic.SizeOf { ObjType.Kind: >= TypeKind.Bool and <= TypeKind.Double and var type } && type.BitSize() != 0) {
             return ConstInt.CreateI(type.BitSize() / 8);
         }
         if (intrin is CilIntrinsic.AsInstance asi) {

@@ -8,11 +8,14 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     readonly HashSet<MethodDef> _active = new();
     readonly HashSet<MethodDef> _checkedMethods = new();
     readonly Stack<MethodDef> _pendingChecks = new();
+    readonly HashSet<MethodDef> _validatedMethods = new();
     readonly Compilation _comp;
+    int _queryDepth, _remainingWork;
 
     public long Computations { get; private set; }
 
     public long CacheHits { get; private set; }
+    public long ValidationVisits { get; private set; }
 
     sealed record Entry(FunctionEffects Effects, MethodBody? Body, long Revision, HashSet<MethodDef> Dependencies);
 
@@ -23,9 +26,23 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     
     public FunctionEffects GetEffects(MethodDesc method)
     {
+        if (_queryDepth++ == 0) _remainingWork = 100_000;
+        try {
+            return GetEffectsCore(method);
+        } finally {
+            if (--_queryDepth == 0) _validatedMethods.Clear();
+        }
+    }
+
+    private FunctionEffects GetEffectsCore(MethodDesc method)
+    {
         if (method is not MethodDefOrSpec def) {
             return FunctionEffects.Unknown;
         }
+
+        // Effects are optional optimization facts. Bound deep or dense call
+        // graphs conservatively instead of exhausting the stack or work budget.
+        if (--_remainingWork < 0 || _building.Count >= 128) return FunctionEffects.Unknown;
 
         var target = def.Definition;
 
@@ -38,12 +55,16 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         }
 
         if (_cache.TryGetValue(target, out var entry)) {
-            if (entry.Body == target.Body && entry.Revision == (target.Body?.Revision ?? 0) &&
-                (entry.Dependencies.Count == 0 || IsCurrent(target))) {
+            bool? current = false;
+            if (entry.Body == target.Body && entry.Revision == (target.Body?.Revision ?? 0)) {
+                current = entry.Dependencies.Count == 0 || _validatedMethods.Contains(target) ? true : IsCurrent(target);
+            }
+            if (current == true) {
                 CacheHits++;
-
+                _validatedMethods.Add(target);
                 return entry.Effects;
             }
+            if (current == null) return FunctionEffects.Unknown;
 
             SetDirty(target);
         }
@@ -55,6 +76,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         try {
             var effects = ComputeEffects(target);
             _cache.Add(target, new Entry(effects, target.Body, target.Body?.Revision ?? 0, dependencies));
+            _validatedMethods.Add(target);
 
             foreach (var dependency in dependencies) {
                 (_callers.GetOrAddRef(dependency) ??= new()).Add(target);
@@ -69,14 +91,17 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         }
     }
 
-    bool IsCurrent(MethodDef method)
+    bool? IsCurrent(MethodDef method)
     {
         // Validation does not compute effects or re-enter GetEffects, so queries
         // can share this scratch storage, including queries during graph building.
         _pendingChecks.Push(method);
         try {
             while (_pendingChecks.TryPop(out var current)) {
+                if (--_remainingWork < 0) return null;
+                if (_validatedMethods.Contains(current)) continue;
                 if (!_checkedMethods.Add(current)) continue;
+                ValidationVisits++;
                 if (!_cache.TryGetValue(current, out var entry)) {
                     // Active recursive ancestors deliberately contributed unknown
                     // effects and have not published their cache entries yet.
@@ -86,6 +111,9 @@ public class GlobalFunctionEffects : IGlobalAnalysis
                 if (entry.Body != current.Body || entry.Revision != (current.Body?.Revision ?? 0)) return false;
                 foreach (var dependency in entry.Dependencies) _pendingChecks.Push(dependency);
             }
+            // Bodies do not change while an effects query is running. Share
+            // successful validation across its recursive dependency queries.
+            foreach (var checkedMethod in _checkedMethods) _validatedMethods.Add(checkedMethod);
             return true;
         } finally {
             _checkedMethods.Clear();
@@ -96,6 +124,12 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     public FunctionEffects GetEffects(CallInst call)
     {
         var method = call.Method;
+        if (TypeUtils.HasClassMethodImpls(method)) return FunctionEffects.Unknown;
+        // constrained. call to a static virtual interface slot dispatches at
+        // runtime; its default body does not describe the selected implementation.
+        if (call.Constraint != null && method.IsStatic && method.Attribs.HasFlag(System.Reflection.MethodAttributes.Virtual)) {
+            return FunctionEffects.Unknown;
+        }
         if (call.IsVirtual && method.Attribs.HasFlag(System.Reflection.MethodAttributes.Virtual) &&
             !method.Attribs.HasFlag(System.Reflection.MethodAttributes.Final)) {
             return FunctionEffects.Unknown;
@@ -113,6 +147,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         var pending = new DiscreteStack<MethodDef>(method);
 
         while (pending.TryPop(out var current)) {
+            _validatedMethods.Remove(current);
             if (_callers.Remove(current, out var callers)) {
                 foreach (var caller in callers) {
                     pending.Push(caller);
@@ -135,13 +170,17 @@ public class GlobalFunctionEffects : IGlobalAnalysis
     {
         _cache.Clear();
         _callers.Clear();
+        _validatedMethods.Clear();
     }
 
     void IGlobalAnalysis.Invalidate(MethodDef method) => SetDirty(method);
 
     private FunctionEffects ComputeEffects(MethodDef method)
     {
-        if (method.RequiresTypeInitialization()) {
+        if (method.ImplAttribs.HasFlag(System.Reflection.MethodImplAttributes.Synchronized)) {
+            return FunctionEffects.Unknown;
+        }
+        if (method.RequiresTypeInitialization() || method.Module != _comp.Module && method.DeclaringType.RequiresModuleInitialization()) {
             return FunctionEffects.Unknown;
         }
 

@@ -34,6 +34,9 @@ public class ILImporter
 
     public static MethodBody ParseCode(MethodDef method)
     {
+        if (method.IsRuntimeAsync) {
+            throw new NotSupportedException("Runtime-async method bodies require a distinct return and suspension model");
+        }
         return new ILImporter(method).ImportCode();
     }
 
@@ -47,12 +50,36 @@ public class ILImporter
         CreateBlocks(leaders);
         CreateGuards(ehRegions);
         ImportBlocks(code, leaders);
+        foreach (var state in _blocks.Values) state.CompleteStackPhis();
+        foreach (var phi in _body.Instructions().OfType<PhiInst>().ToArray()) {
+            if (phi.Block != null) Passes.DeadCodeElim.RemoveTrivialPhi(phi, peel: true);
+        }
 
         NormalizeReferenceTypes();
+        NormalizeHandlerEntries();
 
         AddFinallyResumeEdges(ehRegions);
 
         return _body;
+    }
+
+    private void NormalizeHandlerEntries()
+    {
+        // A loop may branch back to the first instruction of its handler.
+        // Keep that ordinary entry separate from the exceptional entry, which
+        // must have only its guard as predecessor in IR.
+        foreach (var guard in _body.Instructions().OfType<GuardInst>().ToArray()) {
+            guard.HandlerBlock = SplitEntry(guard.HandlerBlock);
+            if (guard.HasFilter) guard.FilterBlock = SplitEntry(guard.FilterBlock);
+        }
+
+        BasicBlock SplitEntry(BasicBlock block)
+        {
+            if (block.NumPreds == 1) return block;
+            var entry = _body.CreateBlock(insertAfter: block.Prev);
+            entry.SetBranch(block);
+            return entry;
+        }
     }
 
     private void NormalizeReferenceTypes()
@@ -261,6 +288,7 @@ public class ILImporter
     {
         int codeSize = code[^1].GetEndOffset();
         var leaders = new BitSet(codeSize);
+        leaders.Add(codeSize);
 
         foreach (ref var inst in code) {
             if (!inst.OpCode.IsTerminator()) continue;

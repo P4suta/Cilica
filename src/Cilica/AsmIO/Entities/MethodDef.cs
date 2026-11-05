@@ -9,6 +9,7 @@ public abstract class MethodDesc : MemberDesc
 {
     public abstract MethodAttributes Attribs { get; set; }
     public abstract MethodImplAttributes ImplAttribs { get; set; }
+    public virtual CallConvention CallConv { get; set; }
 
     public abstract TypeSig ReturnSig { get; }
     public abstract IReadOnlyList<TypeSig> ParamSig { get; }
@@ -18,6 +19,10 @@ public abstract class MethodDesc : MemberDesc
     public bool IsInstance => !IsStatic;
     public bool IsGeneric => GenericParams.Count > 0;
     public bool IsPublic => (Attribs & MethodAttributes.MemberAccessMask) == MethodAttributes.Public;
+
+    /// <summary> Whether the runtime rewrites this method's async body and return convention. </summary>
+    // MethodImplAttributes.Async is not available in our target framework yet.
+    public bool IsRuntimeAsync => (ImplAttribs & (MethodImplAttributes)0x2000) != 0;
 
     public bool IsConstructor => IsSpecialMethod(".ctor");
     public bool IsStaticConstructor => IsSpecialMethod(".cctor");
@@ -172,6 +177,7 @@ public class MethodDef : MethodDefOrSpec
 /// <summary> Represents a generic method instantiation. </summary>
 public class MethodSpec : MethodDefOrSpec
 {
+    public override CallConvention CallConv { get => Definition.CallConv; set => Definition.CallConv = value; }
     public override MethodDef Definition { get; }
     public override TypeDefOrSpec DeclaringType { get; }
     public override string Name {
@@ -223,6 +229,69 @@ public class MethodSpec : MethodDefOrSpec
             types[index++] = par.Sig.GetSpec(genCtx);
         }
         return types;
+    }
+}
+
+/// <summary> Preserves a call-site signature when its target or optional arguments cannot be represented by a definition. </summary>
+public sealed class MethodReference : MethodDesc
+{
+    public EntityDesc Parent { get; }
+    public MethodSig Signature { get; }
+    public MethodReference? GenericDefinition { get; }
+    public MethodDesc? Target { get; }
+    public override TypeDesc DeclaringType => Parent is TypeDesc type ? type : ((MethodDesc)Parent).DeclaringType;
+    public override string Name { get; set; }
+    public override MethodAttributes Attribs { get; set; }
+    public override MethodImplAttributes ImplAttribs { get; set; }
+    public override CallConvention CallConv { get => Signature.CallConv; set => throw new InvalidOperationException(); }
+    readonly MethodSig _boundSignature;
+    public override TypeSig ReturnSig => _boundSignature.ReturnType;
+    public override IReadOnlyList<TypeSig> ParamSig { get; }
+    public override IReadOnlyList<TypeDesc> GenericParams { get; }
+
+    public MethodReference(EntityDesc parent, string name, MethodSig signature, MethodReference? genericDefinition = null,
+        ImmutableArray<TypeDesc> genericArguments = default, MethodDesc? resolvedTarget = null)
+    {
+        Parent = parent;
+        Name = name;
+        Signature = signature;
+        GenericDefinition = genericDefinition;
+        Target = resolvedTarget ?? parent as MethodDesc;
+        Attribs = Target is { } method ? method.Attribs
+            : MethodAttributes.Public | (signature.IsInstance == true ? 0 : MethodAttributes.Static);
+        ImplAttribs = Target?.ImplAttribs ?? default;
+        GenericParams = genericArguments.IsDefault
+            ? Enumerable.Range(0, signature.NumGenericParams).Select(i => (TypeDesc)GenericParamType.GetUnbound(i, true)).ToArray()
+            : genericArguments;
+        _boundSignature = signature.GetSpec(new GenericContext(DeclaringType.GenericParams, GenericParams));
+        ParamSig = signature.IsInstance == true
+            ? [DeclaringType.IsValueType ? DeclaringType.CreateByref() : DeclaringType, .._boundSignature.ParamTypes]
+            : _boundSignature.ParamTypes;
+    }
+
+    public override MethodDesc GetSpec(GenericContext context)
+    {
+        if (GenericDefinition != null) {
+            return GenericDefinition.GetSpec(context).GetSpec(context.FillParams(GenericParams));
+        }
+        var parent = Parent is TypeDesc type ? (EntityDesc)type.GetSpec(context) : ((MethodDesc)Parent).GetSpec(context);
+        var signature = Signature;
+        if (CallConv == CallConvention.VarArgs) {
+            // Optional varargs belong to the caller's generic context, unlike
+            // the fixed signature declared by the referenced method.
+            var parameters = signature.ParamTypes.Select((parameter, index) => index < signature.RequiredParameterCount
+                ? parameter : parameter.GetSpec(context)).ToArray();
+            signature = new MethodSig(signature.ReturnType, parameters, signature.Header, signature.NumGenericParams,
+                signature.RequiredParameterCount);
+        }
+        return parent == Parent && signature.Equals(Signature) ? this : new MethodReference(parent, Name, signature,
+            resolvedTarget: Target?.GetSpec(context));
+    }
+
+    public override MethodDesc GetSpec(ImmutableArray<TypeDesc> arguments)
+    {
+        Ensure.That(GenericDefinition == null && arguments.Length == Signature.NumGenericParams);
+        return new MethodReference(Parent, Name, Signature, this, arguments, Target);
     }
 }
 

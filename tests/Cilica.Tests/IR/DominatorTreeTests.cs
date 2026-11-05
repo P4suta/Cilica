@@ -5,6 +5,26 @@ using Cilica.IR;
 
 public class DomTreeTests
 {
+    [Fact]
+    public void DominanceFrontiersIgnoreUnreachablePredecessorsAndCycles()
+    {
+        var body = Utils.CreateDummyMethodBody();
+        var entry = body.CreateBlock();
+        var exit = body.CreateBlock();
+        var dead = body.CreateBlock();
+        var deadLoop = body.CreateBlock();
+        entry.SetBranch(exit);
+        exit.SetBranch(new ReturnInst());
+        dead.SetBranch(new BranchInst(ConstInt.CreateI(1), exit, deadLoop));
+        deadLoop.SetBranch(new BranchInst(ConstInt.CreateI(1), deadLoop, dead));
+        var dominators = new DominatorTree(body);
+        var frontiers = new DominanceFrontier(body, dominators);
+        Assert.False(dominators.IsReachable(dead));
+        Assert.Equal(0, frontiers.Of(entry).Count);
+        Assert.Equal(0, frontiers.Of(dead).Count);
+        Assert.Equal(0, frontiers.Of(deadLoop).Count);
+    }
+
     public static readonly IReadOnlyList<object[]> TestData = [
         new[] { GetData1() },
         new[] { GetData2() }

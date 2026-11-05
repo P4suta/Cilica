@@ -14,6 +14,8 @@ internal class BlockState
 
     readonly ArrayStack<Value> _stack;
     readonly List<BlockState> _preds = new();
+    PhiInst[] _entryPhis = [];
+    int _mergedPredCount, _entryStackHeight;
 
     private InstFlags _prefixFlags = InstFlags.None;
     private TypeDesc? _callConstraint;
@@ -66,7 +68,7 @@ internal class BlockState
     private BasicBlock AddSucc(int offset)
     {
         var succ = _importer.GetBlock(offset);
-        succ._preds.Add(this);
+        if (!succ._preds.Contains(this)) succ._preds.Add(this);
         return _importer.GetBranchTarget(StartOffset, offset);
     }
     // Adds the last instruction in the block (a branch).
@@ -83,25 +85,19 @@ internal class BlockState
     {
         if (_preds.Count == 0) return;
 
-        // Phis are not necessary if there's only one pred
-        if (_preds.Count == 1) {
-            foreach (var value in _preds[0]._stack) {
-                _stack.Push(value);
-            }
-            return;
-        }
+        _mergedPredCount = _preds.Count;
         int maxDepth = _preds[0]._stack.Count;
 
         // We don't make any guarantees for invalid IL, this is just for good measure.
         Debug.Assert(_preds.All(b => b._stack.Count == maxDepth));
 
         if (maxDepth == 0) return;
+        _entryPhis = new PhiInst[maxDepth];
 
         for (int depth = 0; depth < maxDepth; depth++) {
             var args = new PhiArg[_preds.Count];
             int argIdx = 0;
             var type = default(TypeDesc);
-            bool allSameArg = true;
 
             foreach (var pred in _preds) {
                 if (pred._stack.Count != maxDepth) throw Fail();
@@ -112,18 +108,39 @@ internal class BlockState
                 if (value is not ConstNull) {
                     type = GetMergedStackType(type, value.ResultType) ?? throw Fail();
                 }
-                allSameArg &= argIdx < 2 || args[argIdx - 2].Value.Equals(value);
             }
             type ??= PrimType.Object; // all args were ConstNull`s
 
-            var result = allSameArg
-                ? args[0].Value
-                : EntryBlock.InsertPhi(new PhiInst(type, args));
+            // Backedges may not have been imported yet. Keep a placeholder
+            // even for a single incoming value, then complete it after import.
+            var result = _entryPhis[depth] = EntryBlock.InsertPhi(new PhiInst(type, args));
 
             _stack.Push(result);
         }
 
         Exception Fail() => throw Error("Inconsistent evaluation stack between basic blocks.");
+    }
+
+    public void CompleteStackPhis()
+    {
+        foreach (var predecessor in _preds) {
+            if (predecessor._stack.Count != _entryStackHeight) throw Error("Inconsistent evaluation stack on a backedge.");
+        }
+        if (_preds.Count == _mergedPredCount || _entryStackHeight == 0) return;
+        if (_entryPhis.Length != _entryStackHeight) {
+            throw new NotSupportedException("Stack-carrying branches into exceptional entries are not supported");
+        }
+        for (int i = _mergedPredCount; i < _preds.Count; i++) {
+            var predecessor = _preds[i];
+            for (int depth = 0; depth < _entryPhis.Length; depth++) {
+                var phi = _entryPhis[depth];
+                var value = predecessor._stack[depth];
+                if (value is not ConstNull && GetMergedStackType(phi.ResultType, value.ResultType) != phi.ResultType) {
+                    throw new NotSupportedException("Evaluation stack type widens on a backedge");
+                }
+                phi.AddArg(predecessor.Block, value);
+            }
+        }
     }
 
     private TypeDesc? GetMergedStackType(TypeDesc? currType, TypeDesc newType)
@@ -148,10 +165,12 @@ internal class BlockState
     public void ImportCode(Span<ILInstruction> code)
     {
         MergePredStacks();
+        _entryStackHeight = _stack.Count;
         var seqPoints = _importer._debugSyms?.SequencePoints;
         int seqIndex = _importer._debugSyms?.IndexOfSequencePoint(code[0].Offset) ?? -1;
 
-        foreach (ref var inst in code) {
+        for (int instructionIndex = 0; instructionIndex < code.Length; instructionIndex++) {
+            ref var inst = ref code[instructionIndex];
             // Update debug location info
             if (seqPoints != null) {
                 while (seqIndex + 1 < seqPoints.Count &&  inst.Offset >= seqPoints[seqIndex + 1].Offset) {
@@ -168,6 +187,12 @@ internal class BlockState
             }
             var prefix = InstFlags.None;
             var opcode = inst.OpCode;
+            if (inst.Operand is TypeDef { IsGeneric: true } && opcode != ILCode.Ldtoken) {
+                throw Error("Type instruction requires an instantiated generic type.");
+            }
+            if (inst.Operand is FieldDesc fieldOperand && fieldOperand.Attribs.HasFlag(System.Reflection.FieldAttributes.Literal)) {
+                throw Error("Literal fields have no runtime storage.");
+            }
 
             #pragma warning disable format
             const bool T = true, F = false;
@@ -243,7 +268,19 @@ internal class BlockState
                 case ILCode.Conv_R8: ImportConv(PrimType.Double,  F); break;
                 case ILCode.Conv_I:  ImportConv(PrimType.IntPtr,  F); break;
                 case ILCode.Conv_U:  ImportConv(PrimType.UIntPtr, F); break;
-                case ILCode.Conv_R_Un: ImportConv(PrimType.Double, F, T); break;
+                case ILCode.Conv_R_Un: {
+                    if (instructionIndex + 1 >= code.Length) {
+                        throw new NotSupportedException("Unsigned floating conversion crosses a block without an explicit precision");
+                    }
+                    ref var next = ref code[instructionIndex + 1];
+                    var precision = GetFloatingSinkType(next);
+                    if (precision == null || !precision.IsFloat()) {
+                        throw new NotSupportedException("Unsigned floating conversion requires a known floating-point sink");
+                    }
+                    ImportConv(precision, F, T);
+                    if (next.OpCode is ILCode.Conv_R4 or ILCode.Conv_R8) instructionIndex++;
+                    break;
+                }
 
                 case ILCode.Conv_Ovf_I1: ImportConv(PrimType.SByte,   T); break;
                 case ILCode.Conv_Ovf_I2: ImportConv(PrimType.Int16,   T); break;
@@ -449,6 +486,10 @@ internal class BlockState
                 #endregion
 
                 #region Intrinsics
+                case ILCode.Arglist:
+                    if (_body.Definition.CallConv != CallConvention.VarArgs) throw Error("arglist requires a vararg method.");
+                    Push(new CilIntrinsic.ArgList(_mod.Resolver));
+                    break;
                 case ILCode.Newarr:
                     Push(new CilIntrinsic.NewArray((TypeDesc)inst.Operand!, Pop()));
                     break;
@@ -473,6 +514,12 @@ internal class BlockState
                 case ILCode.Refanytype:
                     Push(new CilIntrinsic.RefAnyType(_mod.Resolver, Pop()));
                     break;
+                case ILCode.Mkrefany:
+                    Push(new CilIntrinsic.MkRefAny((TypeDesc)inst.Operand!, Pop()));
+                    break;
+                case ILCode.Refanyval:
+                    Push(new CilIntrinsic.RefAnyVal((TypeDesc)inst.Operand!, Pop()));
+                    break;
                 case ILCode.Initobj:
                     Emit(new CilIntrinsic.MemSet(Pop(), (TypeDesc)inst.Operand!, PopPointerFlags()));
                     break;
@@ -488,9 +535,12 @@ internal class BlockState
                 case ILCode.Sizeof:
                     Push(new CilIntrinsic.SizeOf((TypeDesc)inst.Operand!));
                     break;
-                case ILCode.Localloc:
-                    Push(new CilIntrinsic.Alloca(Pop()));
+                case ILCode.Localloc: {
+                    var size = Pop();
+                    if (_stack.Count != 0) throw Error("localloc requires an otherwise empty evaluation stack.");
+                    Push(new CilIntrinsic.Alloca(size));
                     break;
+                }
                 case ILCode.Ckfinite:
                     Push(new CilIntrinsic.CheckFinite(value: Pop()));
                     break;
@@ -564,7 +614,14 @@ internal class BlockState
             }
             case VarFlags.Stored: {
                 if (isBlockLocal) {
-                    _importer.SetBlockLocalVarSlot(index, Pop());
+                    var value = Pop();
+                    var type = _importer._ilBody.Locals[index].Type;
+                    if (StoreInst.MustBeCoerced(type, value)) {
+                        var conversion = new ConvertInst(value, type.StackType == StackType.ByRef ? PrimType.IntPtr : type);
+                        Emit(conversion);
+                        value = conversion;
+                    }
+                    _importer.SetBlockLocalVarSlot(index, value);
                 } else {
                     var store = new StoreInst(slot, Pop());
                     Emit(store);
@@ -610,15 +667,51 @@ internal class BlockState
         Push(new ConvertInst(value, dstType, checkOverflow, srcUnsigned));
     }
 
+    private TypeDesc? GetFloatingSinkType(ILInstruction next)
+    {
+        // conv.r.un produces the CIL evaluation-stack F type. Its immediate
+        // conversion/storage determines precision; forcing double first can
+        // double-round a uint64-to-single conversion.
+        var (operation, index) = ILImporter.GetVarInstOp(next.OpCode, next.Operand);
+        if ((operation & VarFlags.Stored) != 0) {
+            return (operation & VarFlags.IsLocal) != 0 ? _importer._ilBody.Locals[index].Type : _body.Args[index].ResultType;
+        }
+        return next.OpCode switch {
+            ILCode.Conv_R4 or ILCode.Stind_R4 => PrimType.Single,
+            ILCode.Conv_R8 or ILCode.Stind_R8 => PrimType.Double,
+            ILCode.Ret => _body.ReturnType,
+            ILCode.Stfld or ILCode.Stsfld => ((FieldDesc)next.Operand!).Type,
+            ILCode.Stobj => (TypeDesc)next.Operand!,
+            ILCode.Call or ILCode.Callvirt or ILCode.Newobj when next.Operand is MethodDesc { ParamSig.Count: > 0 } method
+                => method.ParamSig[^1].Type,
+            _ => null
+        };
+    }
+
     private void ImportCompare(CompareOp op, CompareOp fltOp)
     {
         var right = Pop();
         var left = Pop();
         Push(CreateCompare(op, fltOp, left, right));
     }
-    private static CompareInst CreateCompare(CompareOp op, CompareOp fltOp, Value left, Value right)
+    private CompareInst CreateCompare(CompareOp op, CompareOp fltOp, Value left, Value right, bool unsignedNativeExtension = false)
     {
         bool isFloat = left.ResultType.Kind.IsFloat() || right.ResultType.Kind.IsFloat();
+        if (!isFloat) {
+            // CIL's signed and unsigned comparisons extend mixed int32/native
+            // operands differently. Make the extension explicit before a later
+            // pass negates or fuses the comparison into a branch.
+            var nativeType = unsignedNativeExtension ? PrimType.UIntPtr : PrimType.IntPtr;
+            if (left.ResultType.IsPointerLike() && right.ResultType.StackType == StackType.Int) {
+                var conversion = new ConvertInst(right, nativeType);
+                Emit(conversion);
+                right = conversion;
+            } else if (right.ResultType.IsPointerLike() && left.ResultType.StackType == StackType.Int) {
+                var conversion = new ConvertInst(left, nativeType);
+                Emit(conversion);
+                left = conversion;
+            }
+        }
         return new CompareInst(isFloat ? fltOp : op, left, right);
     }
 
@@ -636,7 +729,8 @@ internal class BlockState
     {
         var right = Pop();
         var left = Pop();
-        AddBranch(ref inst, CreateCompare(op, fltOp, left, right));
+        AddBranch(ref inst, CreateCompare(op, fltOp, left, right,
+            unsignedNativeExtension: op is CompareOp.Ne or CompareOp.Ult or CompareOp.Ule or CompareOp.Ugt or CompareOp.Uge));
     }
     private void AddBranch(ref ILInstruction inst, CompareInst? cond = null)
     {
@@ -673,7 +767,7 @@ internal class BlockState
     }
     private void ImportLoadElem(TypeDesc? elemType)
     {
-        var addr = EmitArrayAddress(elemType);
+        var addr = EmitArrayAddress(elemType, preserveType: true);
         Push(new LoadInst(addr));
     }
     private void ImportStoreElem(TypeDesc? elemType)
@@ -685,15 +779,15 @@ internal class BlockState
     }
     private void ImportLoadElemAddr(TypeDesc elemType)
     {
-        PushNoEmit(EmitArrayAddress(elemType));
+        PushNoEmit(EmitArrayAddress(elemType, preserveType: true));
     }
-    private AddressInst EmitArrayAddress(TypeDesc? elemType)
+    private AddressInst EmitArrayAddress(TypeDesc? elemType, bool preserveType = false)
     {
         var index = Pop();
         var array = Pop();
 
         var inst = new ArrayAddrInst(
-            array, index, NormalizeStorageType(elemType, array.ResultType),
+            array, index, NormalizeStorageType(elemType, array.ResultType, inferUnsigned: !preserveType),
             inBounds: HasPrefix(InstFlags.NoRangeCheck | InstFlags.NoNullCheck),
             readOnly: HasPrefix(InstFlags.Readonly));
         Emit(inst);
@@ -704,7 +798,7 @@ internal class BlockState
     {
         var addr = Pop();
 
-        Push(new LoadInst(addr, NormalizeStorageType(type, addr.ResultType), PopPointerFlags()));
+        Push(new LoadInst(addr, NormalizeStorageType(type, addr.ResultType, inferUnsigned: false), PopPointerFlags()));
     }
     private void ImportStoreInd(TypeDesc? type)
     {
@@ -720,7 +814,7 @@ internal class BlockState
         if (HasPrefix(InstFlags.Volatile)) flags |= PointerFlags.Volatile;
         return flags;
     }
-    private static TypeDesc NormalizeStorageType(TypeDesc? type, TypeDesc actualArrayOrPtrType)
+    private static TypeDesc NormalizeStorageType(TypeDesc? type, TypeDesc actualArrayOrPtrType, bool inferUnsigned = true)
     {
         if (type == null) {
             // ld/st .ref variants get null type. Infer from storage type or fallback to `object`.
@@ -733,15 +827,12 @@ internal class BlockState
         if (type is TypeDef def && PrimType.GetFromDefinition(def) is { } alias) {
             type = alias;
         }
-        // Infer unsigned type based on `actualStorageType`.
-        // This is useful for load instructions, as they don't have many variants
-        // for unsigned types.
-        // Once again, the only purpose of this is consistency - signed and unsigned 
-        // types can be freely interchanged in both IL and IR.
+        // Stores have no unsigned variants. Loads must retain their opcode's
+        // sign/zero extension, even when the underlying storage has another type.
         var kind = type.Kind;
         var actualKind = actualArrayOrPtrType.ElemType?.Kind ?? TypeKind.Void;
 
-        if (kind != actualKind && actualKind.IsUnsigned() && kind.GetUnsigned() == actualKind) {
+        if (inferUnsigned && kind != actualKind && actualKind.IsUnsigned() && kind.GetUnsigned() == actualKind) {
             type = PrimType.GetFromKind(kind.GetUnsigned());
         }
         return type;
@@ -749,6 +840,7 @@ internal class BlockState
 
     private void ImportLoadField(FieldDesc field, bool isStatic)
     {
+        var flags = PopPointerFlags();
         var obj = isStatic ? null : Pop();
         // ldfld may legally name a static field; its receiver is consumed but ignored.
         if (!field.IsInstance) obj = null;
@@ -756,16 +848,19 @@ internal class BlockState
         // A native integer loaded from memory is an address, not a struct value.
         // Removing that load would access the pointer's storage instead of its target.
         if (obj != null && obj.ResultType.IsValueType && !obj.ResultType.IsPointerLike()) {
-            if (obj is LoadInst load) {
-                obj = load.Address;
-            } else {
+            // Loaded structs are snapshots, even when their original storage
+            // is subsequently modified. Do not recover that storage's address.
+            if (flags == 0) {
                 Push(new FieldExtractInst(field, obj));
                 return;
             }
+            var copy = _body.CreateVar(obj.ResultType, "fieldReceiver");
+            Emit(new StoreInst(copy, obj));
+            obj = copy;
         }
         var addr = new FieldAddrInst(field, obj);
         Emit(addr);
-        Push(new LoadInst(addr, flags: PopPointerFlags()));
+        Push(new LoadInst(addr, flags: flags));
     }
     private void ImportStoreField(FieldDesc field, bool isStatic)
     {
@@ -782,8 +877,8 @@ internal class BlockState
         var obj = isStatic ? null : Pop();
         if (!field.IsInstance) obj = null;
         
-        if (obj is LoadInst ld && ld.ResultType.IsValueType && !ld.ResultType.IsPointerLike()) {
-            obj = ld.Address;
+        if (obj != null && obj.ResultType.IsValueType && !obj.ResultType.IsPointerLike()) {
+            throw Error("Field address or store requires an addressable receiver.");
         }
         var inst = new FieldAddrInst(field, obj);
         Emit(inst);
@@ -796,12 +891,13 @@ internal class BlockState
         var constraint = HasPrefix(InstFlags.Constrained) ? _callConstraint : null;
         var inst = new CallInst(method, args, isVirt, constraint);
         inst.IsTailCall = HasPrefix(InstFlags.Tailcall);
+        inst.IsReadOnly = HasPrefix(InstFlags.Readonly);
         Push(inst);
     }
     private void ImportLoadFuncPtr(MethodDesc method, bool isVirt)
     {
         var obj = isVirt ? Pop() : null;
-        Push(new FuncAddrInst(method, obj));
+        Push(new FuncAddrInst(method, obj, HasPrefix(InstFlags.Constrained) ? _callConstraint : null));
     }
 
     private void ImportCallIndirect(FuncPtrType type)
@@ -820,6 +916,7 @@ internal class BlockState
         var args = PopCallArgs(ctor, true);
         Push(new NewObjInst(ctor, args));
     }
+
     private Value[] PopCallArgs(MethodDesc method, bool ctor = false)
     {
         var args = new Value[method.ParamSig.Count - (ctor ? 1 : 0)];
@@ -833,6 +930,7 @@ internal class BlockState
     {
         bool isVoid = _body.ReturnType.Kind == TypeKind.Void;
         var value = isVoid ? null : Pop();
+        if (_stack.Count != 0) throw Error("Return requires an otherwise empty evaluation stack.");
 
         Emit(new ReturnInst(value));
     }
@@ -884,6 +982,7 @@ internal class BlockState
     private void ImportResume(bool isFromFilter)
     {
         var filterResult = isFromFilter ? Pop() : null;
+        if (_stack.Count != 0) throw Error("Exception handler termination requires an otherwise empty evaluation stack.");
         TerminateBlock(new ResumeInst([], filterResult), clearStack: true);
         
         _importer._blocksEndingWithEhResume.Add(this);

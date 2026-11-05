@@ -17,6 +17,9 @@ partial class ILGenerator
     {
         Push(inst.Value);
         _asm.Emit(ILTables.GetConvertCode(inst));
+        if (inst.SrcUnsigned && !inst.CheckOverflow && inst.ResultType.IsFloat()) {
+            _asm.Emit(inst.ResultType == PrimType.Single ? ILCode.Conv_R4 : ILCode.Conv_R8);
+        }
     }
     public void Visit(CompareInst inst)
     {
@@ -70,6 +73,9 @@ partial class ILGenerator
 
     private bool EmitContainedLoadOrStore(MemoryInst inst, Value? valToStore)
     {
+        // Local/array instructions cannot carry these prefixes. Keep the
+        // indirect form so volatile ordering and alignment are preserved.
+        if (inst.Flags != 0) return false;
         if (inst.Address is AddressInst addr && addr.ElemType == inst.ElemType && _forest.IsLeaf(addr)) {
             if (addr is ArrayAddrInst arrayAddr) {
                 EmitLoadOrStoreArray(arrayAddr, valToStore);
@@ -115,7 +121,14 @@ partial class ILGenerator
         var localVar = GetSlotVarMapping(slot);
 
         if (valToStore == null) {
-            _asm.EmitLoad(localVar);
+            if (slot.Type.Kind.IsSmallInt()) {
+                // An aliased byte/short write need not initialize the unused
+                // upper bytes of a JIT local. Load its actual storage width.
+                _asm.EmitAddr(localVar);
+                _asm.Emit(ILTables.GetPtrAccessCode(slot.Type, ld: true));
+            } else {
+                _asm.EmitLoad(localVar);
+            }
         } else {
             Push(valToStore);
             _asm.EmitStore(localVar);
@@ -195,6 +208,7 @@ partial class ILGenerator
         if (inst.Constraint != null) {
             _asm.Emit(ILCode.Constrained_, inst.Constraint);
         }
+        if (inst.IsReadOnly) _asm.Emit(ILCode.Readonly_);
         var code = inst.IsVirtual ? ILCode.Callvirt : ILCode.Call;
         _asm.Emit(code, inst.Method);
     }
@@ -203,6 +217,7 @@ partial class ILGenerator
         if (inst.IsVirtual) {
             Push(inst.Object);
         }
+        if (inst.Constraint != null) _asm.Emit(ILCode.Constrained_, inst.Constraint);
         var code = inst.IsVirtual ? ILCode.Ldvirtftn : ILCode.Ldftn;
         _asm.Emit(code, inst.Method);
     }
@@ -253,6 +268,8 @@ partial class ILGenerator
             case ILCode.Isinst:
             case ILCode.Box:
             case ILCode.Ldtoken:
+            case ILCode.Mkrefany:
+            case ILCode.Refanyval:
             case ILCode.Sizeof: {
                 _asm.Emit(op, inst.StaticArgs[0]);
                 break;
@@ -260,6 +277,7 @@ partial class ILGenerator
             case ILCode.Nop:
             case ILCode.Ldlen:
             case ILCode.Refanytype:
+            case ILCode.Arglist:
             case ILCode.Localloc:
             case ILCode.Ckfinite: {
                 _asm.Emit(op);
@@ -379,7 +397,7 @@ partial class ILGenerator
     {
         if (inst.IsFromFilter) {
             Push(inst.FilterResult);
-            _asm.Emit(ILCode.Endfilter);
+            _asm.Emit(ILCode.Br, _filterExits[inst.Block]);
         } else {
             _asm.Emit(ILCode.Endfinally);
         }

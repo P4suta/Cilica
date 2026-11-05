@@ -122,6 +122,41 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
     delegate RuntimeTypeHandle TypeToken(TypedReference reference);
 
     [Fact]
+    public void TypedReferenceAddressesAndTypeChecksRoundTrip()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32.CreateByref());
+        var builder = new IRBuilder(body.CreateBlock());
+        var reference = builder.Emit(new CilIntrinsic.MkRefAny(PrimType.Int32, body.Args[0]));
+        var address = builder.Emit(new CilIntrinsic.RefAnyVal(PrimType.Int32, reference));
+        builder.CreateStore(address, ConstInt.CreateI(42));
+        builder.CreateReturn(builder.CreateLoad(address));
+        for (int i = 0; i < 2; i++) {
+            body.Definition.ILBody = ILGenerator.GenerateCode(body);
+            body = Cilica.Frontend.ILImporter.ParseCode(body.Definition);
+            body.Definition.Body = body;
+            Run(body, new SimplifyInsts(_modResolver), new DeadCodeElim());
+        }
+        var write = Utils.Compile<TypedReferenceWriter>(body);
+        int number = 0;
+        Assert.Equal(42, write(ref number));
+        Assert.Equal(42, number);
+
+        body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.TypedRef);
+        builder = new IRBuilder(body.CreateBlock());
+        address = builder.Emit(new CilIntrinsic.RefAnyVal(PrimType.Int32, body.Args[0]));
+        builder.CreateReturn(builder.CreateLoad(address));
+        var read = Utils.Compile<TypedReferenceReader>(body);
+        Assert.Equal(42, read(__makeref(number)));
+        string text = "wrong type";
+        bool rejected = false;
+        try { read(__makeref(text)); } catch (InvalidCastException) { rejected = true; }
+        Assert.True(rejected);
+    }
+
+    delegate int TypedReferenceWriter(ref int value);
+    delegate int TypedReferenceReader(TypedReference value);
+
+    [Fact]
     public void NativeZeroKeepsItsStackTypeWhenAlsoUsedByAByrefPhi()
     {
         var byref = PrimType.Int32.CreateByref();

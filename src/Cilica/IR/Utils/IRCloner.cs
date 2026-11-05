@@ -266,12 +266,14 @@ public class IRCloner
             Out((_ctx._foldConstants ? ConstFolding.FoldCall(method, args) : null)
                 ?? new CallInst(method, args, inst.IsVirtual, inst.Constraint == null ? null : Remap(inst.Constraint)) {
                     InBounds = inst.InBounds,
-                    IsTailCall = inst.IsTailCall
+                    IsTailCall = inst.IsTailCall,
+                    IsReadOnly = inst.IsReadOnly
                 });
         }
 
         public void Visit(NewObjInst inst) => Out(new NewObjInst(Remap(inst.Constructor), RemapArgs(inst.Args)));
-        public void Visit(FuncAddrInst inst) => Out(new FuncAddrInst(Remap(inst.Method), inst.IsVirtual ? Remap(inst.Object) : null));
+        public void Visit(FuncAddrInst inst) => Out(new FuncAddrInst(Remap(inst.Method), inst.IsVirtual ? Remap(inst.Object) : null,
+            inst.Constraint == null ? null : Remap(inst.Constraint)));
 
         public void Visit(IntrinsicInst inst)
         {

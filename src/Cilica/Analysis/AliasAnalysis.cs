@@ -31,13 +31,23 @@ public class AliasAnalysis : IMethodAnalysis
 
         switch (v1, v2) {
             case (FieldAddrInst f1, FieldAddrInst f2): {
-                if (f1.Field == f2.Field) {
-                    return f1.IsStatic || MayAlias(f1.Obj, f2.Obj!);
-                }
-                // Different fields will never alias, unless they're in an struct with explicit layout
                 var field1 = ((FieldDefOrSpec)f1.Field).Definition;
                 var field2 = ((FieldDefOrSpec)f2.Field).Definition;
-                return field1.DeclaringType == field2.DeclaringType && field1.HasLayoutOffset;
+                if (field1 == field2 && f1.Field.DeclaringType == f2.Field.DeclaringType) {
+                    return f1.IsStatic || MayAlias(f1.Obj, f2.Obj!);
+                }
+                if (f1.IsStatic && f2.IsStatic) {
+                    if (field1.MappedData != null && field2.MappedData != null) return true;
+                    return field1 == field2 && (f1.Field.DeclaringType.IsUnboundGeneric || f2.Field.DeclaringType.IsUnboundGeneric);
+                }
+                // Nested union fields and retyped byrefs can overlap even when
+                // their immediate declaring types and field names differ.
+                if (field1.DeclaringType.IsValueType || field2.DeclaringType.IsValueType) {
+                    bool sameStorage = f1.IsInstance && f2.IsInstance && f1.Obj == f2.Obj &&
+                        f1.Field.DeclaringType == f2.Field.DeclaringType;
+                    return !sameStorage || field1.HasLayoutOffset || field2.HasLayoutOffset;
+                }
+                return field1.HasLayoutOffset || field2.HasLayoutOffset;
             }
             case (FieldAddrInst f1, ArrayAddrInst a1): {
                 return f1.IsInstance && f1.Field.DeclaringType.IsValueType && 
@@ -66,9 +76,9 @@ public class AliasAnalysis : IMethodAnalysis
     private bool MayTypesAlias(TypeDesc t1, TypeDesc t2)
     {
         if (!object.ReferenceEquals(t1, t2)) {
-            // Assume that pointers always alias unless one points to a managed object and the other doesn't.
+            // Unsafe.As and raw CIL can reinterpret the same storage.
             if (t1 is PointerType && t2 is PointerType) {
-                return t1.ElemType!.IsManagedObject() == t2.ElemType!.IsManagedObject();
+                return true;
             }
             if (t1 is ArrayType && t2 is ArrayType) {
                 var e1 = t1.ElemType!;
@@ -95,13 +105,14 @@ public class AliasAnalysis : IMethodAnalysis
 
         if (isObj1 || isObj2) {
             if (isObj1 && isObj2) {
-                if (t1 is GenericParamType || t2 is GenericParamType) return true;
+                if (t1.IsUnboundGeneric || t2.IsUnboundGeneric) return true;
                 if (t1.Inherits(t2) || t2.Inherits(t1)) return true;
                 // An unsealed class can have subclasses implementing an interface;
                 // unrelated interfaces can share the same concrete implementation.
                 if (t1.IsInterface || t2.IsInterface) {
                     var other = t1.IsInterface ? t2 : t1;
-                    return other is not TypeDefOrSpec def || !def.Attribs.HasFlag(System.Reflection.TypeAttributes.Sealed);
+                    return other is not TypeDefOrSpec def || !def.Attribs.HasFlag(System.Reflection.TypeAttributes.Sealed) ||
+                        TypeUtils.CanHaveDynamicInterfaces(other);
                 }
                 return false;
             }

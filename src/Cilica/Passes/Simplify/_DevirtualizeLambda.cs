@@ -62,10 +62,16 @@ partial class SimplifyInsts
         static bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc, LoadInst? cacheLoad = null)
         {
             if (alloc is not { Args: [var instanceObj, FuncAddrInst { Method: var method } addr] }) return false;
+            if (addr.Constraint != null) return false;
             if (call.NumArgs - (method.IsStatic ? 1 : 0) != method.ParamSig.Count) return false;
+            // A delegate may capture an unchecked or independently resolved
+            // virtual target. Only replace it when a direct call has the same receiver.
+            if (method.IsInstance && !method.DeclaringType.IsValueType &&
+                !instanceObj.ResultType.IsAssignableTo(method.DeclaringType)) return false;
+            if (addr.IsVirtual && addr.Object != instanceObj) return false;
 
             if (instanceObj is ConstNull) {
-                call.ReplaceWith(new CallInst(method, call.Args[1..].ToArray()), insertIfInst: true);
+                call.ReplaceWith(new CallInst(method, call.Args[1..].ToArray()) { IsTailCall = call.IsTailCall }, insertIfInst: true);
                 return true;
             } else if (method.IsInstance) {
                 // Cached instance targets must be available on both phi edges.
@@ -87,6 +93,11 @@ partial class SimplifyInsts
                         newLoad.InsertBefore(call);
                     }
                     instanceObj = newLoad;
+                }
+                if (method.DeclaringType.IsValueType) {
+                    var address = new CilIntrinsic.UnboxRef(method.DeclaringType, instanceObj);
+                    address.InsertBefore(call);
+                    instanceObj = address;
                 }
                 call.Method = method;
                 call.SetArg(0, instanceObj);

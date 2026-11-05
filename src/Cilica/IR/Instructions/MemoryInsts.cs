@@ -66,6 +66,7 @@ public class StoreInst : MemoryInst
     /// <summary> Checks if <see cref="AddressInst.ElemType"/> differs from the value type, ignoring sign/unsigned mismatches. </summary>
     public bool IsCasting {
         get {
+            if (MustBeCoerced(ElemType, Value)) return true;
             if (ElemType == Value.ResultType) {
                 return false;
             }
@@ -132,7 +133,8 @@ public class StoreInst : MemoryInst
         // III.1.6 Implicit argument coercion
 
         // General native-pointer to managed-reference conversions require an explicit IR operation.
-        return (destType.Kind.IsSmallInt() && destType.Kind.Size() < srcType.Kind.Size()) ||
+        return (destType.Kind.IsSmallInt() && (destType.Kind.Size() < srcType.Kind.Size() ||
+                   destType.Kind.Size() == srcType.Kind.Size() && destType.Kind.IsSigned() != srcType.Kind.IsSigned())) ||
                (destType.StackType == StackType.Int && srcType.StackType == StackType.NInt) ||
                (destType.Kind == TypeKind.Single && srcType.Kind == TypeKind.Double);
     }

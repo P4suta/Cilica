@@ -31,7 +31,7 @@ public class ForestAnalysis : IMethodAnalysis
     {
         var opers = inst.Operands;
 
-        if (inst is StoreInst && opers[0] is FieldAddrInst or ArrayAddrInst) {
+        if (inst is StoreInst { Flags: 0 } && opers[0] is FieldAddrInst or ArrayAddrInst) {
             // For stores, inline the address first to hide hazards, assuming they
             // will be combined into a single CIL instruction.
             InlineOperand(0);

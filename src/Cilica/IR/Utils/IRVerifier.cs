@@ -136,6 +136,9 @@ public class IRVerifier
                 }
             case CilIntrinsic.CallIndirect call: {
                     var signature = call.FunctionType.Signature;
+                    bool thisCall = signature.CallConv == CallConvention.ThisCall || signature.ReturnType.Modifiers.Any(modifier =>
+                        modifier.Type is { Namespace: "System.Runtime.CompilerServices", Name: "CallConvThiscall" } && modifier.Type.IsCorelibType());
+                    Check(!thisCall || signature.NumCallArgs != 0, call, "Thiscall requires a receiver argument");
                     Check(call.Function.ResultType.StackType == StackType.NInt, call, "Indirect call target must be a function pointer");
                     Check(call.CallArgs.Length == signature.NumCallArgs, call, "Indirect call argument count must match its signature");
                     int offset = signature.IsInstance == true && !signature.HasExplicitThis ? 1 : 0;
@@ -157,6 +160,16 @@ public class IRVerifier
                 }
             case CilIntrinsic.RefAnyType typedReference: {
                     Check(typedReference.Args[0].ResultType == PrimType.TypedRef, typedReference, "refanytype requires a typed reference");
+                    break;
+                }
+            case CilIntrinsic.MkRefAny typedReference: {
+                    Check(typedReference.Args[0].ResultType.IsPointerLike(), typedReference,
+                        "mkrefany requires an address");
+                    break;
+                }
+            case CilIntrinsic.RefAnyVal typedReference: {
+                    Check(typedReference.Args[0].ResultType == PrimType.TypedRef, typedReference,
+                        "refanyval requires a typed reference");
                     break;
                 }
             case StoreInst store: {
@@ -217,6 +230,17 @@ public class IRVerifier
                     break;
             }
             case CallInst call: {
+                    Check(call.IsVirtual || call.Method.IsStatic && call.Constraint != null ||
+                        !call.Method.Attribs.HasFlag(System.Reflection.MethodAttributes.Abstract), call,
+                        "Abstract methods require virtual dispatch");
+                    Check(call.Method is not MethodDefOrSpec managedTarget ||
+                        !managedTarget.Definition.HasCustomAttrib("System.Runtime.InteropServices", "UnmanagedCallersOnlyAttribute"),
+                        call, "UnmanagedCallersOnly methods require an unmanaged call site");
+                    if (call.Method is MethodDefOrSpec { Definition.ImportInfo: { } import }) {
+                        bool thisCall = (import.Attribs & System.Reflection.MethodImportAttributes.CallingConventionMask) ==
+                            System.Reflection.MethodImportAttributes.CallingConventionThisCall;
+                        Check(!thisCall || call.NumArgs != 0, call, "Thiscall requires a receiver argument");
+                    }
                     CheckArguments(call, call.Method, call.Args, 0);
                     Check(call.Method.ReturnType.IsStackAssignableTo(call.ResultType), call, "Call result must match the method signature");
 
@@ -234,6 +258,8 @@ public class IRVerifier
 
     private void CheckArguments(Instruction inst, MethodDesc target, ReadOnlySpan<Value> args, int offset)
     {
+        Check(target is not MethodReference { Parent: TypeDef { IsGeneric: true } owner } || owner == _method.Definition.DeclaringType,
+            inst, "Generic member reference requires an instantiated declaring type");
         Check(args.Length + offset == target.ParamSig.Count, inst, "Argument count must match the method signature");
 
         for (int i = 0; i < args.Length && i + offset < target.ParamSig.Count; i++) {
@@ -286,7 +312,7 @@ public class IRVerifier
     {
         source = source.GetSpec(new GenericContext(_method.Definition));
         if (source.IsCorelibType(typeof(Nullable<>))) return IsBoxAssignable(source.GenericParams[0], target, visiting);
-        if (target == PrimType.Object || source.Inherits(target)) return true;
+        if (target == PrimType.Object || IsReferenceAssignable(source, target, new())) return true;
         if (!visiting.Add(source)) return false;
 
         // IL tokens carry unbound parameters. Recover their constraints from the

@@ -16,8 +16,11 @@ public class UnaryInst : Instruction
         : base(value)
     {
         Op = op;
-        ResultType = value.ResultType;
+        ResultType = GetResultType(value.ResultType);
     }
+
+    internal static TypeDesc GetResultType(TypeDesc operandType)
+        => operandType.StackType == StackType.Int && operandType.Kind.Size() < 4 ? PrimType.Int32 : operandType;
 
     public override void Accept(InstVisitor visitor) => visitor.Visit(this);
 }

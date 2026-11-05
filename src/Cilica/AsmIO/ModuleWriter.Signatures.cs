@@ -25,22 +25,22 @@ partial class ModuleWriter
                 break;
             }
             case ArrayType t: {
-                EncodeType(enc.SZArray(), t.ElemType);
+                EncodeType(enc.SZArray(), new TypeSig(t.ElemType, t.ElementModifiers));
                 break;
             }
             case MDArrayType t: {
                 enc.Array(out var elemTypeEnc, out var shapeEnc);
-                EncodeType(elemTypeEnc, t.ElemType);
+                EncodeType(elemTypeEnc, new TypeSig(t.ElemType, t.ElementModifiers));
                 shapeEnc.Shape(t.Rank, t.Sizes, t.LowerBounds);
                 break;
             }
             case ByrefType t: {
                 enc.Builder.WriteByte((byte)SignatureTypeCode.ByReference);
-                EncodeType(enc, t.ElemType);
+                EncodeType(enc, new TypeSig(t.ElemType, t.ElementModifiers));
                 break;
             }
             case PointerType t: {
-                EncodeType(enc.Pointer(), t.ElemType);
+                EncodeType(enc.Pointer(), new TypeSig(t.ElemType, t.ElementModifiers));
                 break;
             }
             case TypeDef t: {
@@ -84,18 +84,20 @@ partial class ModuleWriter
         if (sig.IsGeneric) b.Builder.WriteCompressedInteger(sig.NumGenericParams);
         b.Builder.WriteCompressedInteger(pars.Count);
         EncodeType(new SignatureTypeEncoder(b.Builder), sig.ReturnType);
-        foreach (var par in pars) {
-            EncodeType(new SignatureTypeEncoder(b.Builder), par);
+        for (int i = 0; i < pars.Count; i++) {
+            if (i == sig.RequiredParameterCount) b.Builder.WriteByte((byte)SignatureTypeCode.Sentinel);
+            EncodeType(new SignatureTypeEncoder(b.Builder), pars[i]);
         }
     }
 
     private BlobHandle EncodeMethodSig(MethodDesc method)
     {
+        if (method is MethodReference reference) return EncodeSig(b => EncodeMethodSig(b, reference.Signature));
         return EncodeSig(b => {
             var pars = method.ParamSig;
             int offset = method.IsInstance ? 1 : 0;
 
-            b.MethodSignature(default, method.GenericParams.Count, method.IsInstance)
+            b.MethodSignature((SignatureCallingConvention)method.CallConv, method.GenericParams.Count, method.IsInstance)
                 .Parameters(pars.Count - offset, out var retTypeEnc, out var parsEnc);
 
             EncodeType(retTypeEnc.Type(), method.ReturnSig);
@@ -106,7 +108,7 @@ partial class ModuleWriter
         });
     }
 
-    private BlobHandle EncodeMethodSpecSig(MethodSpec method)
+    private BlobHandle EncodeMethodSpecSig(MethodDesc method)
     {
         return EncodeSig(b => {
             var genArgEnc = b.MethodSpecificationSignature(method.GenericParams.Count);

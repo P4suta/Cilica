@@ -24,6 +24,13 @@ public class ILImporterTests(ModuleResolverFixture fixture)
     [InlineData("FinallyStartsWithTry", 0, "1234")]
     [InlineData("FinallyStartsWithTry", 1, "123")]
     [InlineData("FinallyStartsWithTry", 2, "123")]
+    [InlineData("FinallyStartsWithLoop", 0, "1234")]
+    [InlineData("FinallyStartsWithLoop", 1, "123")]
+    [InlineData("FinallyStartsWithLoop", 2, "12")]
+    [InlineData("CatchBoxedValue", 0, "123")]
+    [InlineData("CatchRestartsTry", 0, "2313")]
+    [InlineData("CatchRestartsTry", 2, "23")]
+    [InlineData("StackCounterLoop", 0, "111")]
     public void ExceptionControlFlowSurvivesRepeatedOptimization(string name, int failAt, string expected)
     {
         using var directory = new TemporaryDirectory();

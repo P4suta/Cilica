@@ -21,6 +21,7 @@ public class Compilation
     private TypeDef? _auxType;
     bool _ownsAuxType;
     readonly HashSet<MemberDesc> _initialAuxMembers = new();
+    readonly Dictionary<ModuleDef, bool> _exceptionWrapping = new();
 
     readonly AnalysisCache<IGlobalAnalysis> _analyses = new();
     readonly HashSet<MethodDef> _failedMethods = new();
@@ -31,7 +32,6 @@ public class Compilation
         Logger = logger;
         Settings = settings;
         Runtime = new RuntimeLibrary(module.Resolver);
-
     }
 
     public A GetAnalysis<A>() where A : IGlobalAnalysis
@@ -84,6 +84,7 @@ public class Compilation
                 }
             }
             if (inst is CallInst { Constraint: { } constraint }) VisitType(constraint);
+            if (inst is FuncAddrInst { Constraint: { } addressConstraint }) VisitType(addressConstraint);
             if (inst is GuardInst { CatchType: { } catchType }) VisitType(catchType);
             if (inst is MemoryInst memory) VisitType(memory.ElemType);
         }
@@ -118,6 +119,7 @@ public class Compilation
             if (type is PrimType or GenericParamType || !visitedTypes.Add(type)) return;
             if (type is CompoundType compound) {
                 VisitType(compound.ElemType);
+                foreach (var modifier in compound.ElementModifiers) VisitType(modifier.Type);
             } else if (type is FuncPtrType pointer) {
                 VisitSignature(pointer.Signature.ReturnType);
                 foreach (var parameter in pointer.Signature.ParamTypes) VisitSignature(parameter);
@@ -136,8 +138,51 @@ public class Compilation
     }
 
     internal bool CanInlineBody(MethodDef caller, MethodDefOrSpec callee, bool scalarReplacement = false)
-        => Module != Resolver.CoreLib ||
-           new InliningAccess(caller.DeclaringType).CheckBody(Ensure.NotNull(callee.Definition.Body), scalarReplacement);
+    {
+        var body = Ensure.NotNull(callee.Definition.Body);
+        if (TypeUtils.HasClassMethodImpls(callee)) return false;
+        if (body.LocalVars().Any(slot => slot.Type is TypeDefOrSpec { IsValueType: false } type &&
+            Passes.ScalarReplacement.HasFinalizer(type))) return false;
+        bool differentExceptionPolicy = caller.Module != callee.Module && WrapsNonExceptions(caller.Module) != WrapsNonExceptions(callee.Module);
+        // Tail calls return from their enclosing method, not an inlined
+        // continuation (including constructor expansion).
+        foreach (var inst in body.Instructions()) {
+            if (inst is CallInst { IsTailCall: true } or CilIntrinsic.CallIndirect { IsTailCall: true }) return false;
+            if (differentExceptionPolicy && inst is GuardInst or ThrowInst) return false;
+            // An unmanaged calli can fail during JIT-time stub validation.
+            // Keep that validation in its original callable frame.
+            if (inst is CilIntrinsic.CallIndirect { FunctionType.Signature.CallConv: not CallConvention.Managed }) return false;
+            // Finalizable allocations depend on their enclosing frame's lifetime,
+            // including hidden temporaries introduced by the runtime JIT.
+            if (inst is NewObjInst allocation && Passes.ScalarReplacement.HasFinalizer(allocation.ResultType)) return false;
+            var called = inst switch { CallInst call => call.Method, NewObjInst obj => obj.Constructor, FuncAddrInst address => address.Method, _ => null };
+            if (called != null && IsFrameSensitive(called)) return false;
+        }
+        return Module != Resolver.CoreLib || new InliningAccess(caller.DeclaringType).CheckBody(body, scalarReplacement);
+    }
+
+    private bool WrapsNonExceptions(ModuleDef module)
+    {
+        if (!_exceptionWrapping.TryGetValue(module, out bool wraps)) {
+            wraps = module.GetCustomAttribs(forAssembly: true).Find(typeof(RuntimeCompatibilityAttribute))
+                ?.GetProperty(nameof(RuntimeCompatibilityAttribute.WrapNonExceptionThrows))?.Value is true;
+            _exceptionWrapping.Add(module, wraps);
+        }
+        return wraps;
+    }
+
+    private static bool IsFrameSensitive(MethodDesc method)
+    {
+        var type = method.DeclaringType;
+        if (!type.IsCorelibType()) return false;
+        return (type.Namespace, type.Name, method.Name) switch {
+            ("System.Diagnostics", "StackTrace" or "StackFrame", ".ctor") => true,
+            ("System.Reflection", "MethodBase", "GetCurrentMethod") => true,
+            ("System.Reflection", "Assembly", "GetCallingAssembly" or "GetExecutingAssembly") => true,
+            ("System", "Environment", "get_StackTrace") => true,
+            _ => false
+        };
+    }
 
     /// <summary> Returns the compiler's auxiliary type for the current module. </summary>
     public TypeDef GetAuxType()
@@ -333,9 +378,15 @@ public class CompilationSettings
 {
     public bool VerifyEachPass { get; init; }
 
+    /// <summary> Maximum input IL instruction count per method; larger bodies retain their input IL. </summary>
+    public int MaxMethodInstructions { get; init; } = 50_000;
+
     /// <summary> If set to true, the resulting module will have a fixed dependency on a little-endianess. </summary>
     public bool AssumeLittleEndian { get; init; } = true; // TODO: add module cctor check
 
     /// <summary> Whether to allow optimizations to inline or make assumptions about methods defined in other assemblies. </summary>
     public bool AllowCrossAssemblyIPO { get; init; } = true;
+
+    /// <summary> Whether to inline method bodies and expand constructors, including scalar replacement. </summary>
+    public bool EnableInlining { get; init; } = true;
 }

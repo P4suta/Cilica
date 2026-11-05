@@ -12,10 +12,10 @@ public class ArrayType : CompoundType
 
     protected override string Postfix => "[]";
 
-    internal ArrayType(TypeDesc elemType)
-        : base(elemType) { }
+    internal ArrayType(TypeDesc elemType, ImmutableArray<TypeModifier> modifiers = default)
+        : base(elemType, modifiers) { }
 
-    internal bool Implements(TypeDefOrSpec itf)
+    internal bool Implements(TypeDefOrSpec itf, HashSet<(TypeDesc, TypeDesc)>? activeVariance)
     {
         return itf.IsCorelibType() && itf.Namespace switch {
             "System"
@@ -24,7 +24,7 @@ public class ArrayType : CompoundType
                 => Array.IndexOf(s_BoxedCollectionNames, itf.Name) >= 0,
             "System.Collections.Generic"
                 => Array.IndexOf(s_GenCollectionNames, itf.Name) >= 0 && 
-                   AreArrayElementsAssignable(ElemType, itf.GenericParams[0]),
+                   AreArrayElementsAssignable(ElemType, itf.GenericParams[0], activeVariance),
             _ => false
         };
     }
@@ -39,7 +39,7 @@ public class ArrayType : CompoundType
     };
 
     protected override CompoundType New(TypeDesc elemType)
-        => new ArrayType(elemType);
+        => new ArrayType(elemType, ElementModifiers);
 }
 
 /// <summary> Represents an overly complicated multi-dimensional array type. </summary>
@@ -90,8 +90,9 @@ public class MDArrayType : CompoundType
         }
     }
 
-    public MDArrayType(TypeDesc elemType, int rank, ImmutableArray<int> lowerBounds, ImmutableArray<int> sizes)
-        : base(elemType)
+    public MDArrayType(TypeDesc elemType, int rank, ImmutableArray<int> lowerBounds, ImmutableArray<int> sizes,
+        ImmutableArray<TypeModifier> modifiers = default)
+        : base(elemType, modifiers)
     {
         Rank = rank;
         LowerBounds = lowerBounds;
@@ -99,10 +100,10 @@ public class MDArrayType : CompoundType
     }
 
     protected override CompoundType New(TypeDesc elemType)
-        => new MDArrayType(elemType, Rank, LowerBounds, Sizes);
+        => new MDArrayType(elemType, Rank, LowerBounds, Sizes, ElementModifiers);
 
     public override bool Equals(TypeDesc? other)
-        => other is MDArrayType o && o.ElemType.Equals(ElemType) && o.Rank == Rank && 
+        => other is MDArrayType o && base.Equals(other) && o.Rank == Rank &&
            o.Sizes.SequenceEqual(Sizes) && o.LowerBounds.SequenceEqual(LowerBounds);
 }
 /// <summary> Represents a multi-dimensional array VES intrinsic (II.14.2) </summary>

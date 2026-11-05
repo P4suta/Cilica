@@ -29,6 +29,20 @@ public class TypeTests
         Assert.Equal(destination.IsAssignableFrom(source), _modResolver.Import(source).IsAssignableTo(_modResolver.Import(destination)));
     }
 
+    [Fact]
+    public void RecursiveContravarianceDoesNotProveAnAssignment()
+    {
+        var module = _modResolver.Create("RecursiveVariance_" + Guid.NewGuid().ToString("N"));
+        var self = module.CreateType(null, "Self");
+        var consumer = _modResolver.Import(typeof(IConsumer<>));
+        var target = consumer.GetSpec([self]);
+        var implemented = consumer.GetSpec([target]);
+        self.Interfaces.Add(implemented);
+        Assert.False(self.IsAssignableTo(target));
+        Assert.False(self.CreateArray().IsAssignableTo(target.CreateArray()));
+        Assert.True(self.IsAssignableTo(implemented));
+    }
+
     readonly ModuleResolver _modResolver;
 
     public TypeTests(ModuleResolverFixture mrf)

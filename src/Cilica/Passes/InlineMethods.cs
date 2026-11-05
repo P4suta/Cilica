@@ -20,6 +20,7 @@ public class InlineMethods : IMethodPass
 
     public MethodPassResult Run(MethodTransformContext ctx)
     {
+        if (!ctx.Compilation.Settings.EnableInlining) return MethodInvalidations.None;
         var worklist = new Queue<(CallInst Call, ImmutableArray<MethodDef> Ancestors)>();
 
         // Find initial calls
@@ -41,7 +42,7 @@ public class InlineMethods : IMethodPass
         while (worklist.TryDequeue(out var item) && budget > 0 && numChanges < _opts.MaxExpansions) {
             var (call, ancestors) = item;
 
-            if (call.Block == null || ancestors.Length >= _opts.MaxDepth) {
+            if (call.Block == null || call.IsTailCall || call.IsReadOnly || ancestors.Length >= _opts.MaxDepth) {
                 continue;
             }
 
@@ -160,6 +161,9 @@ public class InlineMethods : IMethodPass
         var builder = new IRBuilder(call, InsertionDir.Before);
         if (call is CallInst { IsVirtual: true, InBounds: false } && args[0].ResultType.IsManagedObject()) {
             builder.CreateNullCheck(args[0]);
+        }
+        if (target.Module != callerBody.Definition.Module && target.DeclaringType.RequiresModuleInitialization()) {
+            builder.CreateModuleInitialization(target.DeclaringType);
         }
         if (target.RequiresTypeInitialization()) {
             builder.CreateTypeInitialization(target.DeclaringType);

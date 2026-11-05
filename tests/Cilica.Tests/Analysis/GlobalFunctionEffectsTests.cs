@@ -55,7 +55,7 @@ public class GlobalFunctionEffectsTests(ModuleResolverFixture fixture)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Void);
         var type = body.Definition.DeclaringType;
-        var methods = Enumerable.Range(0, 8).Select(i => type.CreateMethod("Node" + i, PrimType.Void, [],
+        var methods = Enumerable.Range(0, 64).Select(i => type.CreateMethod("Node" + i, PrimType.Void, [],
             MethodAttributes.Public | MethodAttributes.Static)).ToArray();
         for (int i = 0; i < methods.Length; i++) {
             methods[i].Body = new MethodBody(methods[i]);
@@ -67,8 +67,28 @@ public class GlobalFunctionEffectsTests(ModuleResolverFixture fixture)
         var effects = new Compilation(body.Definition.Module, new VoidLogger(), new()).GetAnalysis<GlobalFunctionEffects>();
         Assert.True(effects.GetEffects(methods[0]).MayDiverge);
         Assert.Equal(methods.Length, effects.Computations);
+        Assert.True(effects.ValidationVisits <= methods.Length);
         Assert.True(effects.GetEffects(methods[^1]).MayWriteMem);
         Assert.Equal(methods.Length, effects.Computations);
+    }
+
+    [Fact]
+    public void DeepCallGraphsFallBackToConservativeEffects()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Void);
+        var type = body.Definition.DeclaringType;
+        var methods = Enumerable.Range(0, 1024).Select(i => type.CreateMethod("Deep" + i, PrimType.Void, [],
+            MethodAttributes.Public | MethodAttributes.Static)).ToArray();
+        for (int i = 0; i < methods.Length; i++) {
+            methods[i].Body = new MethodBody(methods[i]);
+            var builder = new IRBuilder(methods[i].Body!.CreateBlock());
+            if (i + 1 < methods.Length) builder.CreateCall(methods[i + 1]);
+            builder.CreateReturn();
+        }
+        var effects = new Compilation(body.Definition.Module, new VoidLogger(), new()).GetAnalysis<GlobalFunctionEffects>();
+        Assert.True(effects.GetEffects(methods[0]).MayWriteMem);
+        Assert.True(effects.GetEffects(methods[0]).MayDiverge);
+        Assert.True(effects.Computations < methods.Length);
     }
 
     [Fact]

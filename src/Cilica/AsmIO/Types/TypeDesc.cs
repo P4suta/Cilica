@@ -99,28 +99,31 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
 
     /// <summary> Checks if this type is, inherits, or implements <paramref name="baseType"/>. </summary>
     public bool Inherits(TypeDesc baseType)
+        => Inherits(baseType, null);
+
+    private bool Inherits(TypeDesc baseType, HashSet<(TypeDesc, TypeDesc)>? activeVariance)
     {
         if (this is ArrayType source && baseType is ArrayType destination) {
-            return AreArrayElementsAssignable(source.ElemType, destination.ElemType);
+            return AreArrayElementsAssignable(source.ElemType, destination.ElemType, activeVariance);
         }
 
         if (this is MDArrayType sourceMd && baseType is MDArrayType destinationMd) {
-            return sourceMd.Rank == destinationMd.Rank && AreArrayElementsAssignable(sourceMd.ElemType, destinationMd.ElemType);
+            return sourceMd.Rank == destinationMd.Rank && AreArrayElementsAssignable(sourceMd.ElemType, destinationMd.ElemType, activeVariance);
         }
 
         for (var parent = this; parent != null; parent = parent.BaseType) {
-            if (parent == baseType || (baseType.IsInterface && Implements(parent, (TypeDefOrSpec)baseType))) {
+            if (parent == baseType || (baseType.IsInterface && Implements(parent, (TypeDefOrSpec)baseType, activeVariance))) {
                 return true;
             }
         }
         return false;
     }
 
-    internal static bool AreArrayElementsAssignable(TypeDesc source, TypeDesc destination)
+    internal static bool AreArrayElementsAssignable(TypeDesc source, TypeDesc destination, HashSet<(TypeDesc, TypeDesc)>? activeVariance = null)
         => source == destination || source.IsManagedObject() && destination.IsManagedObject() &&
-            source is not GenericParamType && destination is not GenericParamType && source.IsAssignableTo(destination);
+            source is not GenericParamType && destination is not GenericParamType && source.IsAssignableTo(destination, activeVariance);
 
-    private static bool Implements(TypeDesc type, TypeDefOrSpec itf)
+    private static bool Implements(TypeDesc type, TypeDefOrSpec itf, HashSet<(TypeDesc, TypeDesc)>? activeVariance)
     {
         var pending = new Stack<TypeDesc>();
         var visited = new HashSet<TypeDesc>();
@@ -131,7 +134,7 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
                 continue;
             }
 
-            if (current == itf || IsVariantAssignable(current, itf)) {
+            if (current == itf || IsVariantAssignable(current, itf, activeVariance)) {
                 return true;
             }
 
@@ -139,7 +142,7 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
                 current = primitive.GetDefinition(itf.Module.Resolver);
             }
 
-            if (current is ArrayType array && array.Implements(itf)) {
+            if (current is ArrayType array && array.Implements(itf, activeVariance)) {
                 return true;
             }
 
@@ -155,7 +158,7 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
         return false;
     }
 
-    private static bool IsVariantAssignable(TypeDesc source, TypeDesc destination)
+    private static bool IsVariantAssignable(TypeDesc source, TypeDesc destination, HashSet<(TypeDesc, TypeDesc)>? activeVariance)
     {
         if (source is not TypeDefOrSpec a || destination is not TypeDefOrSpec b ||
             a.Definition != b.Definition || !a.IsGeneric) {
@@ -168,32 +171,38 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
             return false;
         }
 
-        for (int i = 0; i < a.GenericParams.Count; i++) {
-            var from = a.GenericParams[i];
-            var to = b.GenericParams[i];
+        activeVariance ??= new();
+        // Recursive variance is not evidence of an assignment. Bound expanding
+        // generic graphs as well as exact cycles, conservatively keeping casts.
+        if (activeVariance.Count >= 128 || !activeVariance.Add((source, destination))) return false;
+        try {
+            for (int i = 0; i < a.GenericParams.Count; i++) {
+                var from = a.GenericParams[i];
+                var to = b.GenericParams[i];
 
-            if (from == to) {
-                continue;
+                if (from == to) continue;
+
+                if (!from.IsManagedObject() || !to.IsManagedObject() || from is GenericParamType || to is GenericParamType) {
+                    return false;
+                }
+
+                var parameter = a.Definition.GenericParams[i];
+                bool compatible = parameter.IsCovariant ? from.IsAssignableTo(to, activeVariance)
+                    : parameter.IsContravariant && to.IsAssignableTo(from, activeVariance);
+
+                if (!compatible) return false;
             }
-
-            if (!from.IsManagedObject() || !to.IsManagedObject() || from is GenericParamType || to is GenericParamType) {
-                return false;
-            }
-
-            var parameter = a.Definition.GenericParams[i];
-            bool compatible = parameter.IsCovariant ? from.IsAssignableTo(to)
-                : parameter.IsContravariant && to.IsAssignableTo(from);
-
-            if (!compatible) {
-                return false;
-            }
+            return true;
+        } finally {
+            activeVariance.Remove((source, destination));
         }
-
-        return true;
     }
 
     /// <summary> Checks whether this type can be assigned to a variable of the given type, based on stronger typing rules. </summary>
     public bool IsAssignableTo(TypeDesc assigneeType)
+        => IsAssignableTo(assigneeType, null);
+
+    private bool IsAssignableTo(TypeDesc assigneeType, HashSet<(TypeDesc, TypeDesc)>? activeVariance)
     {
         if (this == assigneeType) {
             return true;
@@ -209,14 +218,14 @@ public abstract class TypeDesc : EntityDesc, IEquatable<TypeDesc>
         }
 
         if (t1 == StackType.Object) {
-            if (IsVariantAssignable(this, assigneeType)) {
+            if (IsVariantAssignable(this, assigneeType, activeVariance)) {
                 return true;
             }
 
             return IsInterface
                 ? assigneeType == PrimType.Object || 
-                    (assigneeType.IsInterface && Implements(this, (TypeDefOrSpec)assigneeType))
-                : Inherits(assigneeType);
+                    (assigneeType.IsInterface && Implements(this, (TypeDefOrSpec)assigneeType, activeVariance))
+                : Inherits(assigneeType, activeVariance);
         }
 
         return t1 != StackType.Struct; // structs of different types can't be assigned to each other

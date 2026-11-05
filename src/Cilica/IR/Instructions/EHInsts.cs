@@ -22,7 +22,7 @@ public class GuardInst : Instruction
     [MemberNotNullWhen(true, nameof(FilterBlock))]
     public bool HasFilter => Kind == GuardKind.Catch && Operands.Length >= 2;
 
-    public TypeDesc? CatchType => ResultType;
+    public TypeDesc? CatchType { get; }
 
     public GuardKind Kind { get => _kind; set => SetProperty(ref _kind, value); }
 
@@ -35,7 +35,10 @@ public class GuardInst : Instruction
         : base(filterBlock == null ? [handlerBlock] : [handlerBlock, filterBlock])
     {
         Kind = kind;
-        ResultType = catchType ?? (HasFilter ? PrimType.Object : PrimType.Void);
+        CatchType = catchType;
+        // Even a value-type catch receives a boxed object on the evaluation stack.
+        ResultType = catchType is GenericParamType || catchType?.IsValueType == true ? PrimType.Object
+            : catchType ?? (HasFilter ? PrimType.Object : PrimType.Void);
     }
 
     public override void Accept(InstVisitor visitor) => visitor.Visit(this);

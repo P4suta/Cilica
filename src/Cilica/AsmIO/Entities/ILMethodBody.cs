@@ -132,7 +132,7 @@ public class ILMethodBody
 
             regions[i] = new() {
                 Kind = region.Kind,
-                CatchType = region.CatchType.IsNil ? null : (TypeDefOrSpec)loader.GetEntity(region.CatchType),
+                CatchType = region.CatchType.IsNil ? null : (TypeDesc)loader.GetEntity(region.CatchType),
                 HandlerStart = region.HandlerOffset,
                 HandlerEnd = region.HandlerOffset + region.HandlerLength,
                 TryStart = region.TryOffset,
@@ -173,7 +173,7 @@ public class ExceptionClause
     public ExceptionRegionKind Kind { get; set; }
 
     /// <summary> The catch type if the region represents a catch handler, or null otherwise. </summary>
-    public TypeDefOrSpec? CatchType { get; set; }
+    public TypeDesc? CatchType { get; set; }
 
     /// <summary> Gets the starting IL offset of the exception handler. </summary>
     public int HandlerStart { get; set; }
