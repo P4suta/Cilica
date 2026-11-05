@@ -14,6 +14,34 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class SimplifyInstsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void BitTestSelectsPreserveNarrowValuesAcrossControlFlow(bool byteResult)
+    {
+        var type = byteResult ? PrimType.Byte : PrimType.Bool;
+        int mask = byteResult ? 128 : 1;
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32, PrimType.Bool);
+        var entry = body.CreateBlock();
+        var compute = body.CreateBlock();
+        var merge = body.CreateBlock();
+        entry.SetBranch(new BranchInst(body.Args[1], merge, compute));
+        var builder = new IRBuilder(compute);
+        var bits = builder.CreateAnd(body.Args[0], ConstInt.CreateI(mask));
+        var selected = builder.Emit(new SelectInst(bits, ConstInt.CreateI(0), ConstInt.CreateI(mask), type));
+        compute.SetBranch(merge);
+        var result = merge.InsertPhi(new PhiInst(type, (entry, ConstInt.Create(type, 0)), (compute, selected)));
+        var output = new IRBuilder(result, InsertionDir.After);
+        output.CreateReturn(output.CreateConvert(result, PrimType.Int32));
+
+        Run(body, new SimplifyInsts(_modResolver));
+        var run = Utils.Compile<Func<int, bool, int>>(body);
+        foreach (int value in new[] { 0, 1, 127, 128, 255, -1, int.MinValue }) {
+            Assert.Equal((value & mask) == 0 ? mask : 0, run(value, false));
+            Assert.Equal(0, run(value, true));
+        }
+    }
+
     [Fact]
     public void Test_SimplifyInsts() => CheckIR("SimplifyInsts.ethil", new SimplifyInsts(_modResolver));
 

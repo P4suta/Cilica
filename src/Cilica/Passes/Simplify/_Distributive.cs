@@ -92,7 +92,9 @@ public partial class SimplifyInsts
         if (inst.ResultType.StackType is not (StackType.Int or StackType.Long)) return null;
 
         var builder = new IRBuilder(inst, InsertionDir.Before).SetNextDebugLocation(inst.DebugLocation);
-        if (FoldBitTestSelect(builder, inst.Cond, inst.IfTrue, inst.IfFalse) is { } folded) return folded;
+        if (FoldBitTestSelect(builder, inst.Cond, inst.IfTrue, inst.IfFalse) is { } folded) {
+            return builder.CreateConvert(folded, inst.ResultType);
+        }
 
         // select(c, x op a, x op b) -> x op select(c, a, b).
         // An unchanged arm supplies the operation's identity element.
