@@ -30,7 +30,8 @@ public class InlineMethods : IMethodPass
         var advisor = ctx.Compilation.GetAnalysis<InliningAdvisor>();
         var ownMetrics = advisor.GetMetrics(ctx.Method).Metrics;
         int budget = _opts.InitialBudget + (int)(ownMetrics == null ? 0 : ownMetrics.BaseCost * _opts.BudgetFactor);
-        int expansions = 0, expandedInstructions = 0;
+        int expansions = 0;
+        var sizeBudget = new InliningSizeBudget(ctx, _opts.MaxExpandedInstructions);
         var devirtualize = new Devirtualize();
         var simplify = new SimplifyInsts(ctx.Compilation.Resolver) {
             OnCallReplaced = (previous, replacement) => ancestry[replacement] = ancestry.GetValueOrDefault(previous, root)
@@ -52,10 +53,13 @@ public class InlineMethods : IMethodPass
 
                 int cost = advisor.EvaluateInliningCost(target.Body!, call.Args);
                 if (cost > _opts.CostThreshold || cost > budget) continue;
-                int instructionCount = target.Body!.Instructions().Count();
-                if (instructionCount > _opts.MaxExpandedInstructions - expandedInstructions) continue;
+                if (!sizeBudget.AllowsExpansion(call, inlinee!, probe => {
+                    var clonedCall = (CallInst)probe;
+                    var value = Inline(clonedCall, inlinee!, clonedCall.Args, ctx.Compilation);
+                    if (value != null) clonedCall.ReplaceUses(value);
+                    clonedCall.Remove();
+                })) continue;
 
-                expandedInstructions += instructionCount;
                 budget -= Math.Max(cost, -_opts.NegativeCostLimit);
                 expansions++;
                 ctx.Logger.Trace($"Inlining '{target}' into '{ctx.Method}'. RemBudget={budget} Cost={cost}");
@@ -67,15 +71,13 @@ public class InlineMethods : IMethodPass
                 });
                 if (result != null) call.ReplaceUses(result);
                 call.Remove();
+                sizeBudget.RecordExpansion();
             }
 
             if (ctx.Method.Revision == revision) break;
             // Expose concrete receivers and delegate targets hidden by the
             // locals, return phis, and branches introduced by inlining.
-            PassRunner.Run(new SimplifyCFG(), ctx);
-            PassRunner.Run(new SsaPromotion(), ctx);
-            PassRunner.Run(simplify, ctx);
-            PassRunner.Run(new DeadCodeElim(), ctx);
+            InliningSizeBudget.Cleanup(ctx, simplify);
             if (!HasBudget()) {
                 PassRunner.Run(devirtualize, ctx);
                 break;
@@ -87,7 +89,7 @@ public class InlineMethods : IMethodPass
         advisor.InvalidateMetrics(ctx.Method);
         return MethodInvalidations.Everything;
 
-        bool HasBudget() => budget > 0 && expansions < _opts.MaxExpansions && expandedInstructions < _opts.MaxExpandedInstructions;
+        bool HasBudget() => budget > 0 && expansions < _opts.MaxExpansions && sizeBudget.HasBudget;
 
         void EnqueueCalls()
         {
@@ -287,9 +289,10 @@ public class InlineMethods : IMethodPass
 
         public int MaxExpansions { get; init; } = 128;
 
-        public int MaxExpandedInstructions { get; init; } = 4096;
+        /// <summary> Instruction cloning budget, including speculative size checks. </summary>
+        public int MaxExpandedInstructions { get; init; } = InliningSizeBudget.DefaultInstructionBudget;
 
-        /// <summary> Inline candidate instruction limit. </summary>
+        /// <summary> Maximum profitability cost of an inline candidate. </summary>
         public int CostThreshold { get; init; } = 250;
 
         /// <summary> Initial inlining budget. </summary>

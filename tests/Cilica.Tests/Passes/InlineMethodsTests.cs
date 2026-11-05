@@ -94,6 +94,110 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
         Assert.Equal(42, Utils.Compile<Func<int>>(body)());
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ILSizeBudgetAccountsForSwitchTablesAfterSpecialization(bool constantArgument)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var target = body.Definition.DeclaringType.CreateMethod("Select", PrimType.Int32,
+            [new ParamDef(PrimType.Int32, "index")], MethodAttributes.Public | MethodAttributes.Static);
+        target.ImplAttribs = MethodImplAttributes.AggressiveInlining;
+        target.Body = new MethodBody(target);
+        var entry = target.Body.CreateBlock();
+        var even = target.Body.CreateBlock();
+        var odd = target.Body.CreateBlock();
+        entry.SetBranch(new SwitchInst(target.Body.Args[0], even,
+            Enumerable.Range(0, 8192).Select(i => i % 2 == 0 ? even : odd).ToArray()));
+        var evenBuilder = new IRBuilder(even);
+        evenBuilder.CreateReturn(evenBuilder.CreateAdd(target.Body.Args[0], ConstInt.CreateI(10)));
+        var oddBuilder = new IRBuilder(odd);
+        oddBuilder.CreateReturn(oddBuilder.CreateAdd(target.Body.Args[0], ConstInt.CreateI(41)));
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.CreateCall(target, constantArgument ? ConstInt.CreateI(1) : body.Args[0]));
+
+        RunWithSizeBudget(body, 512, new InlineMethods());
+
+        Assert.Equal(!constantArgument, body.Instructions().OfType<CallInst>().Any());
+        Assert.InRange(ILGenerator.GenerateCode(body).GetCodeSize(), 1, 512);
+        var run = Utils.Compile<Func<int, int>>(body);
+        Assert.Equal(constantArgument ? 42 : 10, run(0));
+        Assert.Equal(42, run(1));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void CallerILSizeBudgetSurvivesRepeatedInliningPasses(bool voidCall)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var field = body.Definition.DeclaringType.CreateField("Result", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var target = body.Definition.DeclaringType.CreateMethod("Mix", voidCall ? PrimType.Void : PrimType.Int32,
+            [new ParamDef(PrimType.Int32, "value")], MethodAttributes.Public | MethodAttributes.Static);
+        target.ImplAttribs = MethodImplAttributes.AggressiveInlining;
+        target.Body = new MethodBody(target);
+        var builder = new IRBuilder(target.Body.CreateBlock());
+        Value value = target.Body.Args[0];
+        for (int i = 0; i < 16; i++) value = builder.CreateXor(builder.CreateMul(value, ConstInt.CreateI(17)), ConstInt.CreateI(i + 19));
+        if (voidCall) builder.CreateStore(builder.CreateFieldAddr(field), value);
+        builder.CreateReturn(voidCall ? null : value);
+        builder = new IRBuilder(body.CreateBlock());
+        value = body.Args[0];
+        for (int i = 0; i < 24; i++) {
+            var call = builder.CreateCall(target, value);
+            value = voidCall ? builder.CreateLoad(builder.CreateFieldAddr(field)) : call;
+        }
+        builder.CreateReturn(value);
+
+        for (int pass = 0; pass < 3; pass++) {
+            RunWithSizeBudget(body, 512, new InlineMethods(new() { InitialBudget = 100000, BudgetFactor = 0 }));
+            Assert.InRange(ILGenerator.GenerateCode(body).GetCodeSize(), 1, 512);
+            Assert.InRange(body.Instructions().OfType<CallInst>().Count(), 1, 23);
+        }
+
+        int expected = 7;
+        for (int i = 0; i < 24; i++) {
+            for (int j = 0; j < 16; j++) expected = unchecked(expected * 17) ^ (j + 19);
+        }
+        Assert.Equal(expected, Utils.Compile<Func<int, int>>(body)(7));
+    }
+
+    [Fact]
+    public void LargeCallersCanStillInlineSizeReducingWrappers()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var target = body.Definition.DeclaringType.CreateMethod("Identity", PrimType.Int32,
+            [new ParamDef(PrimType.Int32, "value")], MethodAttributes.Public | MethodAttributes.Static);
+        target.Body = new MethodBody(target);
+        target.Body.CreateBlock().SetBranch(new ReturnInst(target.Body.Args[0]));
+        var entry = body.CreateBlock();
+        var even = body.CreateBlock();
+        var odd = body.CreateBlock();
+        var value = new IRBuilder(entry).CreateCall(target, body.Args[0]);
+        entry.SetBranch(new SwitchInst(value, even,
+            Enumerable.Range(0, 1024).Select(i => i % 2 == 0 ? even : odd).ToArray()));
+        var evenBuilder = new IRBuilder(even);
+        evenBuilder.CreateReturn(evenBuilder.CreateAdd(body.Args[0], ConstInt.CreateI(10)));
+        var oddBuilder = new IRBuilder(odd);
+        oddBuilder.CreateReturn(oddBuilder.CreateAdd(body.Args[0], ConstInt.CreateI(41)));
+        int before = ILGenerator.GenerateCode(body).GetCodeSize();
+
+        RunWithSizeBudget(body, 512, new InlineMethods());
+
+        Assert.Empty(body.Instructions().OfType<CallInst>());
+        Assert.True(ILGenerator.GenerateCode(body).GetCodeSize() < before);
+        Assert.Equal(42, Utils.Compile<Func<int, int>>(body)(1));
+    }
+
+    void RunWithSizeBudget(MethodBody body, int limit, params IMethodPass[] passes)
+    {
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            MaxInlinedMethodILSize = limit, VerifyEachPass = true
+        });
+        var context = new MethodTransformContext(compilation, body);
+        foreach (var pass in passes) PassRunner.Run(pass, context);
+    }
+
     MethodBody CreateFactoryChain()
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);

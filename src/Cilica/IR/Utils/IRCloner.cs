@@ -21,9 +21,12 @@ public class IRCloner
     }
 
     public static MethodBody CloneBody(MethodBody source)
+        => CloneBody(source, out _);
+
+    internal static MethodBody CloneBody(MethodBody source, out IRCloner cloner)
     {
         var copy = new MethodBody(source.Definition) { InitLocals = source.InitLocals };
-        var cloner = new IRCloner(copy, foldConstants: false);
+        cloner = new IRCloner(copy, foldConstants: false);
 
         for (int i = 0; i < source.Args.Length; i++) {
             cloner.AddMapping(source.Args[i], copy.Args[i]);
@@ -114,6 +117,8 @@ public class IRCloner
                 _pendingClones.Remove(pending);
             }
             mapping = clonedInst;
+        } else {
+            _mappings.Add(inst, clonedInst);
         }
         return clonedInst;
     } 

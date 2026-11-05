@@ -389,4 +389,7 @@ public class CompilationSettings
 
     /// <summary> Whether to inline method bodies and expand constructors, including scalar replacement. </summary>
     public bool EnableInlining { get; init; } = true;
+
+    /// <summary> Caller IL size budget in bytes; larger callers may only inline without growing. </summary>
+    public int MaxInlinedMethodILSize { get; init; } = 32 * 1024;
 }

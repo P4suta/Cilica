@@ -19,11 +19,23 @@ public class ScalarReplacement : IMethodPass
         }
 
         // Replace fields with local variables
+        var sizeBudget = new InliningSizeBudget(ctx);
+        int expanded = 0;
         foreach (var obj in allocs) {
+            int fields = 0;
+            for (var type = obj.ResultType; type != null; type = type.BaseType) {
+                fields += type.Fields.Count(field => field.IsInstance);
+            }
+            var target = (MethodDefOrSpec)obj.Constructor;
+            if (!sizeBudget.AllowsExpansion(obj, target, probe => InlineAlloc((NewObjInst)probe, ctx.Compilation), fields)) continue;
             InlineAlloc(obj, ctx.Compilation);
+            sizeBudget.RecordExpansion();
+            expanded++;
         }
 
-        return allocs.Count > 0 ? MethodInvalidations.ControlFlow : 0; // ctors are inlined and may add new blocks.
+        if (expanded > 0) InliningSizeBudget.Cleanup(ctx, new SimplifyInsts(ctx.Compilation.Resolver));
+
+        return expanded > 0 ? MethodInvalidations.ControlFlow : 0; // ctors are inlined and may add new blocks.
     }
 
     private static void InlineAlloc(NewObjInst alloc, Compilation comp)
