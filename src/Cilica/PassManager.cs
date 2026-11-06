@@ -104,9 +104,6 @@ public class PassManager
                         _results[method].Status = MethodCompilationStatus.Unchanged;
                         continue;
                     }
-                    if (method.ILBody is { } il && il.Instructions.Count > Compilation.Settings.MaxMethodInstructions) {
-                        throw new NotSupportedException("Method exceeds the configured instruction budget; input body retained");
-                    }
                 }
 
                 if (method.Body != null) {

@@ -45,7 +45,7 @@ Compilation operates on working copies. Results distinguish unchanged, optimized
 
 Semantic preservation assumes valid CIL and metadata, including valid unsafe or unverifiable IL. Invalid input has undefined behavior.
 
-Use `CompilationSettings.AllowCrossAssemblyIPO = false` when dependencies can be replaced independently. `EnableInlining` controls method inlining, while `MaxMethodInstructions` limits the input size of methods selected for optimization.
+Use `CompilationSettings.AllowCrossAssemblyIPO = false` when dependencies can be replaced independently. `EnableInlining` controls method inlining, while `MaxInlinedMethodILSize` limits caller growth in bytes. Larger input methods remain eligible for optimization and size-neutral or size-reducing inlines.
 
 Assembly output preserves supported PE/CLR target properties and native resources, and uses deterministic PE/PDB identifiers. File output is staged, with rollback on publication failure. Signed and native-code images require explicit `ModuleWriteOptions.StripSignatures` and `ModuleWriteOptions.StripReadyToRun` options where supported. Portable PDBs can be rewritten; use `savePdb: false` to discard unsupported classic Windows PDBs.
 

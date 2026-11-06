@@ -12,21 +12,6 @@ using Cilica.CodeGen.Cil;
 public class PassManagerTests(ModuleResolverFixture fixture)
 {
     [Fact]
-    public void OverBudgetMethodsKeepTheirExecutableInput()
-    {
-        var body = Utils.CreateTestMethod(fixture.Resolver, PrimType.Int32);
-        body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
-        var original = body.Definition.ILBody = ILGenerator.GenerateCode(body);
-        body.Definition.Body = null;
-        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { MaxMethodInstructions = 1 });
-
-        var result = CompilationPipeline.CreateDefault(compilation).Run([body.Definition]);
-        Assert.Equal(MethodCompilationStatus.Unsupported, Assert.Single(result.Methods).Status);
-        Assert.Same(original, body.Definition.ILBody);
-        Assert.Equal(42, Utils.Compile<Func<int>>(body)());
-    }
-
-    [Fact]
     public void RuntimeAsyncBodiesAreRetainedWithoutImportingTheirLogicalReturns()
     {
         var body = Utils.CreateTestMethod(fixture.Resolver, fixture.Resolver.Import(typeof(Task)));

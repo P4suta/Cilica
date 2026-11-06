@@ -389,9 +389,6 @@ public class CompilationSettings
 {
     public bool VerifyEachPass { get; init; }
 
-    /// <summary> Maximum input IL instruction count per method; larger bodies retain their input IL. </summary>
-    public int MaxMethodInstructions { get; init; } = 50_000;
-
     /// <summary> If set to true, the resulting module will have a fixed dependency on a little-endianess. </summary>
     public bool AssumeLittleEndian { get; init; } = true; // TODO: add module cctor check
 
