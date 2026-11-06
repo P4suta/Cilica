@@ -80,12 +80,12 @@ public static class TypeUtils
     public static bool HasConcreteType(Value obj)
     {
         // TODO: could probably build a more sophisticated analysis for this, with propagation / use chain scan
-        return obj is NewObjInst { ResultType: not MDArrayType } || IsExactType(obj.ResultType);
+        return obj is NewObjInst { ResultType: not MDArrayType } && !IsComImportType(obj.ResultType) || IsExactType(obj.ResultType);
     }
 
     internal static bool IsExactType(TypeDesc type)
     {
-        if (type is not TypeDefOrSpec def || !def.Attribs.HasFlag(TypeAttributes.Sealed)) return false;
+        if (type is not TypeDefOrSpec def || !def.Attribs.HasFlag(TypeAttributes.Sealed) || IsComImportType(type)) return false;
 
         // Variance applies only to reference-type arguments. A sealed delegate
         // such as Func<int, int> still has an exact runtime type.
@@ -126,6 +126,8 @@ public static class TypeUtils
         var srcType = obj.ResultType;
         bool castable = srcType.IsAssignableTo(destType);
         if (!castable && (srcType.IsUnboundGeneric || destType.IsUnboundGeneric)) return null;
+        // COM activation can produce a runtime wrapper outside the declared class hierarchy.
+        if (!castable && (IsComImportType(srcType) || IsComImportType(destType))) return null;
         if (!castable && destType.IsInterface && CanHaveDynamicInterfaces(srcType)) return null;
 
         // If the object type is known or already assignable to `destType`, we don't need to look further.
@@ -147,6 +149,9 @@ public static class TypeUtils
         // No idea
         return null;
     }
+
+    private static bool IsComImportType(TypeDesc type)
+        => type is TypeDefOrSpec def && def.Attribs.HasFlag(TypeAttributes.Import);
 
     internal static bool CanHaveDynamicInterfaces(TypeDesc type)
     {
