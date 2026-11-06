@@ -173,6 +173,7 @@ public partial class Compilation
 
     private static bool IsFrameSensitive(MethodDesc method)
     {
+        if (method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return true;
         var type = method.DeclaringType;
         if (!type.IsCorelibType()) return false;
         return (type.Namespace, type.Name, method.Name) switch {

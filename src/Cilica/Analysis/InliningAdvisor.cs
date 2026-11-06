@@ -98,7 +98,8 @@ public class InliningAdvisor : IGlobalAnalysis
 
     public InlineRejectReason EarlyCheck(MethodDef method)
     {
-        if (method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method)) return InlineRejectReason.Ineligible;
+        if (method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method) ||
+            method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return InlineRejectReason.Ineligible;
         int maxInstrs = method.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining)
             ? 4096
             : 256;
