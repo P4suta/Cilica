@@ -479,7 +479,6 @@ public class IRVerifier
         public void Validate(IRVerifier verifier, ProtectedRegionAnalysis regionAnalysis)
         {
             var domTree = new DominatorTree(verifier._method);
-            var actUsers = new HashSet<UseRef>();
 
             foreach (var block in verifier._blocks) {
                 _expectedUsers.TryAdd(block, new());
@@ -495,6 +494,7 @@ public class IRVerifier
 
             foreach (var (val, expUsers) in _expectedUsers) {
                 // Check use list correctness
+                var actUsers = new HashSet<UseRef>();
                 foreach (var use in val.Uses()) {
                     if (!actUsers.Add(use) || actUsers.Count > expUsers.Count) {
                         break;
@@ -502,9 +502,7 @@ public class IRVerifier
                 }
 
                 verifier.Check(val.NumUses == expUsers.Count && actUsers.Count == expUsers.Count, val, "Invalid value use count");
-                actUsers.SymmetricExceptWith(expUsers);
-                verifier.Check(actUsers.Count == 0, val, "Invalid value use chain");
-                actUsers.Clear();
+                verifier.Check(actUsers.SetEquals(expUsers), val, "Invalid value use chain");
 
                 // Check users
                 if (val is Instruction def && verifier._reachable.Contains(def.Block)) {
