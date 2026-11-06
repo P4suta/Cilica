@@ -37,7 +37,6 @@ public class PresizeListsTests
         Assert.Equal(new[] { 0, 4, 4, 4, 4, 8 }, capacities);
         Assert.Equal(8, list.Capacity);
         // CHECK: List`1[int]::.ctor()
-        // CHECK: get_Capacity(
         // CHECK: Add(
     }
 
@@ -217,7 +216,6 @@ public class PresizeListsTests
         Assert.Equal("0", list[prevCount]);
         Assert.Equal("15", list[^1]);
 
-        // CHECK: Format(
         // CHECK: Add(
     }
 

@@ -14,6 +14,91 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(null, true, MethodImplAttributes.IL, true)]
+    [InlineData("Dependency", true, MethodImplAttributes.IL, true)]
+    [InlineData("System.Dependency", true, MethodImplAttributes.IL, true)]
+    [InlineData("Dependency", false, MethodImplAttributes.IL, false)]
+    [InlineData("System.Dependency", false, MethodImplAttributes.AggressiveInlining, false)]
+    [InlineData(null, true, MethodImplAttributes.NoInlining, false)]
+    [InlineData(null, true, MethodImplAttributes.NoInlining | MethodImplAttributes.AggressiveInlining, false)]
+    public void UnimportedHelpersFoldWhenInliningIsAllowed(string? assemblyName, bool crossAssembly, MethodImplAttributes attributes, bool inline)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var module = assemblyName == null ? body.Definition.Module : _modResolver.Create(assemblyName + "_" + Guid.NewGuid().ToString("N"));
+        var type = module.CreateType(null, "Helper");
+        var target = type.CreateMethod("Transform", PrimType.Int32, [new ParamDef(PrimType.Int32, "value")],
+            MethodAttributes.Public | MethodAttributes.Static);
+        target.ImplAttribs = attributes;
+        var il = new ILAssembler();
+        il.Emit(ILCode.Ldarg_0);
+        il.Emit(ILCode.Ldc_I4_2);
+        il.Emit(ILCode.Mul);
+        il.Emit(ILCode.Ldc_I4_2);
+        il.Emit(ILCode.Add);
+        il.Emit(ILCode.Ret);
+        target.ILBody = il.Assemble(null);
+        var builder = new IRBuilder(body.CreateBlock());
+        var call = builder.CreateCall(target, ConstInt.CreateI(20));
+        builder.CreateReturn(call);
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            AllowCrossAssemblyIPO = crossAssembly, VerifyEachPass = true
+        });
+
+        PassRunner.Run(new InlineMethods(), new MethodTransformContext(compilation, body));
+
+        if (inline) {
+            Assert.Equal(42, Assert.IsType<ConstInt>(Assert.Single(body.Instructions().OfType<ReturnInst>()).Value).Value);
+            Assert.Empty(body.Instructions().OfType<CallInst>());
+            Assert.Equal(42, Utils.Compile<Func<int>>(body)());
+        } else {
+            Assert.Same(call, Assert.Single(body.Instructions().OfType<CallInst>()));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SystemAssemblyInliningHonorsAggressiveInlining(bool imported)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var module = _modResolver.Create("System.Dependency_" + Guid.NewGuid().ToString("N"));
+        var target = module.CreateType(null, "Helper").CreateMethod("Mix", PrimType.Int32,
+            [new ParamDef(PrimType.Int32, "value")], MethodAttributes.Public | MethodAttributes.Static);
+        target.ImplAttribs = MethodImplAttributes.AggressiveInlining;
+        target.Body = new MethodBody(target);
+        var builder = new IRBuilder(target.Body.CreateBlock());
+        Value value = target.Body.Args[0];
+        for (int i = 0; i < 16; i++) value = builder.CreateXor(builder.CreateMul(value, ConstInt.CreateI(17)), ConstInt.CreateI(i + 19));
+        builder.CreateReturn(value);
+        target.ILBody = ILGenerator.GenerateCode(target.Body);
+        if (!imported) target.Body = null;
+        builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.CreateCall(target, body.Args[0]));
+
+        Run(body, new InlineMethods());
+
+        Assert.Empty(body.Instructions().OfType<CallInst>());
+        int expected = 7;
+        for (int i = 0; i < 16; i++) expected = unchecked(expected * 17) ^ (i + 19);
+        Assert.Equal(expected, Utils.Compile<Func<int, int>>(body)(7));
+    }
+
+    [Fact]
+    public void InliningPreferencePreservesConstantFoldingBenefits()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.CreateAdd(body.Args[0], ConstInt.CreateI(1)));
+        var advisor = new Compilation(body.Definition.Module, new VoidLogger(), new()).GetAnalysis<InliningAdvisor>();
+        int cost = advisor.EvaluateInliningCost(body, [ConstInt.CreateI(41)]);
+        Assert.True(cost < 0);
+
+        body.Definition.ImplAttribs = MethodImplAttributes.AggressiveInlining;
+
+        Assert.True(advisor.EvaluateInliningCost(body, [ConstInt.CreateI(41)]) <= cost);
+    }
+
     public interface ICounter { int Next(); }
     public struct Counter : ICounter
     {

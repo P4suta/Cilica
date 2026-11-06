@@ -8,6 +8,39 @@ public sealed class RuntimeLibrary(ModuleResolver resolver)
 {
     public ModuleResolver Resolver { get; } = resolver;
 
+    // Retain calls whose contracts are consumed by simplification, LINQ expansion,
+    // list presizing, or vectorization instead of exposing their runtime bodies.
+    internal bool IsOptimizationIntrinsic(MethodDef method)
+    {
+        var type = method.DeclaringType;
+        if (type.Namespace == "System.Linq" && type.Name == "Enumerable" &&
+            method.Module == Resolver.Resolve("System.Linq")) {
+            return method.Name switch {
+                "Range" or "Where" or "Select" or "SelectMany" or "Skip" or "Cast" or "OfType" or
+                "ToList" or "ToArray" or "ToHashSet" or "Aggregate" or "First" or "FirstOrDefault" or "All" => true,
+                "Count" or "Any" => method.ParamSig.Count == 2,
+                "Take" => method.ParamSig[1] == PrimType.Int32,
+                "ToDictionary" => method.ParamSig is [_, { Type.Name: "Func`2" }, ..],
+                "Sum" => method.ParamSig.Count is 1 or 2 && method.ReturnType.Kind is TypeKind.Int32 or TypeKind.Int64,
+                _ => false
+            };
+        }
+        if (!type.IsCorelibType()) return false;
+
+        return (type.Namespace, type.Name, method.Name) switch {
+            ("System", "Math" or "MathF", _) => ConstFolding.IsMathIntrinsic(method),
+            ("System", "String", "GetPinnableReference") => true,
+            ("System", "String", _) => ConstFolding.IsStringIntrinsic(method),
+            ("System", "Type", "GetTypeFromHandle" or "op_Equality") => true,
+            ("System", "Span`1" or "ReadOnlySpan`1", "get_Length" or "get_Item" or "GetPinnableReference") => true,
+            ("System.Collections.Generic", "List`1", "Add" or "ToArray" or "get_Count" or "get_Item") => true,
+            ("System.Collections.Generic", "Dictionary`2", "ContainsKey" or "get_Item") => true,
+            ("System.Runtime.InteropServices", "MemoryMarshal", "GetArrayDataReference") => true,
+            ("System.Runtime.CompilerServices", "RuntimeHelpers", "IsReferenceOrContainsReferences") => true,
+            _ => false
+        };
+    }
+
     /// <summary> Whether the sequence uses mutable indexed storage with library-specific iteration rules. </summary>
     public static bool IsMutableIndexedSequence(TypeDesc type)
     {

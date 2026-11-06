@@ -282,7 +282,7 @@ public class ConstFolding
                 ("System", "Math" or "MathF", _, true)
                     => FoldMathCall(methodDef, args.ToArray()),
 
-                ("System", "String", _, true)
+                ("System", "String", _, true) when IsStringIntrinsic(methodDef)
                     => FoldStringCall(methodDef, args.ToArray()),
 
                 ("System", "Type", "op_Equality", false)
@@ -362,13 +362,27 @@ public class ConstFolding
         return null;
     }
 
-    private static object? FoldMathCall(MethodDef method, Value[] args)
-    {
-        // Only these known operations may be evaluated in the compiler process.
-        if (method.Name is not ("Sqrt" or "Cbrt" or "Log" or "Log2" or "Log10" or "Exp" or
+    internal static bool IsMathIntrinsic(MethodDef method)
+        => method.Name is ("Sqrt" or "Cbrt" or "Log" or "Log2" or "Log10" or "Exp" or
             "Floor" or "Ceiling" or "Truncate" or "Abs" or "Sin" or "Cos" or "Tan" or
             "Asin" or "Acos" or "Atan" or "Asinh" or "Acosh" or "Atanh" or "Atan2" or
-            "Pow" or "Min" or "Max" or "CopySign" or "Round")) return null;
+            "Pow" or "Min" or "Max" or "CopySign" or "Round") &&
+           method.ParamSig.All(parameter => parameter.Type.Kind is >= TypeKind.SByte and <= TypeKind.Double ||
+               parameter.Type.IsCorelibType(typeof(MidpointRounding)));
+
+    internal static bool IsStringIntrinsic(MethodDef method)
+        => method.Name switch {
+            "get_Length" or "get_Chars" => true,
+            "Concat" => method.ParamSig.All(parameter => parameter.Type == PrimType.String || parameter.Type == PrimType.Object),
+            "Replace" => method.ParamSig is [_, { Type: var oldType }, { Type: var newType }] &&
+                oldType == newType && (oldType == PrimType.String || oldType == PrimType.Char),
+            _ => false
+        };
+
+    private static object? FoldMathCall(MethodDef method, Value[] args)
+    {
+        // Only known operations on representable constants may run in the compiler.
+        if (!IsMathIntrinsic(method)) return null;
 
         // Match the resolved signature exactly. Argument stack types alone cannot
         // distinguish signed/unsigned overloads, enum parameters, or MathF precision.

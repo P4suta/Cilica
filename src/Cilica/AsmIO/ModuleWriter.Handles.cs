@@ -33,12 +33,7 @@ partial class ModuleWriter
     {
         switch (entity) {
             case TypeDef type: {
-                var scope = (EntityDesc?)type.DeclaringType ?? _mod._typeRefRoots.GetValueOrDefault(type, type.Module);
-                return _builder.AddTypeReference(
-                    GetHandle(scope),
-                    AddString(type.Namespace),
-                    AddString(type.Name)
-                );
+                return GetTypeReference(type, _mod._typeRefRoots.GetValueOrDefault(type, type.Module));
             }
             case TypeDesc type: {
                 return _builder.AddTypeSpecification(
@@ -80,6 +75,18 @@ partial class ModuleWriter
             }
             default: throw new NotImplementedException();
         }
+    }
+
+    private TypeReferenceHandle GetTypeReference(TypeDef type, ModuleDef root)
+    {
+        if (!_typeRefs.TryGetValue((type, root), out var handle)) {
+            // A facade may forward the public enclosing type without forwarding
+            // its private nested types. Each reference chain keeps its own root.
+            var scope = type.DeclaringType is { } parent ? GetTypeReference(parent, root) : GetHandle(root);
+            handle = _builder.AddTypeReference(scope, AddString(type.Namespace), AddString(type.Name));
+            _typeRefs.Add((type, root), handle);
+        }
+        return handle;
     }
 
     public EntityHandle GetHandle(EntityDesc entity)

@@ -327,8 +327,6 @@ public class ExpandLinqTests
         var result = Enumerable.Range(start, count).Select(x => x).ToArray();
         Assert.Equal(count, result.Length);
         for (int i = 0; i < result.Length; i++) Assert.Equal(checked(start + i), result[i]);
-        // CHECK: ThrowIfNegative
-        // CHECK: ThrowIfGreaterThan
         // CHECK-NOT: call Enumerable
     }
 
@@ -346,8 +344,7 @@ public class ExpandLinqTests
         } catch (ArgumentOutOfRangeException ex) { parameter = ex.ParamName; }
         Assert.Equal(0, reached);
         Assert.Equal("count", parameter);
-        // CHECK: ThrowIfNegative
-        // CHECK: ThrowIfGreaterThan
+        // CHECK-NOT: Enumerable::Range
     }
 
     [Fact]
@@ -584,16 +581,15 @@ public class ExpandLinqTests
     }
     
     [Fact]
-    public void Disposeable_Enumerable_Count()
+    public void AsEnumerableExposesArrayForCountExpansion()
     {
         var source = "The Quick Brown Fox Jumped Over The Lazy Dog".Split(' ').AsEnumerable();
         int result = source.Count(s => !s.Contains('x'));
 
         Assert.Equal(8, result);
 
-        // CHECK: try finally
         // CHECK-NOT: call Enumerable
-        // CHECK: callvirt IDisposable::Dispose
+        // CHECK-NOT: GetEnumerator
     }
 
     [Fact]
@@ -605,8 +601,7 @@ public class ExpandLinqTests
         Assert.Equal(8, result);
 
         // CHECK: try finally
-        // CHECK: GetEnumerator
-        // CHECK-SAME: ArraySegment`1+Enumerator[string]
+        // CHECK-NOT: call Enumerable
     }
 
     [Fact]
@@ -632,6 +627,6 @@ public class ExpandLinqTests
 
         // CHECK: Where<string>(
         // CHECK: phi
-        // CHECK-NEXT: MoveNext(
+        // CHECK: IEnumerator::MoveNext(
     }
 }

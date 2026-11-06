@@ -141,18 +141,19 @@ internal class ModuleLoader
         string? ns = GetOptString(info.Namespace);
         string name = _reader.GetString(info.Name);
         var scope = GetEntity(info.ResolutionScope);
-        TypeDef? type = null;
+        var type = scope switch {
+            ModuleDef mod => mod.FindType(ns, name),
+            TypeDef parent => parent.FindNestedType(name),
+            _ => null
+        } ?? throw new InvalidOperationException($"Could not resolve referenced type '{ns}.{name}'");
 
-        if (scope is ModuleDef mod) {
-            type = mod.FindType(ns, name);
-
-            if (type != null && type.Module != mod) {
-                _mod._typeRefRoots[type] = (ModuleDef)scope;
-            }
-        } else if (scope is TypeDef parent) {
-            type = parent.FindNestedType(name);
+        var rootScope = info.ResolutionScope;
+        while (rootScope.Kind == HandleKind.TypeReference) {
+            rootScope = _reader.GetTypeReference((TypeReferenceHandle)rootScope).ResolutionScope;
         }
-        return type ?? throw new InvalidOperationException($"Could not resolve referenced type '{ns}.{name}'");
+        var root = (ModuleDef)GetEntity(rootScope);
+        if (type.Module != root) _mod._typeRefRoots[type] = root;
+        return type;
     }
     private TypeDef ResolveExportedType(ExportedTypeHandle handle)
     {

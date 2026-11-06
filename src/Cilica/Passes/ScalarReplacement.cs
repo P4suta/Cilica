@@ -100,7 +100,7 @@ public class ScalarReplacement : IMethodPass
         if (advisor.EarlyCheck(ctor) != InlineRejectReason.Accepted) {
             return false;
         }
-        if (ctor.Body == null && !advisor.ImportBodyForInlining(ctor)) {
+        if (ctor.Body == null && advisor.GetMethodBodyForIPO(ctor) == null) {
             return false;
         }
 

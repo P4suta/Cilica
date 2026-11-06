@@ -18,6 +18,7 @@ internal partial class ModuleWriter
     private BlobBuilder? _fieldDataStream, _resourceDataStream;
 
     readonly Dictionary<EntityDesc, EntityHandle> _handleMap = new();
+    readonly Dictionary<(TypeDef, ModuleDef), TypeReferenceHandle> _typeRefs = new();
     readonly Dictionary<string, ModuleReferenceHandle> _moduleRefs = new();
     readonly Dictionary<FieldDef, int> _mappedFieldOffsets = new();
     // Generic parameters must be sorted based on the coded parent entity handle, we do that in a later pass.

@@ -44,12 +44,8 @@ public class InliningAdvisor : IGlobalAnalysis
             }
         }
 
-        int factor = GetAggressivenessFactor(targetBody.Definition);
-        if (factor > 0) {
-            cost /= factor;
-        }
-
-        return cost;
+        // AggressiveInlining discounts expansion costs without reducing folding benefits.
+        return cost > 0 && targetBody.Definition.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining) ? cost / 5 : cost;
     }
 
     /// <summary> Gets or attempts to import a method body for IPO purposes. </summary>
@@ -84,32 +80,6 @@ public class InliningAdvisor : IGlobalAnalysis
         return method.Body;
     }
 
-    public bool ImportBodyForInlining(MethodDef method)
-    {
-        if (GetAggressivenessFactor(method) <= 2) {
-            return false;
-        }
-        return GetMethodBodyForIPO(method) != null;
-    }
-    private static int GetAggressivenessFactor(MethodDef method)
-    {
-        // Avoid inlining calls to BCL / System.* methods to avoid bloating IL.
-        if (method.Module.AsmName.Name!.StartsWith("System")) {
-            return 1;
-        }
-        if (method.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining)) {
-            return 5;
-        }
-        if (method.Name is "GetEnumerator" or "MoveNext") {
-            // Inline enumerator methods for all but builtin collections
-            var declType = method.DeclaringType;
-            if (declType.IsNested) declType = declType.DeclaringType;
-
-            return declType.Namespace != "System.Collections.Generic" ? 2 : 0;
-        }
-        return 0;
-    }
-
     public (InlineRejectReason Rejection, FunctionMetrics? Metrics) GetMetrics(MethodBody method)
     {
         if (!_cache.TryGetValue(method.Definition, out var entry) || entry.Body != method || entry.Revision != method.Revision) {
@@ -128,7 +98,7 @@ public class InliningAdvisor : IGlobalAnalysis
 
     public InlineRejectReason EarlyCheck(MethodDef method)
     {
-        if (method.CallConv == CallConvention.VarArgs) return InlineRejectReason.Ineligible;
+        if (method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method)) return InlineRejectReason.Ineligible;
         int maxInstrs = method.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining)
             ? 4096
             : 256;

@@ -183,7 +183,7 @@ public class InlineMethods : IMethodPass
         }
 
         // If there's no body after devirt, there's no way we can inline this method.
-        if (target.Body == null && !advisor.ImportBodyForInlining(target)) {
+        if (target.Body == null && advisor.GetMethodBodyForIPO(target) == null) {
             rejection = "body unavailable under the inline import policy";
             return null;
         }
