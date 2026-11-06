@@ -123,7 +123,8 @@ public static class TypeUtils
     /// <summary> Checks if the given object can be cast to <paramref name="destType"/>, or null if unknown. </summary>
     public static bool? CheckCast(Value obj, TypeDesc destType)
     {
-        var srcType = obj.ResultType;
+        var srcType = GetRuntimeType(obj.ResultType);
+        destType = GetRuntimeType(destType);
         bool castable = srcType.IsAssignableTo(destType);
         if (!castable && (srcType.IsUnboundGeneric || destType.IsUnboundGeneric)) return null;
         // COM activation can produce a runtime wrapper outside the declared class hierarchy.
@@ -152,6 +153,27 @@ public static class TypeUtils
 
     private static bool IsComImportType(TypeDesc type)
         => type is TypeDefOrSpec def && def.Attribs.HasFlag(TypeAttributes.Import);
+
+    /// <summary> Removes element modifiers that do not participate in runtime type identity. </summary>
+    internal static TypeDesc GetRuntimeType(TypeDesc type)
+    {
+        if (type is CompoundType compound) {
+            var element = GetRuntimeType(compound.ElemType);
+            if (element == compound.ElemType && compound.ElementModifiers.IsEmpty) return type;
+            return compound switch {
+                ArrayType => element.CreateArray(),
+                MDArrayType array => new MDArrayType(element, array.Rank, array.LowerBounds, array.Sizes),
+                ByrefType => element.CreateByref(),
+                PointerType => element.CreatePointer(),
+                _ => throw new UnreachableException()
+            };
+        }
+        if (type is TypeSpec nominal) {
+            var arguments = nominal.GenericParams.Select(GetRuntimeType).ToImmutableArray();
+            if (!arguments.SequenceEqual(nominal.GenericParams)) return nominal.Definition.GetSpec(arguments);
+        }
+        return type;
+    }
 
     internal static bool CanHaveDynamicInterfaces(TypeDesc type)
     {

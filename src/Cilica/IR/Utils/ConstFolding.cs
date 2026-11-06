@@ -316,7 +316,7 @@ public class ConstFolding
         if (typeA == null || typeB == null) return null;
         if ((typeA.IsUnboundGeneric || typeB.IsUnboundGeneric) && typeA != typeB) return null;
 
-        return typeA == typeB;
+        return TypeUtils.GetRuntimeType(typeA) == TypeUtils.GetRuntimeType(typeB);
 
         static TypeDesc? UnwrapType(Value obj)
         {
