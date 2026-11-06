@@ -161,7 +161,10 @@ public class IRPrinter
     public static void ExportForest(MethodBody method, string filename, ForestAnalysis? forest = null)
     {
         using var tw = new StreamWriter(filename);
-        
+        ExportForest(method, tw, forest);
+    }
+    public static void ExportForest(MethodBody method, TextWriter tw, ForestAnalysis? forest = null)
+    {        
         forest ??= new ForestAnalysis(method);
         var pc = new ForestPrintContext(tw, method.GetSymbolTable(), forest);
 

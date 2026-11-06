@@ -18,7 +18,7 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
         if (filter != null && !filter.Invoke(method)) return;
 
         if (!_entries.ContainsKey(method)) {
-            var entry = new MethodTimeline() { Name = method.DeclaringType.Name + "::" + method.Name };
+            var entry = new MethodTimeline(formats) { Name = method.DeclaringType.Name + "::" + method.Name };
             entry.TakeSnapshot(method, "(initial)", captureCode: true);
 
             _entries.Add(method, entry);
@@ -71,7 +71,7 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
         return hc.ToHashCode();
     }
 
-    class MethodTimeline
+    class MethodTimeline(DumpFormats formats)
     {
         public string Name { get; set; } = "";
         public List<MethodSnapshot> Passes { get; set; } = [];
@@ -84,13 +84,24 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
 
             if (captureCode) {
                 var sw = new StringWriter();
-                IRPrinter.ExportPlain(method.Body!, sw);
-                sn.PlainCode = sw.ToString();
 
-                sw.GetStringBuilder().Clear();
+                if (formats.HasFlag(DumpFormats.Plaintext)) {
+                    IRPrinter.ExportPlain(method.Body!, sw);
+                    sn.PlainCode = sw.ToString();
+                    sw.GetStringBuilder().Clear();
+                }
 
-                IRPrinter.ExportDot(method.Body!, sw);
-                sn.GraphvizCode = sw.ToString();
+                if (formats.HasFlag(DumpFormats.Graphviz)) {
+                    IRPrinter.ExportDot(method.Body!, sw);
+                    sn.GraphvizCode = sw.ToString();
+                    sw.GetStringBuilder().Clear();
+                }
+
+                if (formats.HasFlag(DumpFormats.Forest)) {
+                    IRPrinter.ExportForest(method.Body!, sw);
+                    sn.ForestCode = sw.ToString();
+                    sw.GetStringBuilder().Clear();
+                }
             }
             Passes.Add(sn);
         }
@@ -100,6 +111,7 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
         public string PassName { get; set; }
         public string? PlainCode { get; set; }
         public string? GraphvizCode { get; set; }
+        public string? ForestCode { get; set; }
 
         internal class Converter(DumpFormats formats) : JsonConverter<MethodSnapshot>
         {
@@ -114,6 +126,7 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
                 writer.WriteString("passName", value.PassName);
                 if (formats.HasFlag(DumpFormats.Plaintext)) writer.WriteString("plainCode", value.PlainCode);
                 if (formats.HasFlag(DumpFormats.Graphviz)) writer.WriteString("graphvizCode", value.GraphvizCode);
+                if (formats.HasFlag(DumpFormats.Forest)) writer.WriteString("forestCode", value.ForestCode);
                 writer.WriteEndObject();
             }
         }
