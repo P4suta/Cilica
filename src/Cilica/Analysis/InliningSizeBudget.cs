@@ -8,6 +8,8 @@ using Cilica.Passes;
 internal sealed class InliningSizeBudget(MethodTransformContext context, int instructionBudget = InliningSizeBudget.DefaultInstructionBudget)
 {
     internal const int DefaultInstructionBudget = 4096;
+    readonly bool _recursiveCaller = context.Method.Instructions().OfType<CallInst>()
+        .Any(call => call.Method is MethodDefOrSpec target && target.Definition == context.Definition);
 
     long _estimatedRevision = -1, _measuredRevision = -1;
     long _estimatedSize, _reservedSize;
@@ -32,6 +34,10 @@ internal sealed class InliningSizeBudget(MethodTransformContext context, int ins
         }
 
         long growth = EstimateGrowth(site, target, initializedFields);
+        if (_recursiveCaller && growth > 0) {
+            rejection = "inlining would grow a recursive caller";
+            return false;
+        }
         // Shrinking estimates do not buy room for later expansions. Cleanup
         // and emission can recover that space when the budget is exhausted.
         _reservedSize = _estimatedSize + Math.Max(0, growth);
