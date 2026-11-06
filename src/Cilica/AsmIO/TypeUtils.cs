@@ -152,7 +152,12 @@ public static class TypeUtils
     }
 
     private static bool IsComImportType(TypeDesc type)
-        => type is TypeDefOrSpec def && def.Attribs.HasFlag(TypeAttributes.Import);
+    {
+        for (var current = type as TypeDefOrSpec; current != null; current = current.BaseType) {
+            if (current.Attribs.HasFlag(TypeAttributes.Import)) return true;
+        }
+        return false;
+    }
 
     /// <summary> Removes element modifiers that do not participate in runtime type identity. </summary>
     internal static TypeDesc GetRuntimeType(TypeDesc type)
