@@ -57,6 +57,58 @@ public class EhRegionTests
     }
 
     [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    [InlineData(3)]
+    [InlineData(6)]
+    [InlineData(9)]
+    public void FinallyRegionsInBothTryAndHandlerUnwindInOrder(int failAt)
+    {
+        var trace = new List<int>();
+        var exception = new InvalidOperationException();
+        void Record(int value)
+        {
+            trace.Add(value);
+            if (value == failAt) throw exception;
+        }
+
+        if (failAt == 0) {
+            RunFinallyRegionsInBothTryAndHandler(Record);
+        } else {
+            Assert.Same(exception, Assert.Throws<InvalidOperationException>(
+                () => RunFinallyRegionsInBothTryAndHandler(Record)));
+        }
+        int[] expected = failAt switch {
+            1 => [1, 2, 6, 7, 8, 9, 10, 11],
+            6 => [1, 2, 3, 4, 5, 6, 7, 8, 11],
+            _ => [1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11]
+        };
+        Assert.Equal(expected, trace);
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    static void RunFinallyRegionsInBothTryAndHandler(Action<int> record)
+    {
+        try {
+            try { record(1); }
+            finally { record(2); }
+            try {
+                try { record(3); }
+                finally { record(4); }
+            } finally { record(5); }
+        } finally {
+            try {
+                try {
+                    try { record(6); }
+                    finally { record(7); }
+                } finally { record(8); }
+                try { record(9); }
+                finally { record(10); }
+            } finally { record(11); }
+        }
+    }
+
+    [Theory]
     [InlineData(-1)]
     [InlineData(0)]
     [InlineData(1)]

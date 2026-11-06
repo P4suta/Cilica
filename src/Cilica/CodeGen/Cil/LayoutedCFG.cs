@@ -37,6 +37,7 @@ public class LayoutedCFG
     private static void LayoutWithRegions(MethodBody method, BasicBlock[] orderedBlocks, BasicBlock[] laidBlocks, LayoutedRegion[] clauses)
     {
         var clauseIndices = new Dictionary<GuardInst, int>(clauses.Length);
+        var orderedClauses = new List<LayoutedRegion>(clauses.Length);
         var blockIndices = new Dictionary<BasicBlock, int>(method.NumBlocks);
         int blockIdx = 0;
 
@@ -46,14 +47,7 @@ public class LayoutedCFG
         var regionAnalysis = new ProtectedRegionAnalysis(method);
         LayoutRegion(regionAnalysis.Root);
 
-        // A handler can itself contain protected regions. Those clauses
-        // must precede the enclosing clause too, not just children of its try.
-        var orderedClauses = clauses.OrderByDescending(clause => {
-            int depth = 0;
-            for (var region = regionAnalysis.GetBlockRegion(clause.Guard.Block); region.Parent != null; region = region.Parent) depth++;
-            return depth;
-        }).ToArray();
-        orderedClauses.CopyTo(clauses, 0);
+        orderedClauses.CopyTo(clauses);
 
         AbsRange LayoutRegion(ProtectedRegion node)
         {
@@ -78,6 +72,14 @@ public class LayoutedCFG
 
                 if (guard != null) {
                     clauses[clauseIndices[guard]].UpdateRanges(child.StartBlock, range);
+
+                    // Complete descendants of both the try and its handlers before
+                    // emitting this group, preserving lexical and catch search order.
+                    if (child.StartBlock == guard.HandlerBlock && guard == guard.Block.Guards().Last()) {
+                        foreach (var sibling in guard.Block.Guards()) {
+                            orderedClauses.Add(clauses[clauseIndices[sibling]]);
+                        }
+                    }
                 }
             }
             PlaceAntecessorBlocks(null);
