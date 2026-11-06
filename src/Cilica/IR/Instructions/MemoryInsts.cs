@@ -99,21 +99,21 @@ public class StoreInst : MemoryInst
         }
     }
 
-    /// <summary>
-    /// Creates a sequence of instructions that truncates or rounds the value to what it would have been after
-    /// a store/load roundtrip to a location of type <paramref name="destType"/>, or returns <paramref name="val"/> itself if no truncation would occur.
-    /// </summary>
+    /// <summary> Coerces a value as a store/load roundtrip to <paramref name="destType"/> would, including numeric precision and managed-reference conversions. </summary>
     public static Value Coerce(TypeDesc destType, Value val, Instruction insertBefore)
     {
-        if (!MustBeCoerced(destType, val)) {
-            return val;
-        }
-
-        var conversionType = destType.StackType == StackType.ByRef ? PrimType.IntPtr : destType;
-        var conv = new ConvertInst(val, conversionType);
+        var conv = CreateCoercion(destType, val);
+        if (conv == null) return val;
         conv.InsertBefore(insertBefore);
-
         return conv;
+    }
+
+    internal static Instruction? CreateCoercion(TypeDesc destType, Value value)
+    {
+        if (!MustBeCoerced(destType, value)) return null;
+        return destType.StackType == StackType.ByRef
+            ? new CilIntrinsic.RefCast(destType, value)
+            : new ConvertInst(value, destType);
     }
 
     public static bool MustBeCoerced(TypeDesc destType, Value srcValue)
@@ -132,10 +132,11 @@ public class StoreInst : MemoryInst
     {
         // III.1.6 Implicit argument coercion
 
-        // General native-pointer to managed-reference conversions require an explicit IR operation.
         return (destType.Kind.IsSmallInt() && (destType.Kind.Size() < srcType.Kind.Size() ||
                    destType.Kind.Size() == srcType.Kind.Size() && destType.Kind.IsSigned() != srcType.Kind.IsSigned())) ||
                (destType.StackType == StackType.Int && srcType.StackType == StackType.NInt) ||
+               (destType.StackType == StackType.ByRef && srcType.StackType == StackType.NInt) ||
+               (destType.StackType == StackType.NInt && srcType.StackType == StackType.ByRef) ||
                (destType.Kind == TypeKind.Single && srcType.Kind == TypeKind.Double);
     }
 }

@@ -617,8 +617,7 @@ internal class BlockState
                 if (isBlockLocal) {
                     var value = Pop();
                     var type = _importer._ilBody.Locals[index].Type;
-                    if (StoreInst.MustBeCoerced(type, value)) {
-                        var conversion = new ConvertInst(value, type.StackType == StackType.ByRef ? PrimType.IntPtr : type);
+                    if (StoreInst.CreateCoercion(type, value) is { } conversion) {
                         Emit(conversion);
                         value = conversion;
                     }

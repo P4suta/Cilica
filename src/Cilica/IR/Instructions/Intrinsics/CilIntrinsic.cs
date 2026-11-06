@@ -33,7 +33,7 @@ public abstract class CilIntrinsic : IntrinsicInst
         public override ILCode Opcode => ILCode.Refanytype;
     }
 
-    /// <summary> Gives an object reference the type assumed by an unverifiable CIL use, without a runtime check. </summary>
+    /// <summary> Retypes an object reference or converts a native address to a managed byref without a runtime check. </summary>
     public class RefCast(TypeDesc type, Value value) : CilIntrinsic(type, [value])
     {
         public override ILCode Opcode => ILCode.Nop;

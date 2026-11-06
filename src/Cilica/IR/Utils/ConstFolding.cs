@@ -337,11 +337,13 @@ public class ConstFolding
         if (intrin is CilIntrinsic.DefaultValue) {
             var defaultType = intrin.ResultType;
             if (defaultType is GenericParamType || defaultType.StackType == StackType.Struct) return null;
+            if (defaultType.StackType == StackType.ByRef) return new CilIntrinsic.RefCast(defaultType, ConstInt.CreateI(0));
             return defaultType.IsPointerLike()
                 ? new ConvertInst(ConstInt.CreateI(0), PrimType.IntPtr)
                 : Const.CreateZero(defaultType);
         }
         if (intrin is CilIntrinsic.RefCast reference &&
+            reference.Args[0].ResultType.StackType == reference.ResultType.StackType &&
             (reference.Args[0] is ConstNull || reference.Args[0].ResultType.IsAssignableTo(reference.ResultType))) {
             return reference.Args[0];
         }

@@ -34,6 +34,16 @@ internal sealed class CilPreparation
     private static void Legalize(MethodBody method)
     {
         foreach (var inst in method.Instructions().ToArray()) {
+            if (inst is CilIntrinsic.RefCast { ResultType: ByrefType } cast) {
+                // A typed CIL local establishes the managed reference's GC tracking.
+                var conversion = new IRBuilder(cast, InsertionDir.Before).SetNextDebugLocation(cast.DebugLocation);
+                var address = cast.Args[0];
+                if (address.ResultType.StackType == StackType.Int) address = conversion.CreateConvert(address, PrimType.IntPtr);
+                var slot = method.CreateVar(cast.ResultType, "byrefCast");
+                conversion.CreateStore(slot, address);
+                cast.ReplaceWith(conversion.CreateLoad(slot));
+                continue;
+            }
             if (inst is CilIntrinsic.DefaultValue) {
                 // Store a default directly with initobj, avoiding a temporary
                 // and a full struct copy for address-exposed storage.

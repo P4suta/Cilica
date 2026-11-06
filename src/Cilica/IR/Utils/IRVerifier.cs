@@ -154,8 +154,11 @@ public class IRVerifier
                     break;
                 }
             case CilIntrinsic.RefCast cast: {
-                    Check(cast.Args[0].ResultType.IsManagedObject() && cast.ResultType.IsManagedObject(), cast,
-                        "Unchecked reference conversion requires object references");
+                    var source = cast.Args[0];
+                    Check(source.ResultType.IsManagedObject() && cast.ResultType.IsManagedObject() ||
+                        cast.ResultType.StackType == StackType.ByRef &&
+                        (source.ResultType.StackType == StackType.NInt || source is ConstInt { IsInt: true, Value: 0 }), cast,
+                        "Unchecked reference conversion requires object references or a native address converted to a managed byref");
                     break;
                 }
             case CilIntrinsic.RefAnyType typedReference: {

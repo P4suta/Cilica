@@ -1,5 +1,65 @@
 .class public ImporterCases
 {
+    .method public static native unsigned int ObjectByteOffset(object origin, uint8& target)
+    {
+        .locals (object pinned owner, int32& originRef)
+        ldarg.1
+        ldarg.0
+        stloc.0
+        ldloc.0
+        conv.u
+        stloc.1
+        ldloc.1
+        sub
+        ret
+    }
+
+    .method public static native unsigned int ObjectByteOffsetAcrossBlocks(object origin, uint8& target)
+    {
+        .locals (object pinned owner, int32& originRef)
+        ldarg.0
+        stloc.0
+        ldloc.0
+        conv.u
+        stloc.1
+        br.s subtract
+    subtract:
+        ldarg.1
+        ldloc.1
+        sub
+        ret
+    }
+
+    .method public static native int ReinterpretedByrefOffset(uint8& origin, uint8& target)
+    {
+        .locals (uint8& originRef)
+        ldarg.0
+        conv.u
+        stloc.0
+        ldarg.1
+        ldloc.0
+        sub
+        ret
+    }
+
+    .method public static native int NativeLocalFromByref(uint8& address)
+    {
+        .locals (native int pointer)
+        ldarg.0
+        stloc.0
+        ldloc.0
+        ldc.i4.1
+        and
+        ret
+    }
+
+    .method public static uint8& InitializedByrefLocal()
+    {
+        .locals init (uint8& address)
+        ldloc.0
+        ret
+    }
+
     .method public static native int LoadPointerField(native int address)
     {
         ldarg.0

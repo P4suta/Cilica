@@ -12,6 +12,97 @@ using Cilica.Util;
 public class ILImporterTests(ModuleResolverFixture fixture)
 {
     [Theory]
+    [InlineData("ObjectByteOffset")]
+    [InlineData("ObjectByteOffsetAcrossBlocks")]
+    public unsafe void NativeAddressesStoredInByrefLocalsPreserveObjectOffsets(string name)
+    {
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        string path = Path.Combine(AppContext.BaseDirectory, "TestAsm.IL.dll");
+        var module = resolver.Load(path);
+        var method = (MethodDef)module.FindType(null, "ImporterCases")!.FindMethod(name);
+        var original = System.Reflection.Assembly.Load(File.ReadAllBytes(path))
+            .GetType("ImporterCases")!.GetMethod(name)!.CreateDelegate<ObjectByteOffset>();
+        Check(original);
+
+        for (int round = 0; round < 3; round++) {
+            var compilation = new Compilation(module, new VoidLogger(), new() { VerifyEachPass = true });
+            CompilationPipeline.CreateDefault(compilation).Run([method]).ThrowIfFailed();
+            Check(Utils.Compile<ObjectByteOffset>(method.Body!));
+            method.Body = null;
+        }
+
+        static void Check(ObjectByteOffset run)
+        {
+            byte[] bytes = new byte[32];
+            object owner = bytes;
+            fixed (byte* start = bytes) {
+                nuint origin = System.Runtime.CompilerServices.Unsafe.As<object, nuint>(ref owner);
+                Assert.Equal((nuint)start - origin, run(owner, ref bytes[0]));
+                Assert.Equal((nuint)(start + 31) - origin, run(owner, ref bytes[31]));
+            }
+        }
+    }
+
+    [Fact]
+    public void ReinterpretedByrefsPreserveSignedOffsets()
+    {
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var module = resolver.Load(Path.Combine(AppContext.BaseDirectory, "TestAsm.IL.dll"));
+        var method = (MethodDef)module.FindType(null, "ImporterCases")!.FindMethod("ReinterpretedByrefOffset");
+        var bytes = new byte[32];
+
+        for (int round = 0; round < 3; round++) {
+            var compilation = new Compilation(module, new VoidLogger(), new() { VerifyEachPass = true });
+            CompilationPipeline.CreateDefault(compilation).Run([method]).ThrowIfFailed();
+            var run = Utils.Compile<ByrefOffset>(method.Body!);
+            Assert.Equal((nint)31, run(ref bytes[0], ref bytes[31]));
+            Assert.Equal((nint)(-31), run(ref bytes[31], ref bytes[0]));
+            Assert.Equal((nint)0, run(ref bytes[0], ref bytes[0]));
+            method.Body = null;
+        }
+    }
+
+    [Fact]
+    public unsafe void ByrefsStoredInNativeLocalsSupportIntegerOperations()
+    {
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var module = resolver.Load(Path.Combine(AppContext.BaseDirectory, "TestAsm.IL.dll"));
+        var method = (MethodDef)module.FindType(null, "ImporterCases")!.FindMethod("NativeLocalFromByref");
+        byte* bytes = stackalloc byte[2];
+
+        for (int round = 0; round < 3; round++) {
+            var compilation = new Compilation(module, new VoidLogger(), new() { VerifyEachPass = true });
+            CompilationPipeline.CreateDefault(compilation).Run([method]).ThrowIfFailed();
+            var run = Utils.Compile<NativeFromByref>(method.Body!);
+            Assert.Equal((nint)bytes & 1, run(ref bytes[0]));
+            Assert.Equal((nint)(bytes + 1) & 1, run(ref bytes[1]));
+            method.Body = null;
+        }
+    }
+
+    delegate nuint ObjectByteOffset(object origin, ref byte target);
+    delegate nint ByrefOffset(ref byte origin, ref byte target);
+    delegate nint NativeFromByref(ref byte address);
+
+    [Fact]
+    public void InitializedByrefLocalsRemainNullAfterPromotion()
+    {
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var module = resolver.Load(Path.Combine(AppContext.BaseDirectory, "TestAsm.IL.dll"));
+        var method = (MethodDef)module.FindType(null, "ImporterCases")!.FindMethod("InitializedByrefLocal");
+        var compilation = new Compilation(module, new VoidLogger(), new() { VerifyEachPass = true });
+        CompilationPipeline.CreateDefault(compilation).Run([method]).ThrowIfFailed();
+        var run = Utils.Compile<GetByref>(method.Body!);
+        Assert.True(System.Runtime.CompilerServices.Unsafe.IsNullRef(ref run()));
+    }
+
+    delegate ref byte GetByref();
+
+    [Theory]
     [InlineData("LoopAtSharedTryEntry", 0, "2134")]
     [InlineData("LoopAtSharedTryEntry", 1, "2134")]
     [InlineData("LoopAtSharedTryEntry", 2, "234")]

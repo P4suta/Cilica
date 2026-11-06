@@ -3,6 +3,6 @@
 // CHECK: store
 // CHECK: load
 // CHECK: ImporterCases::MutPtr
-// CHECK: conv 0
+// CHECK: 0
 // CHECK: store
 // CHECK: ret
