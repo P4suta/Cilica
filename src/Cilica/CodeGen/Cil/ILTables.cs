@@ -42,7 +42,9 @@ internal static class ILTables
 
     public static ILCode GetConvertCode(ConvertInst inst)
     {
-        var dstType = inst.ResultType.Kind.GetStorageType(normalizeToSigned: false);
+        var dstType = inst.DestType == TypeKind.Pointer
+            ? TypeKind.UIntPtr
+            : inst.DestType.GetStorageType(normalizeToSigned: false);
 
         return (dstType, inst.SrcUnsigned, inst.CheckOverflow) switch {
             (TypeKind.SByte,   F, F) => ILCode.Conv_I1,

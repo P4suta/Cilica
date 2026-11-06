@@ -15,6 +15,36 @@ using MethodBody = Cilica.IR.MethodBody;
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void InlinedPointerParametersPreserveManagedFieldAddresses(bool voidPointer)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var type = body.Definition.DeclaringType;
+        var field = type.CreateField("Value", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var pointer = (voidPointer ? PrimType.Void : PrimType.Int32).CreatePointer();
+        var helper = type.CreateMethod("Increment", PrimType.Void, [new ParamDef(pointer, "address")],
+            MethodAttributes.Public | MethodAttributes.Static);
+        helper.Body = new MethodBody(helper);
+        var callee = new IRBuilder(helper.Body.CreateBlock());
+        var value = callee.Emit(new LoadInst(helper.Body.Args[0], PrimType.Int32));
+        callee.Emit(new StoreInst(helper.Body.Args[0], callee.CreateAdd(value, ConstInt.CreateI(1)), PrimType.Int32));
+        callee.CreateReturn();
+
+        var builder = new IRBuilder(body.CreateBlock());
+        var address = builder.CreateFieldAddr(field);
+        builder.CreateStore(address, body.Args[0]);
+        builder.CreateCall(helper, address);
+        builder.CreateReturn(builder.CreateLoad(address));
+        Run(body, new InlineMethods());
+
+        Assert.Empty(body.Instructions().OfType<CallInst>());
+        var run = Utils.Compile<Func<int, int>>(body);
+        Assert.Equal(43, run(42));
+        Assert.Equal(int.MinValue, run(int.MaxValue));
+    }
+
+    [Theory]
     [InlineData(null, true, MethodImplAttributes.IL, true)]
     [InlineData("Dependency", true, MethodImplAttributes.IL, true)]
     [InlineData("System.Dependency", true, MethodImplAttributes.IL, true)]

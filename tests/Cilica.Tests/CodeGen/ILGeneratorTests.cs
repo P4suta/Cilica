@@ -92,6 +92,30 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
 
     unsafe delegate byte* UpdatePointer(byte** address, byte* value);
 
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void PointerConversionsPreserveNativeWidthAndOverflowSemantics(bool checkOverflow, bool srcUnsigned)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.UIntPtr, PrimType.IntPtr);
+        var builder = new IRBuilder(body.CreateBlock());
+        var pointer = builder.CreateConvert(body.Args[0], PrimType.Byte.CreatePointer(), checkOverflow, srcUnsigned);
+        builder.CreateReturn(pointer);
+        var run = Utils.Compile<Func<nint, nuint>>(body);
+
+        Assert.Equal((nuint)0, run(0));
+        Assert.Equal((nuint)42, run(42));
+        Assert.Equal((nuint)nint.MaxValue, run(nint.MaxValue));
+        if (checkOverflow && !srcUnsigned) {
+            Assert.Throws<OverflowException>(() => run(-1));
+            Assert.Throws<OverflowException>(() => run(nint.MinValue));
+        } else {
+            Assert.Equal(nuint.MaxValue, run(-1));
+            Assert.Equal(unchecked((nuint)nint.MinValue), run(nint.MinValue));
+        }
+    }
+
     [Fact]
     public void Test_ILGenerator() => CheckCIL("CodeGen/StructFieldInsertExtract.ethil");
 
