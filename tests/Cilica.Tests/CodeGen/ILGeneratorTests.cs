@@ -11,6 +11,37 @@ using System.Reflection;
 [Collection("ModuleResolver")]
 public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ConditionalResultsReadOutValuesAfterTheirProducer(bool found)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Object, PrimType.Object, PrimType.Bool);
+        var owner = body.Definition.DeclaringType;
+        var produce = owner.CreateMethod("Produce", PrimType.Int32,
+            [new ParamDef(PrimType.Object, "value"), new ParamDef(PrimType.Object.CreateByref(), "result"), new ParamDef(PrimType.Bool, "found")],
+            MethodAttributes.Public | MethodAttributes.Static);
+        produce.ImplAttribs = MethodImplAttributes.NoInlining;
+        produce.Body = new(produce);
+        var producer = new IRBuilder(produce.Body.CreateBlock());
+        producer.CreateStore(produce.Body.Args[1], produce.Body.Args[0]);
+        producer.CreateReturn(producer.CreateSelect(produce.Body.Args[2], ConstInt.CreateI(0), ConstInt.CreateI(-1)));
+        var identity = owner.CreateMethod("Identity", PrimType.Object, [new ParamDef(PrimType.Object, "value")],
+            MethodAttributes.Public | MethodAttributes.Static);
+        identity.ImplAttribs = MethodImplAttributes.NoInlining;
+        identity.Body = new(identity);
+        new IRBuilder(identity.Body.CreateBlock()).CreateReturn(identity.Body.Args[0]);
+        var builder = new IRBuilder(body.CreateBlock());
+        var slot = body.CreateVar(PrimType.Object);
+        var status = builder.CreateCall(produce, body.Args[0], slot, body.Args[1]);
+        var value = builder.CreateCall(identity, builder.CreateLoad(slot));
+        builder.CreateReturn(builder.CreateSelect(builder.CreateEq(status, ConstInt.CreateI(-1)), ConstNull.Create(), value));
+
+        var run = Utils.Compile<Func<object, bool, object?>>(body);
+        var expected = new object();
+        Assert.Same(found ? expected : null, run(expected, found));
+    }
+
     [Fact]
     public void DeepExpressionsAreEmittedWithoutExhaustingTheCompilerStack()
     {

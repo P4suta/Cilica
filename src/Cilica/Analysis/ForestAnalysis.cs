@@ -8,13 +8,15 @@ public class ForestAnalysis : IMethodAnalysis
 
     // Leaf membership identifies values emitted as operands of their expression roots.
     readonly RefSet<Instruction> _leafs = new();
+    readonly IReadOnlySet<Instruction>? _requiredRoots;
 
     // CIL emission recursively visits each expression. Split deep trees into
     // ordinary roots so input size cannot exhaust the compiler's native stack.
     const int MaxExpressionDepth = 128;
 
-    public ForestAnalysis(MethodBody method, AliasAnalysis? aa = null)
+    public ForestAnalysis(MethodBody method, AliasAnalysis? aa = null, IReadOnlySet<Instruction>? requiredRoots = null)
     {
+        _requiredRoots = requiredRoots;
         aa ??= new(method);
 
         foreach (var block in method) {
@@ -52,6 +54,7 @@ public class ForestAnalysis : IMethodAnalysis
         {
             // Check for single-use instruction defined in the same block
             if (inst.Operands[i] is not Instruction oper || oper.Block != inst.Block) return;
+            if (_requiredRoots?.Contains(oper) == true) return;
             if (oper is PhiInst or FieldInsertInst) return; // needs own slot for codegen
             // CIL localloc requires an empty evaluation stack apart from its size.
             // Keep it rooted during scheduling so earlier effects also stay ordered.
@@ -79,14 +82,22 @@ public class ForestAnalysis : IMethodAnalysis
             // we can safely skip over leafs because they will be evaluated later than `def`.
             if (_leafs.Contains(inst)) continue;
 
-            // Moving a call into a later expression must not move its writes
-            // past intervening reads, including loads of its out arguments.
-            bool ordersRead = inst.MayReadFromMemory && (def.MayWriteToMemory || def.IsMemoryBarrier);
-            if ((inst.HasSideEffects || ordersRead) && !AreInterchangeableHazards(def, inst, aa)) {
+            if (HasTreeHazard(inst)) {
                 return true;
             }
         }
         return false;
+
+        bool HasTreeHazard(Instruction inst)
+        {
+            // Effects of nested operands execute at their expression root.
+            bool ordersRead = inst.MayReadFromMemory && (def.MayWriteToMemory || def.IsMemoryBarrier);
+            if ((inst.HasSideEffects || ordersRead) && !AreInterchangeableHazards(def, inst, aa)) return true;
+            foreach (var operand in inst.Operands) {
+                if (operand is Instruction child && _leafs.Contains(child) && HasTreeHazard(child)) return true;
+            }
+            return false;
+        }
     }
 
     // A non-throwing load can commute with a disjoint store when neither access

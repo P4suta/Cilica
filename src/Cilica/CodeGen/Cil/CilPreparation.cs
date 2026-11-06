@@ -214,6 +214,7 @@ internal sealed class CilPreparation
     private static ForestAnalysis PrepareExpressions(MethodBody method)
     {
         var forest = new ForestAnalysis(method);
+        var requiredRoots = new HashSet<Instruction>();
         long revision = method.Revision;
 
         foreach (var block in method) {
@@ -223,22 +224,29 @@ internal sealed class CilPreparation
 
             foreach (var phi in block.Succs.First().Phis()) {
                 if (phi.GetValue(block) is Instruction { NumUses: 1, SafeToRemove: true, MayReadFromMemory: false } definition &&
-                    RootObservableLeaves(definition, forest) != definition) {
+                    RootValue(definition) != definition) {
                     definition.MoveBefore(definition.Block.Last);
                 }
             }
         }
 
         if (revision != method.Revision) {
-            forest = new ForestAnalysis(method);
+            forest = new ForestAnalysis(method, requiredRoots: requiredRoots);
         }
 
         foreach (var select in method.Instructions().OfType<SelectInst>()) {
-            RootObservableLeaves(select.IfTrue, forest);
-            RootObservableLeaves(select.IfFalse, forest);
+            RootValue(select.IfTrue);
+            RootValue(select.IfFalse);
         }
 
-        return forest;
+        return requiredRoots.Count == 0 ? forest : new ForestAnalysis(method, requiredRoots: requiredRoots);
+
+        Instruction? RootValue(Value value)
+        {
+            var root = RootObservableLeaves(value, forest);
+            if (root != null) requiredRoots.Add(root);
+            return root;
+        }
     }
 
     private static Instruction? RootObservableLeaves(Value value, ForestAnalysis forest)
