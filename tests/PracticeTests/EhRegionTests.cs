@@ -7,6 +7,33 @@ using System.Runtime.CompilerServices;
 public class EhRegionTests
 {
     [Fact]
+    public void ThrowingCallsPreventLaterExceptionRegionsFromExecuting()
+    {
+        var error = new InvalidOperationException("stop");
+        int cleanups = 0;
+        Assert.Same(error, Assert.Throws<InvalidOperationException>(() => ThrowBeforeFinally(error, () => cleanups++)));
+        Assert.Equal(0, cleanups);
+    }
+
+    static int ThrowBeforeFinally(Exception error, Action cleanup)
+    {
+        ThrowException(true, error);
+        return ReturnWithFinally(cleanup);
+    }
+
+    [MethodImpl(MethodImplOptions.AggressiveInlining)]
+    static void ThrowException(bool shouldThrow, Exception error)
+    {
+        if (shouldThrow) throw error;
+    }
+
+    static int ReturnWithFinally(Action cleanup)
+    {
+        try { cleanup(); return 42; }
+        finally { cleanup(); }
+    }
+
+    [Fact]
     public void FinallyWritesSurviveAnEnclosingCatch()
     {
         var value = new Pair();

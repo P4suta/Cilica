@@ -49,7 +49,7 @@ public class InlineMethods : IMethodPass
 
             while (HasBudget() && worklist.TryDequeue(out var call)) {
                 var ancestors = ancestry[call];
-                if (call.Block == null) continue;
+                if (call.Block?.Method == null) continue;
                 if (call.IsTailCall || call.IsReadOnly || ancestors.Length >= _opts.MaxDepth) {
                     decisions?.Record(call, call.Method, call.IsTailCall ? "tail-call semantics must be preserved"
                         : call.IsReadOnly ? "readonly receiver semantics must be preserved"
@@ -90,7 +90,12 @@ public class InlineMethods : IMethodPass
                     worklist.Enqueue(nested);
                 });
                 if (result != null) call.ReplaceUses(result);
+                var continuation = call.Block;
                 call.Remove();
+                if (continuation != ctx.Method.EntryBlock && continuation.NumPreds == 0) {
+                    // Non-returning specializations disconnect the continuation and its queued calls.
+                    ControlFlowUtils.RemoveUnreachableBlocks(ctx.Method);
+                }
                 sizeBudget.RecordExpansion();
                 decisions?.Record(call, inlinee!, rejection: null);
             }
