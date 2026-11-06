@@ -273,7 +273,7 @@ internal sealed class CilPreparation
             int count = 0;
 
             foreach (var operand in inst.Operands) {
-                if (FindObservableLeaf(operand) is { } leaf) {
+                if (operand is Instruction child && forest.IsLeaf(child) && FindObservableLeaf(child) is { } leaf) {
                     first = leaf;
                     count++;
                 }
