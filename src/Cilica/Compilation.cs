@@ -158,7 +158,7 @@ public partial class Compilation
             var called = inst switch { CallInst call => call.Method, NewObjInst obj => obj.Constructor, FuncAddrInst address => address.Method, _ => null };
             if (called != null && IsFrameSensitive(called)) return false;
         }
-        return Module != Resolver.CoreLib || new InliningAccess(caller.DeclaringType).CheckBody(body, scalarReplacement);
+        return new InliningAccess(caller.DeclaringType, ignoreVisibility: Module != Resolver.CoreLib).CheckBody(body, scalarReplacement);
     }
 
     private bool WrapsNonExceptions(ModuleDef module)

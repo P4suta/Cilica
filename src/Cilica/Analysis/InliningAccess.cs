@@ -3,8 +3,8 @@ namespace Cilica.Analysis;
 using System.Reflection;
 using MethodBody = IR.MethodBody;
 
-/// <summary> A conservative check for CoreLib inlining without access-check suppression. </summary>
-internal sealed class InliningAccess(TypeDef caller)
+/// <summary> Checks that an inline body can preserve its member references and required access. </summary>
+internal sealed class InliningAccess(TypeDef caller, bool ignoreVisibility = false)
 {
     public bool CheckBody(MethodBody body, bool scalarReplacement)
     {
@@ -46,7 +46,11 @@ internal sealed class InliningAccess(TypeDef caller)
     public bool CanUseMember(MemberDesc member)
     {
         // A bare MemberRef does not establish visibility of its target.
-        if (member is MethodReference reference) return reference.Parent is MethodDesc target && CanUseMember(target);
+        if (member is MethodReference reference) {
+            return reference.Parent is MethodDesc target ? CanUseMember(target)
+                : ignoreVisibility && CanUseType(reference.DeclaringType) && CanUseSignature(reference.ReturnSig) &&
+                    reference.ParamSig.All(CanUseSignature) && reference.GenericParams.All(CanUseType);
+        }
         if (!CanUseType(member.DeclaringType)) return false;
         int visibility;
         if (member is MethodDesc method) {
@@ -60,7 +64,7 @@ internal sealed class InliningAccess(TypeDef caller)
             return false;
         }
 
-        return visibility == (int)MethodAttributes.Public ||
+        return ignoreVisibility || visibility == (int)MethodAttributes.Public ||
                member.DeclaringType is TypeDefOrSpec owner && (owner.Definition == caller ||
                    owner.Module == caller.Module && visibility is (int)MethodAttributes.Assembly or (int)MethodAttributes.FamORAssem);
     }
@@ -79,6 +83,9 @@ internal sealed class InliningAccess(TypeDef caller)
         if (type is not TypeDefOrSpec nominal || !nominal.GenericParams.All(CanUseType)) return false;
 
         for (var definition = nominal.Definition; definition != null; definition = definition.DeclaringType) {
+            // Global members have no externally addressable declaring type.
+            if (definition.Name == "<Module>" && definition.Module != caller.Module) return false;
+            if (ignoreVisibility) continue;
             if (definition == caller) return true;
             var visibility = definition.Attribs & TypeAttributes.VisibilityMask;
             if (visibility is TypeAttributes.Public or TypeAttributes.NestedPublic) continue;
