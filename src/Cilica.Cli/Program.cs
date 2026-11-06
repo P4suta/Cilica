@@ -84,7 +84,7 @@ static CompilationResult RunPasses(OptimizerOptions options, Compilation comp)
         });
     }
     if (options.PassDumpBundlePath != null) {
-        manager.Inspectors.Add(new PassDiffCollector(options.PassDumpBundlePath, dumpFilter));
+        manager.Inspectors.Add(new PassDiffCollector(options.PassDumpBundlePath, dumpFilter, options.DumpFmts));
     }
 
     var methods = PassManager.GetCandidateMethodsFromIL(comp.Module, GetCandidateFilter(options, comp));

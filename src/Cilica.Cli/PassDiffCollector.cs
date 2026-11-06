@@ -7,7 +7,7 @@ using Cilica.IR;
 using Cilica.IR.Utils;
 using Cilica.Passes;
 
-class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter) : IPassInspector
+class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFormats formats) : IPassInspector
 {
     Dictionary<MethodDef, MethodTimeline> _entries = new();
 
@@ -46,10 +46,10 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter) : IPass
         using var fs = File.Create(outputPath);
 
         var opts = new JsonSerializerOptions() {
-            IncludeFields = true,
             PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
             Encoder = System.Text.Encodings.Web.JavaScriptEncoder.UnsafeRelaxedJsonEscaping,
-            WriteIndented = true
+            WriteIndented = true,
+            Converters = { new MethodSnapshot.Converter(formats) }
         };
         JsonSerializer.Serialize(fs, _entries.Values, opts);
         
@@ -73,10 +73,10 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter) : IPass
 
     class MethodTimeline
     {
-        public string Name = "";
-        public List<MethodSnapshot> Passes = new();
+        public string Name { get; set; } = "";
+        public List<MethodSnapshot> Passes { get; set; } = [];
 
-        [JsonIgnore] public int LastHash;
+        [JsonIgnore] public int LastHash { get; set; }
 
         public void TakeSnapshot(MethodDef method, string passName, bool captureCode)
         {
@@ -97,8 +97,25 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter) : IPass
     }
     struct MethodSnapshot
     {
-        public string PassName;
-        public string? PlainCode;
-        public string? GraphvizCode;
+        public string PassName { get; set; }
+        public string? PlainCode { get; set; }
+        public string? GraphvizCode { get; set; }
+
+        internal class Converter(DumpFormats formats) : JsonConverter<MethodSnapshot>
+        {
+            public override MethodSnapshot Read(ref Utf8JsonReader reader, Type typeToConvert, JsonSerializerOptions options)
+            {
+                throw new NotImplementedException();
+            }
+
+            public override void Write(Utf8JsonWriter writer, MethodSnapshot value, JsonSerializerOptions options)
+            {
+                writer.WriteStartObject();
+                writer.WriteString("passName", value.PassName);
+                if (formats.HasFlag(DumpFormats.Plaintext)) writer.WriteString("plainCode", value.PlainCode);
+                if (formats.HasFlag(DumpFormats.Graphviz)) writer.WriteString("graphvizCode", value.GraphvizCode);
+                writer.WriteEndObject();
+            }
+        }
     }
 }
