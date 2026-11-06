@@ -43,10 +43,10 @@ public class InterferenceGraph : IMethodAnalysis
                 foreach (var oper in inst.Operands) {
                     if (oper is not Instruction operI) continue;
 
-                    liveNow.Add(operI);
-
                     if (forest.IsLeaf(operI)) {
                         MarkTreeUses(operI);
+                    } else {
+                        liveNow.Add(operI);
                     }
                 }
             }
