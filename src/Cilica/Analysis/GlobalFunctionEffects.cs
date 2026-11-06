@@ -219,7 +219,7 @@ public class GlobalFunctionEffects : IGlobalAnalysis
         foreach (var block in body) {
             foreach (var inst in block.NonPhis()) {
                 switch (inst) {
-                    case CilIntrinsic.CallIndirect: {
+                    case CilIntrinsic.CallIndirect or CilIntrinsic.Initialization: {
                         memEffects |= FunctionEffects.Unknown.MemEffects;
                         traits |= FunctionTraits.CallTransferMask;
                         break;

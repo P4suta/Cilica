@@ -213,12 +213,7 @@ public class InlineMethods : IMethodPass
         if (call is CallInst { IsVirtual: true, InBounds: false } && args[0].ResultType.IsManagedObject()) {
             builder.CreateNullCheck(args[0]);
         }
-        if (target.Module != callerBody.Definition.Module && target.DeclaringType.RequiresModuleInitialization()) {
-            builder.CreateModuleInitialization(target.DeclaringType);
-        }
-        if (target.RequiresTypeInitialization()) {
-            builder.CreateTypeInitialization(target.DeclaringType);
-        }
+        comp.EmitInlineInitialization(builder, target);
 
         var cloner = new InlinerIRCloner(callerBody, target, onNewCall);
 

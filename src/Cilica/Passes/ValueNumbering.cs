@@ -81,7 +81,9 @@ public class ValueNumbering : IMethodPass
             var useRegion = RegionAnalysis.GetBlockRegion(user.Block);
             if (defRegion != useRegion) return false;
 
-            // Trivial accept instructions that don't access memory or are pure
+            // Registered intrinsics, including initialization checks, are stable
+            // after normal completion. Only memory accesses and ordinary calls
+            // need clobber checks; writes cannot undo type/module initialization.
             if (!(def is MemoryInst or CallInst)) return true;
 
             if (def is CallInst call) {
@@ -236,6 +238,10 @@ public class ValueNumbering : IMethodPass
         Reg<CilIntrinsic.AsInstance>(
             comp: (a, b) => a.Args[0] == b.Args[0] && a.DestType == b.DestType,
             hash: (inst) => HashCode.Combine(inst.DestType, inst.Args[0])
+        );
+        Reg<CilIntrinsic.Initialization>(
+            comp: (a, b) => a.Helper.Definition == b.Helper.Definition && a.Helper.DeclaringType == b.Helper.DeclaringType,
+            hash: (inst) => HashCode.Combine(inst.Helper.Definition, inst.Helper.DeclaringType)
         );
 
         // Volatile accesses are excluded by the value table.

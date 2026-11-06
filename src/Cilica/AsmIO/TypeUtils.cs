@@ -13,7 +13,11 @@ public static class TypeUtils
 
     /// <summary> Whether this type's module defines a module initializer. </summary>
     public static bool RequiresModuleInitialization(this TypeDesc type)
-        => type is TypeDefOrSpec def && def.Module.TypeDefs.FirstOrDefault(candidate => candidate.Name == "<Module>")
+        => type is TypeDefOrSpec def && def.Module.RequiresModuleInitialization();
+
+    /// <summary> Whether this module defines a module initializer. </summary>
+    public static bool RequiresModuleInitialization(this ModuleDef module)
+        => module.TypeDefs.FirstOrDefault(candidate => candidate.Name == "<Module>")
             ?.Methods.Any(method => method.Name == ".cctor") == true;
 
     /// <summary> Whether invoking this method can run its declaring type's initializer. </summary>

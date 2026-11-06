@@ -1,0 +1,370 @@
+namespace Cilica.Tests.Passes;
+
+using System.Reflection;
+using System.Runtime.Loader;
+using Cilica.AsmIO;
+using Cilica.CodeGen.Cil;
+using Cilica.IR;
+using Cilica.IR.Utils;
+using Cilica.Passes;
+using Cilica.Util;
+using MethodBody = Cilica.IR.MethodBody;
+
+[Collection("ModuleResolver")]
+public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
+{
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LocalTypeInitializationUsesAnEmptyMethodOnTheExactType(bool generic)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.Module.CreateType(null, generic ? "Initialized`1" : "Initialized",
+            genericParams: generic ? [new GenericParamType(0, false)] : []);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        Initialize(type, effect, 50);
+        var callee = Constant(type);
+        var builder = new IRBuilder(body.CreateBlock());
+        TypeDefOrSpec first = generic ? type.GetSpec([PrimType.Int32]) : type;
+        TypeDefOrSpec second = generic ? type.GetSpec([PrimType.String]) : type;
+        builder.CreateCall(first.FindMethod(callee.Name));
+        builder.CreateCall(second.FindMethod(callee.Name));
+        builder.CreateCall(first.FindMethod(callee.Name));
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+
+        body = Optimize(body);
+        var calls = EmittedCalls(body).ToArray();
+        Assert.Equal(generic ? 2 : 1, calls.Length);
+        Assert.Equal(first, calls[0].DeclaringType);
+        Assert.Equal(second, calls[^1].DeclaringType);
+        foreach (var call in calls) AssertEmptyHelper(call);
+        Assert.Same(((MethodDefOrSpec)calls[0]).Definition, ((MethodDefOrSpec)calls[^1]).Definition);
+        CheckExecution(body, run => Assert.Equal(generic ? 100 : 50, run()));
+
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, body.Definition.Module.ModName);
+        body.Definition.Module.Save(path, savePdb: false);
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var reloaded = resolver.Load(path);
+        var entry = (MethodDef)reloaded.FindType(null, "TestMethods")!.FindMethod("Run");
+        int methodCount = reloaded.MethodDefs().Count();
+        var compilation = new Compilation(reloaded, new VoidLogger(), new() { VerifyEachPass = true });
+        Assert.True(CompilationPipeline.CreateDefault(compilation).Run([entry]).Succeeded);
+        Assert.Equal(methodCount, reloaded.MethodDefs().Count());
+        Assert.All(EmittedCalls(entry.Body!), AssertEmptyHelper);
+        CheckExecution(entry.Body!, run => Assert.Equal(generic ? 100 : 50, run()));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void RedundantInitializationRequiresADominatingCheck(bool dominates)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool);
+        var type = body.Definition.Module.CreateType(null, "Initialized");
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        Initialize(type, effect, 50);
+        var callee = Constant(type);
+        var entry = body.CreateBlock();
+        var thenBlock = body.CreateBlock();
+        var elseBlock = body.CreateBlock();
+        var merge = body.CreateBlock();
+        var begin = new IRBuilder(entry);
+        var before = begin.CreateFieldLoad(effect);
+        if (dominates) begin.CreateCall(callee);
+        begin.SetBranch(body.Args[0], thenBlock, elseBlock);
+        var then = new IRBuilder(thenBlock);
+        then.CreateCall(callee);
+        then.CreateFieldStore(effect, null, then.CreateAdd(then.CreateFieldLoad(effect), ConstInt.CreateI(1)));
+        then.SetBranch(merge);
+        var otherwise = new IRBuilder(elseBlock);
+        otherwise.CreateFieldStore(effect, null, otherwise.CreateAdd(otherwise.CreateFieldLoad(effect), ConstInt.CreateI(2)));
+        otherwise.SetBranch(merge);
+        var end = new IRBuilder(merge);
+        end.CreateCall(callee);
+        end.CreateReturn(end.CreateSub(end.CreateFieldLoad(effect), before));
+
+        body = Optimize(body);
+        Assert.Equal(dominates ? 1 : 2, EmittedCalls(body).Count());
+        Assert.Equal(51, Utils.Compile<Func<bool, int>>(body)(true));
+        Assert.Equal(52, Utils.Compile<Func<bool, int>>(body)(false));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FailedInitializationDoesNotEliminateChecksInHandlersOrContinuations(bool retryInHandler)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.Module.CreateType(null, "Initialized");
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        Initialize(type, effect, 50, throwing: true);
+        var callee = Constant(type);
+        var entry = body.CreateBlock();
+        var guarded = body.CreateBlock();
+        var handler = body.CreateBlock();
+        var exit = body.CreateBlock();
+        entry.SetBranch(guarded);
+        guarded.InsertLast(new GuardInst(GuardKind.Catch, handler, _modResolver.Import(typeof(TypeInitializationException))));
+        var attempt = new IRBuilder(guarded, InsertionDir.After);
+        attempt.CreateCall(callee);
+        guarded.SetBranch(new LeaveInst(exit));
+        var caught = new IRBuilder(handler);
+        if (retryInHandler) caught.CreateCall(callee);
+        handler.SetBranch(new LeaveInst(exit));
+        var continuation = new IRBuilder(exit);
+        if (!retryInHandler) continuation.CreateCall(callee);
+        continuation.CreateReturn(continuation.CreateFieldLoad(effect));
+
+        body = Optimize(body);
+        Assert.Equal(2, EmittedCalls(body).Count());
+        CheckExecution(body, run => Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(() => run()).InnerException));
+    }
+
+    [Theory]
+    [InlineData(false, true)]
+    [InlineData(true, true)]
+    [InlineData(true, false)]
+    public void CallerInitializationOnlyCoversItsExactTypeInstantiation(bool generic, bool sameInstantiation)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.Module.CreateType(null, generic ? "Initialized`1" : "Initialized",
+            genericParams: generic ? [new GenericParamType(0, false)] : []);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        Initialize(type, effect, 50);
+        Constant(type);
+        var caller = type.CreateMethod("Invoke", PrimType.Void, [], MethodAttributes.Public | MethodAttributes.Static);
+        caller.Body = new MethodBody(caller);
+        var invoke = new IRBuilder(caller.Body.CreateBlock());
+        var target = sameInstantiation ? type.GetUnboundSpec() : type.GetSpec([PrimType.Int32]);
+        invoke.CreateCall(target.FindMethod("Value"));
+        invoke.CreateReturn();
+        Optimize(caller.Body);
+        if (sameInstantiation) Assert.Empty(EmittedCalls(caller.Body!));
+        else Assert.Equal(target, Assert.Single(EmittedCalls(caller.Body!)).DeclaringType);
+
+        TypeDefOrSpec entryType = generic ? type.GetSpec([PrimType.String]) : type;
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateCall(entryType.FindMethod("Invoke"));
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+        CheckExecution(body, run => Assert.Equal(sameInstantiation ? 50 : 100, run()));
+    }
+
+    [Fact]
+    public void ScalarReplacementPreservesInitializationWithoutARuntimeApiCall()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.Module.CreateType(null, "Initialized");
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        Initialize(type, effect, 50);
+        var field = type.CreateField("Value", PrimType.Int32);
+        var ctor = type.CreateMethod(".ctor", PrimType.Void, [new ParamDef(type, "this")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        ctor.Body = new MethodBody(ctor);
+        var construct = new IRBuilder(ctor.Body.CreateBlock());
+        construct.CreateCall(_modResolver.Import(typeof(object)).FindMethod(".ctor"), ctor.Body.Args[0]);
+        construct.CreateFieldStore(field, ctor.Body.Args[0], ConstInt.CreateI(42));
+        construct.CreateReturn();
+        var builder = new IRBuilder(body.CreateBlock());
+        var allocation = builder.CreateNewObj(ctor);
+        builder.CreateReturn(builder.CreateAdd(builder.CreateFieldLoad(field, allocation), builder.CreateFieldLoad(effect)));
+
+        body = Optimize(body);
+        Assert.DoesNotContain(body.Instructions(), inst => inst is NewObjInst);
+        AssertEmptyHelper(Assert.Single(EmittedCalls(body)));
+        CheckExecution(body, run => Assert.Equal(92, run()));
+    }
+
+    [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, false, true)]
+    [InlineData(false, true, false)]
+    [InlineData(false, true, true)]
+    [InlineData(true, false, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, false)]
+    [InlineData(true, true, true)]
+    public void CrossModuleInliningUsesPublishedHelpersOrRuntimeCalls(bool publishHelpers, bool initializeType, bool throwing)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var library = _modResolver.Create("InitializationLibrary_" + Guid.NewGuid().ToString("N"));
+        Initialize(library.FindType(null, "<Module>")!, effect, 10, throwing && !initializeType);
+        var type = library.CreateType(null, "Initialized");
+        if (initializeType) Initialize(type, effect, 50, throwing);
+        var callee = Constant(type);
+
+        if (publishHelpers) {
+            var probe = Constant(library.CreateType(null, "Consumer"));
+            probe.Body = new MethodBody(probe);
+            var invoke = new IRBuilder(probe.Body.CreateBlock());
+            invoke.CreateReturn(invoke.CreateCall(callee));
+            Optimize(probe.Body);
+        }
+        int libraryMethods = library.MethodDefs().Count();
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateCall(callee);
+        builder.CreateReturn(builder.CreateAdd(builder.CreateCall(callee), builder.CreateFieldLoad(effect)));
+        body = Optimize(body);
+
+        Assert.Equal(libraryMethods, library.MethodDefs().Count());
+        var calls = EmittedCalls(body).ToArray();
+        Assert.DoesNotContain(calls, method => method == callee);
+        if (publishHelpers) {
+            var helper = Assert.Single(calls);
+            AssertEmptyHelper(helper);
+            Assert.Same(library, ((MethodDefOrSpec)helper).Module);
+            Assert.Equal(initializeType, helper.DeclaringType == type);
+        } else {
+            Assert.Contains(calls, method => method.Name == "RunModuleConstructor");
+            Assert.Equal(initializeType, calls.Any(method => method.Name == "RunClassConstructor"));
+        }
+        CheckExecution(body, run => {
+            for (int i = 0; i < 2; i++) {
+                if (throwing) {
+                    Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(() => run()).InnerException);
+                } else {
+                    Assert.Equal(initializeType ? 102 : 52, run());
+                }
+            }
+        }, library);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ReentrantInitializationCannotCacheSuccessBeforeTheInitializerThrows(bool moduleInitializer)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        body.Definition.ImplAttribs = MethodImplAttributes.NoInlining;
+        var library = moduleInitializer ? _modResolver.Create("Reentrant_" + Guid.NewGuid().ToString("N")) : body.Definition.Module;
+        var type = library.CreateType(null, "Initialized");
+        var callee = Constant(type);
+        var initializerOwner = moduleInitializer ? library.FindType(null, "<Module>")! : type;
+        var initializer = CreateInitializer(initializerOwner);
+        var initialize = new IRBuilder(initializer.Body!.CreateBlock());
+        initialize.CreateCall(body.Definition);
+        Throw(initialize);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.CreateCall(callee));
+        var start = body.Definition.DeclaringType.CreateMethod("Start", PrimType.Void, [], MethodAttributes.Public | MethodAttributes.Static);
+        start.Body = new MethodBody(start);
+        var begin = new IRBuilder(start.Body.CreateBlock());
+        if (moduleInitializer) begin.CreateModuleInitialization(type);
+        else begin.CreateTypeInitialization(type);
+        begin.CreateReturn();
+        if (moduleInitializer) Optimize(initializer.Body);
+        body = Optimize(body);
+
+        CheckExecution(body, run => {
+            var start = run.Method.DeclaringType!.GetMethod("Start")!.CreateDelegate<Action>();
+            Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(start).InnerException);
+            for (int i = 0; i < 2; i++) {
+                Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(() => run()).InnerException);
+            }
+        }, moduleInitializer ? [library] : []);
+    }
+
+    [Fact]
+    public void FailedInliningDoesNotLeaveInitializationHelpersBehind()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.Module.CreateType(null, "Initialized");
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        Initialize(type, effect, 50);
+        var callee = Constant(type);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateCall(callee);
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+        int methodCount = type.Methods.Count;
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new());
+        var manager = new PassManager { Compilation = compilation };
+        manager.AddPasses().Apply<InlineMethods>().Apply(new FailPass());
+        Assert.False(manager.Run([body.Definition]).Succeeded);
+        Assert.Equal(methodCount, type.Methods.Count);
+
+        Assert.True(CompilationPipeline.CreateDefault(compilation).Run([body.Definition]).Succeeded);
+        body = body.Definition.Body!;
+        AssertEmptyHelper(Assert.Single(EmittedCalls(body)));
+        CheckExecution(body, run => Assert.Equal(50, run()));
+    }
+
+    private static MethodBody Optimize(MethodBody body)
+    {
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { VerifyEachPass = true });
+        var result = CompilationPipeline.CreateDefault(compilation).Run([body.Definition]);
+        Assert.True(result.Succeeded, string.Join(Environment.NewLine, result.Methods.Select(method => method.Error)));
+        return body.Definition.Body!;
+    }
+
+    private static MethodDef Constant(TypeDef type)
+    {
+        var method = type.CreateMethod("Value", PrimType.Int32, [], MethodAttributes.Public | MethodAttributes.Static);
+        method.Body = new MethodBody(method);
+        method.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        return method;
+    }
+
+    private static MethodDef CreateInitializer(TypeDef type)
+    {
+        var method = type.CreateMethod(".cctor", PrimType.Void, [],
+            MethodAttributes.Static | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        method.Body = new MethodBody(method);
+        return method;
+    }
+
+    private void Initialize(TypeDef type, FieldDef effect, int increment, bool throwing = false)
+    {
+        var initializer = CreateInitializer(type);
+        var builder = new IRBuilder(initializer.Body!.CreateBlock());
+        builder.CreateFieldStore(effect, null, builder.CreateAdd(builder.CreateFieldLoad(effect), ConstInt.CreateI(increment)));
+        if (throwing) Throw(builder);
+        else builder.CreateReturn();
+    }
+
+    private void Throw(IRBuilder builder)
+        => builder.Emit(new ThrowInst(builder.CreateNewObj(_modResolver.Import(typeof(InvalidOperationException))
+            .FindMethod(".ctor", new MethodSig(PrimType.Void, [])))));
+
+    private static IEnumerable<MethodDesc> EmittedCalls(MethodBody body)
+        => body.Definition.ILBody!.Instructions.Where(inst => inst.OpCode is ILCode.Call or ILCode.Callvirt)
+            .Select(inst => (MethodDesc)inst.Operand!);
+
+    private static void AssertEmptyHelper(MethodDesc method)
+    {
+        var helper = Assert.IsAssignableFrom<MethodDefOrSpec>(method);
+        Assert.True(helper.IsStatic);
+        Assert.Equal(PrimType.Void, helper.ReturnType);
+        Assert.Empty(helper.ParamSig);
+        Assert.Equal(ILCode.Ret, Assert.Single(helper.Definition.ILBody!.Instructions).OpCode);
+        Assert.False(helper.ImplAttribs.HasFlag(MethodImplAttributes.NoInlining));
+    }
+
+    private static void CheckExecution(MethodBody body, Action<Func<int>> check, params ModuleDef[] dependencies)
+    {
+        var images = dependencies.Append(body.Definition.Module).ToDictionary(module => module.AsmName.Name!, module => {
+            foreach (var method in module.MethodDefs()) {
+                if (method.Body != null) method.ILBody = ILGenerator.GenerateCode(method.Body);
+            }
+            using var stream = new MemoryStream();
+            module.Save(stream, null, module.ModName);
+            return stream.ToArray();
+        });
+        var context = new AssemblyLoadContext(null, isCollectible: true);
+        context.Resolving += (_, name) => images.TryGetValue(name.Name!, out var bytes)
+            ? context.LoadFromStream(new MemoryStream(bytes)) : null;
+        try {
+            var assembly = context.LoadFromStream(new MemoryStream(images[body.Definition.Module.AsmName.Name!]));
+            var entry = assembly.GetType(body.Definition.DeclaringType.Name)!.GetMethod(body.Definition.Name)!;
+            check(entry.CreateDelegate<Func<int>>());
+        } finally {
+            context.Unload();
+        }
+    }
+
+    sealed class FailPass : IMethodPass
+    {
+        public MethodPassResult Run(MethodTransformContext context) => throw new NotSupportedException("Test failure");
+    }
+}

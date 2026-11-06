@@ -8,7 +8,7 @@ using Cilica.Analysis;
 using Cilica.CodeGen.Cil;
 using MethodBody = IR.MethodBody;
 
-public class Compilation
+public partial class Compilation
 {
     public ModuleDef Module { get; }
     public ICompilationLogger Logger { get; }
@@ -210,12 +210,14 @@ public class Compilation
 
     internal void RemoveUnusedArtifacts()
     {
-        if (_auxType == null) {
+        if (_auxType == null && _generatedInitializationHelpers.Count == 0) {
             return;
         }
 
         var live = new HashSet<MemberDesc>();
-        var pending = new Queue<MethodDef>(Module.MethodDefs().Where(method => method.DeclaringType != _auxType));
+        var pending = new Queue<MethodDef>(Module.MethodDefs().Where(method =>
+            method.DeclaringType != _auxType && !_generatedInitializationHelpers.Contains(method)));
+        Mark(_moduleInitializationHelper);
 
         while (pending.TryDequeue(out var method)) {
             if (method.ILBody is { } il) {
@@ -244,10 +246,17 @@ public class Compilation
             }
         }
 
-        _auxType.Fields.RemoveAll(field => !_initialAuxMembers.Contains(field) && !live.Contains(field));
-        _auxType.Methods.RemoveAll(method => !_initialAuxMembers.Contains(method) && !live.Contains(method));
+        foreach (var helper in _generatedInitializationHelpers.ToArray()) {
+            if (live.Contains(helper)) continue;
+            helper.DeclaringType.Methods.Remove(helper);
+            _generatedInitializationHelpers.Remove(helper);
+            _typeInitializationHelpers.Remove(helper.DeclaringType);
+        }
 
-        if (_ownsAuxType && _auxType.Fields.Count == 0 && _auxType.Methods.Count == 0) {
+        _auxType?.Fields.RemoveAll(field => !_initialAuxMembers.Contains(field) && !live.Contains(field));
+        _auxType?.Methods.RemoveAll(method => !_initialAuxMembers.Contains(method) && !live.Contains(method));
+
+        if (_ownsAuxType && _auxType!.Fields.Count == 0 && _auxType.Methods.Count == 0) {
             Module.RemoveType(_auxType);
             _auxType = null;
             _ownsAuxType = false;
@@ -261,7 +270,9 @@ public class Compilation
                 _ => null
             };
 
-            if (definition?.DeclaringType != _auxType || !live.Add(definition)) {
+            if (definition == null ||
+                definition.DeclaringType != _auxType && (definition is not MethodDef generated || !_generatedInitializationHelpers.Contains(generated)) ||
+                !live.Add(definition)) {
                 return;
             }
 

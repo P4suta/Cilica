@@ -49,6 +49,7 @@ public class PassManager
                 inspector.OnBegin(Compilation);
             }
 
+            Compilation.ExportModuleInitializationHelper();
             PrepareMethods(methods, importAndEmit);
             ApplyPipeline(methods);
 
