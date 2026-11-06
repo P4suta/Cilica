@@ -9,8 +9,7 @@ internal class SelectStage : LinqStageNode
 
     public override void EmitBody(IRBuilder builder, Value currItem, BodyLoopData loopData)
     {
-        var mapLambda = SubjectCall!.Args[1];
-        var mappedItem = builder.CreateLambdaInvoke_ItemAndIndex(mapLambda, currItem, loopData.CreateAccum);
+        var mappedItem = builder.CreateLambdaInvoke_ItemAndIndex(SubjectCall, 1, currItem, loopData.CreateAccum);
         Drain.EmitBody(builder, mappedItem, loopData);
     }
 }
@@ -23,8 +22,7 @@ internal class WhereStage : LinqStageNode
 
     public override void EmitBody(IRBuilder builder, Value currItem, BodyLoopData loopData)
     {
-        var filterLambda = SubjectCall!.Args[1];
-        var cond = builder.CreateLambdaInvoke_ItemAndIndex(filterLambda, currItem, loopData.CreateAccum);
+        var cond = builder.CreateLambdaInvoke_ItemAndIndex(SubjectCall, 1, currItem, loopData.CreateAccum);
         // if (!cond) goto SkipBlock;
         builder.ForkIf(cond, loopData.SkipBlock, negate: true);
         Drain.EmitBody(builder, currItem, loopData);
@@ -136,7 +134,7 @@ internal class FlattenStage : LinqStageNode
     {
         var innerLoop = new LoopBuilder(SubjectCall.Block, "LQ_Flatten_");
 
-        var subCollection = builder.CreateLambdaInvoke_ItemAndIndex(SubjectCall.Args[1], currItem, loopData.CreateAccum);
+        var subCollection = builder.CreateLambdaInvoke_ItemAndIndex(SubjectCall, 1, currItem, loopData.CreateAccum);
         var enumeration = new EnumeratorLoop(innerLoop, subCollection, subCollection.ResultType, loopData.Enumeration);
         loopData.HasDisposal = true;
 
@@ -160,7 +158,7 @@ internal class FlattenStage : LinqStageNode
             emitBody: body => {
                 var innerItem = enumeration.Current(body);
                 if (SubjectCall.NumArgs == 3) {
-                    innerItem = body.CreateLambdaInvoke(SubjectCall.Args[2], currItem, innerItem);
+                    innerItem = body.CreateLambdaInvoke(SubjectCall, 2, currItem, innerItem);
                 }
                 Drain.EmitBody(body, innerItem, innerLoopData);
             },

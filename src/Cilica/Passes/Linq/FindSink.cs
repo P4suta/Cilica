@@ -18,7 +18,7 @@ internal class FindSink : LinqSink
         // FirstOrDefault(source, predicate?, defaultValue?)
         if (SubjectCall.Method.ParamSig is [_, { Type.Name: "Func`2" }, ..]) {
             // goto pred(currItem) ? NextBody : Latch
-            var cond = builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem);
+            var cond = builder.CreateLambdaInvoke(SubjectCall, 1, currItem);
             builder.ForkIf(cond, loopData.SkipBlock, negate: true);
         }
         
@@ -58,7 +58,7 @@ internal class QuantifySink : LinqSink
         var matched = new IRBuilder(found);
         matched.CreateStore(resultSlot, ConstInt.CreateI(1 - normRes));
         matched.SetBranch(loopData.GetExitTarget(exit.Block));
-        var cond = builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem);
+        var cond = builder.CreateLambdaInvoke(SubjectCall, 1, currItem);
         builder.ForkIf(builder.CreateNe(cond, ConstInt.CreateI(normRes)), found);
     }
 }

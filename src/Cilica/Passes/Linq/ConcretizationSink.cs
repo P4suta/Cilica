@@ -108,11 +108,11 @@ internal class DictionarySink : ConcretizationSink
 
     protected override void AppendItem(IRBuilder builder, Value container, Value currItem, BodyLoopData loopData)
     {
-        var key = builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem);
+        var key = builder.CreateLambdaInvoke(SubjectCall, 1, currItem);
         var value = currItem;
         // Signature: ToDictionary(source, keySelector, [elementSelector], [comparer])
         if (SubjectCall.Method.ParamSig is [_, _, { Type.Name: "Func`2" }, ..]) {
-            value = builder.CreateLambdaInvoke(SubjectCall.Args[2], currItem);
+            value = builder.CreateLambdaInvoke(SubjectCall, 2, currItem);
         }
         builder.CreateCallVirt("Add", container, key, value);
     }

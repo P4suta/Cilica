@@ -104,6 +104,38 @@ public class LinqRuntimeTests
         Assert.False(defaultComparer.ContainsKey("ALPHA"));
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void ToDictionaryValidatesNullSelectorsBeforeEnumeration(int count)
+    {
+        int[] source = Enumerable.Range(0, count).ToArray();
+
+        Assert.Equal("keySelector", Assert.Throws<ArgumentNullException>(
+            () => source.ToDictionary((Func<int, int>)null!)).ParamName);
+        Assert.Equal("elementSelector", Assert.Throws<ArgumentNullException>(
+            () => source.ToDictionary(value => value, (Func<int, int>)null!)).ParamName);
+        Assert.Equal("keySelector", Assert.Throws<ArgumentNullException>(
+            () => source.ToDictionary((Func<int, int>)null!, (Func<int, int>)null!)).ParamName);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(1)]
+    public void QueriesValidateNullDelegatesBeforeEnumeration(int count)
+    {
+        int[] source = Enumerable.Range(0, count).ToArray();
+
+        Assert.Equal("selector", Assert.Throws<ArgumentNullException>(
+            () => source.Select((Func<int, int, int>)null!).ToArray()).ParamName);
+        Assert.Equal("predicate", Assert.Throws<ArgumentNullException>(
+            () => source.Where((Func<int, bool>)null!).ToArray()).ParamName);
+        Assert.Equal("func", Assert.Throws<ArgumentNullException>(
+            () => source.Aggregate(0, (Func<int, int, int>)null!)).ParamName);
+        Assert.Equal("resultSelector", Assert.Throws<ArgumentNullException>(
+            () => source.Aggregate(0, (sum, value) => sum + value, (Func<int, int>)null!)).ParamName);
+    }
+
     [Fact]
     public void ToDictionaryAcceptsKeyValuePairsAndTuples()
     {

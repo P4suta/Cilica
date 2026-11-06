@@ -4,23 +4,24 @@ using Cilica.IR.Utils;
 
 internal static class IRBuilderExt
 {
-    // Note: this assumes that lambda types are all System.Func<>
-    public static Value CreateLambdaInvoke(this IRBuilder ib, Value lambda, params Value[] args)
+    public static Value CreateLambdaInvoke(this IRBuilder ib, CallInst call, int lambdaIndex, params Value[] args)
     {
-        return ib.CreateCallVirt("Invoke", args.Prepend(lambda).ToArray());
+        var invoker = call.Method.ParamSig[lambdaIndex].Type.FindMethod("Invoke");
+        return ib.CreateCallVirt(invoker, args.Prepend(call.Args[lambdaIndex]).ToArray());
     }
-    public static Value CreateLambdaInvoke_ItemAndIndex(this IRBuilder ib, Value lambda, Value currItem, LoopAccumVarFactory createAccum)
+    public static Value CreateLambdaInvoke_ItemAndIndex(this IRBuilder ib, CallInst call, int lambdaIndex, Value currItem, LoopAccumVarFactory createAccum)
     {
-        var invoker = lambda.ResultType.FindMethod("Invoke");
+        var invoker = call.Method.ParamSig[lambdaIndex].Type.FindMethod("Invoke");
+        var lambda = call.Args[lambdaIndex];
 
         if (invoker.ParamSig.Count == 3) {
-            CallInst call = null!;
+            CallInst invocation = null!;
             createAccum(ConstInt.CreateI(-1), previousIndex => {
                 var index = ib.CreateBin(BinaryOp.AddOvf, previousIndex, ConstInt.CreateI(1));
-                call = ib.CreateCallVirt(invoker, lambda, currItem, index);
+                invocation = ib.CreateCallVirt(invoker, lambda, currItem, index);
                 return index;
             });
-            return call;
+            return invocation;
         }
         return ib.CreateCallVirt(invoker, lambda, currItem);
     }

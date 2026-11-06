@@ -65,12 +65,12 @@ internal class AggregationSink : LinqSink
     protected virtual Value Accumulate(IRBuilder builder, Value currAccum, Value currItem, BasicBlock skipBlock)
     {
         int lambdaIdx = SubjectCall.NumArgs >= 3 ? 2 : 1;
-        return builder.CreateLambdaInvoke(SubjectCall.Args[lambdaIdx], currAccum, currItem);
+        return builder.CreateLambdaInvoke(SubjectCall, lambdaIdx, currAccum, currItem);
     }
     protected virtual Value MapResult(IRBuilder builder, Value accum)
     {
         if (SubjectCall.NumArgs >= 4) {
-            return builder.CreateLambdaInvoke(SubjectCall.Args[3], accum);
+            return builder.CreateLambdaInvoke(SubjectCall, 3, accum);
         }
         return accum;
     }
@@ -93,7 +93,7 @@ internal class CountSink : AggregationSink
     {
         // Assume that bools are always normalized to 0/1.
         var inc = SubjectCall.Args.Length >= 2
-            ? builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem)
+            ? builder.CreateLambdaInvoke(SubjectCall, 1, currItem)
             : ConstInt.CreateI(1);
 
         var op = _mayBeLongSource ? BinaryOp.AddOvf : BinaryOp.Add;
@@ -115,7 +115,7 @@ internal sealed class SumSink(CallInst call) : AggregationSink(call)
 
     protected override Value Accumulate(IRBuilder builder, Value currAccum, Value currItem, BasicBlock skipBlock)
     {
-        if (SubjectCall.NumArgs == 2) currItem = builder.CreateLambdaInvoke(SubjectCall.Args[1], currItem);
+        if (SubjectCall.NumArgs == 2) currItem = builder.CreateLambdaInvoke(SubjectCall, 1, currItem);
         return builder.CreateBin(BinaryOp.AddOvf, currAccum, currItem);
     }
 }
