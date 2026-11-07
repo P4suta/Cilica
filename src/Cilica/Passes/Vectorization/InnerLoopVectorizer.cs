@@ -254,7 +254,6 @@ internal sealed class InnerLoopVectorizer
         _width = bitWidth / _elemBitWidth;
         _vectorPreHeader = newLoop.PreHeader;
         int stepSize = _loop.UpdatedCounter is PtrOffsetInst lea ? _width * lea.Stride : _width;
-        var accelerated = _trans.EmitHardwareCheck(newLoop.PreHeader, bitWidth);
 
         _newCounter = newLoop.CreateAccum(
             seed: start,
@@ -278,20 +277,22 @@ internal sealed class InnerLoopVectorizer
                 if (_loop.UpdatedCounter is PtrOffsetInst) {
                     var remBytes = builder.CreateSub(_loop.End, _newCounter);
 
-                    return builder.CreateAnd(accelerated, builder.CreateSge(remBytes, ConstInt.CreateI(stepSize)));
+                    return builder.CreateSge(remBytes, ConstInt.CreateI(stepSize));
                 }
 
                 var remaining = builder.CreateSub(builder.CreateConvert(_loop.End, PrimType.Int64),
                     builder.CreateConvert(_newCounter, PrimType.Int64));
 
-                return builder.CreateAnd(accelerated, builder.CreateSge(remaining, ConstInt.CreateL(_width)));
+                return builder.CreateSge(remaining, ConstInt.CreateL(_width));
             },
             emitBody: builder => {
                 foreach (var inst in _mappings.Keys) {
                     ref var mapping = ref _mappings.GetRef(inst);
                     mapping.ClonedDef = VectorizeInst(newLoop, inst, ref mapping);
                 }
-            }
+            },
+            // Keep the hardware intrinsic in its branch expression for JIT folding.
+            emitGuard: builder => _trans.EmitHardwareCheck(builder, bitWidth)
         );
 
         // Finalize reduction phis
