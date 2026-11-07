@@ -1,6 +1,8 @@
 # Cilica
 ![GitHub](https://img.shields.io/github/license/hez2010/Cilica)
 [![Compiler CI](https://github.com/hez2010/Cilica/actions/workflows/ci.yml/badge.svg)](https://github.com/hez2010/Cilica/actions/workflows/ci.yml)
+[![Cilica.OptimizerTask on NuGet](https://img.shields.io/nuget/vpre/Cilica.OptimizerTask?label=Cilica.OptimizerTask)](https://www.nuget.org/packages/Cilica.OptimizerTask)
+[![Cilica.Core on NuGet](https://img.shields.io/nuget/vpre/Cilica.Core?label=Cilica.Core)](https://www.nuget.org/packages/Cilica.Core)
 
 Post-build IL optimizer and intermediate representation for .NET programs (experimental).
 
