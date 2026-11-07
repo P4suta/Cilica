@@ -8,6 +8,8 @@ Post-build IL optimizer and intermediate representation for .NET programs (exper
 
 Cilica is a continuation of [DistIL](https://github.com/dubiousconst282/DistIL).
 
+Try [Cilica Lab](https://hez2010.github.io/CilicaLab/) in your browser to explore optimization passes, control-flow graphs, and generated code.
+
 # Notable Features
 - [SSA-based Intermediate Representation](https://github.com/hez2010/Cilica/blob/main/docs/api-walkthrough.md)
 - Linq Expansion
