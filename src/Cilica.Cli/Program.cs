@@ -40,7 +40,7 @@ static void RunOptimizer(OptimizerOptions options)
         (options.StripReadyToRun ? ModuleWriteOptions.StripReadyToRun : 0);
     var logger = new ConsoleLogger() { MinLevel = options.Verbosity };
 
-    using var resolver = new ModuleResolver(logger);
+    using var resolver = new ModuleResolver(logger) { SkipModuleInitializers = options.SkipModuleInitializers };
     resolver.AddSearchPaths([Path.GetDirectoryName(Path.GetFullPath(options.InputPath))!]);
     resolver.AddSearchPaths(options.ResolverPaths);
 

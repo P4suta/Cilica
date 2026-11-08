@@ -11,6 +11,9 @@ class OptimizerOptions
     [Option("verify-each", HelpText = "Verify IR after every optimization pass.")]
     public bool VerifyEachPass { get; set; }
 
+    [Option("skip-module-initializers", HelpText = "Omit module initialization checks when modules are initialized before use, as with NativeAOT.")]
+    public bool SkipModuleInitializers { get; set; }
+
     [Option("public-sign", HelpText = "Keep the assembly public key and identity, with a zero-filled strong-name signature for .NET Core/.NET 5+. Does not preserve the publisher's cryptographic signature.")]
     public bool PublicSign { get; set; }
 

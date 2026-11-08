@@ -11,13 +11,13 @@ public static class TypeUtils
            (fieldAccess || !def.Attribs.HasFlag(TypeAttributes.BeforeFieldInit)) &&
            def.Methods.Any(m => m.Name == ".cctor");
 
-    /// <summary> Whether this type's module defines a module initializer. </summary>
+    /// <summary> Whether this type's module requires initialization before use. </summary>
     public static bool RequiresModuleInitialization(this TypeDesc type)
         => type is TypeDefOrSpec def && def.Module.RequiresModuleInitialization();
 
-    /// <summary> Whether this module defines a module initializer. </summary>
+    /// <summary> Whether this module requires initialization before use. </summary>
     public static bool RequiresModuleInitialization(this ModuleDef module)
-        => module.TypeDefs.FirstOrDefault(candidate => candidate.Name == "<Module>")
+        => !module.Resolver.SkipModuleInitializers && module.TypeDefs.FirstOrDefault(candidate => candidate.Name == "<Module>")
             ?.Methods.Any(method => method.Name == ".cctor") == true;
 
     /// <summary> Whether invoking this method can run its declaring type's initializer. </summary>

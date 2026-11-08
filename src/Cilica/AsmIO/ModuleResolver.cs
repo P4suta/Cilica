@@ -6,6 +6,9 @@ using System.Text.RegularExpressions;
 
 public class ModuleResolver : IDisposable
 {
+    /// <summary> Assume module initializers have run before use, as with NativeAOT. </summary>
+    public bool SkipModuleInitializers { get; init; }
+
     internal readonly Dictionary<string, ModuleDef> _cache = new(StringComparer.OrdinalIgnoreCase);
     internal readonly Dictionary<ResolvingUtils.MethodSelector, MethodDesc> FunctionCache = new();
     internal readonly Dictionary<string, TypeDefOrSpec> TypeCache = new();
