@@ -26,7 +26,7 @@ public partial class SimplifyInsts : IMethodPass
         long revision = ctx.Method.Revision;
 
         foreach (var inst in ctx.Method.Instructions()) {
-            var oldInst = inst.ToString();
+            var oldInst = ctx.Logger.IsEnabled(LogLevel.Trace) ? inst.ToString() : null;
             var newValue = inst switch {
                 BinaryInst c    => SimplifyBinary(c),
                 CompareInst c   => SimplifyCompare(c),
