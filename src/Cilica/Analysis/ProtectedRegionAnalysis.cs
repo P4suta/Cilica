@@ -90,6 +90,8 @@ public class ProtectedRegion
 
     public BasicBlock StartBlock { get; set; } = null!;
 
+    public bool IsFilter => GetHandlerGuard() is { HasFilter: true } guard && guard.FilterBlock == StartBlock;
+
     public IEnumerable<BasicBlock> GetExitBlocks()
     {
         foreach (var block in Blocks) {

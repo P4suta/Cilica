@@ -15,6 +15,8 @@ internal abstract class LinqSink : LinqStageNode
 
     public virtual void EmitHead(IRBuilder builder, EstimatedSourceLen estimLen) { }
     public virtual void EmitTail(IRBuilder builder) { }
+    public virtual bool HasDisposal => false;
+    public virtual void EmitEnd(LoopBuilder loop) { }
     public abstract override void EmitBody(IRBuilder builder, Value currItem, BodyLoopData loopData);
 }
 
@@ -100,6 +102,16 @@ internal abstract class LinqStageNode
         }
         return (LinqSink)node;
     }
+
+    public override string ToString()
+    {
+        var text = new StringBuilder();
+        for (LinqStageNode? node = this; node != null; node = node.Drain) {
+            if (node != this) text.Append(" -> ");
+            text.Append(node.SubjectCall?.Method.Name ?? node.GetType().Name);
+        }
+        return text.ToString();
+    }
 }
 internal abstract class LinqSourceNode : LinqStageNode
 {
@@ -123,6 +135,7 @@ internal abstract class LinqSourceNode : LinqStageNode
 
         EmitHead(loop, out var length, ref firstStage, loopData);
         sink.EmitHead(loop.PreHeader, new EstimatedSourceLen(length, firstStage));
+        loopData.HasDisposal |= sink.HasDisposal;
 
         loop.Build(
             emitCond: EmitMoveNext,
@@ -144,6 +157,7 @@ internal abstract class LinqSourceNode : LinqStageNode
             }
         }
         DeleteSubject();
+        sink.EmitEnd(loop);
         EmitEnd(loop);
     }
 
