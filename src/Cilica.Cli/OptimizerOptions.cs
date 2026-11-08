@@ -64,4 +64,7 @@ class OptimizerOptions
 
     [Option("verbosity", HelpText = "Specifies logging verbosity.\n")]
     public LogLevel Verbosity { get; set; } = LogLevel.Info;
+
+    [Option("log-stats", HelpText = "Log optimization pass statistics.")]
+    public bool LogStats { get; set; }
 }

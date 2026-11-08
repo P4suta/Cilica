@@ -66,7 +66,7 @@ static void RunOptimizer(OptimizerOptions options)
 static CompilationResult RunPasses(OptimizerOptions options, Compilation comp)
 {
     var manager = CompilationPipeline.CreateDefault(comp);
-    manager.Inspectors.Add(new PassTimingInspector());
+    if (options.LogStats) manager.Inspectors.Add(new PassTimingInspector());
 
     var dumpFilter = options.DumpDir != null || options.PassDumpBundlePath != null
         ? CompileFilter(options.DumpMethodFilter) : null;
