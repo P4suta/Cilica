@@ -275,6 +275,7 @@ public class ValueNumbering : IMethodPass
     private static (object Target, TypeDesc? Instantiation, bool Module) InitializationKey(CilIntrinsic.Initialization inst)
         => inst.Target switch {
             MethodDefOrSpec helper => (helper.Definition, helper.DeclaringType, false),
+            FieldDefOrSpec field => (field.Definition, field.DeclaringType, false),
             TypeDefOrSpec type when inst.IsModule => (type.Module, null, true),
             var type => (type, null, inst.IsModule)
         };

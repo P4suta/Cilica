@@ -139,6 +139,11 @@ public class IRVerifier
                         initialization, "Initialization helper must be a non-generic static void method without parameters");
                     break;
                 }
+            case CilIntrinsic.Initialization { Target: FieldDefOrSpec field } initialization: {
+                    Check(field.IsStatic && !field.Attribs.HasFlag(System.Reflection.FieldAttributes.Literal),
+                        initialization, "Initialization field must be a non-literal static field");
+                    break;
+                }
             case CilIntrinsic.CallIndirect call: {
                     var signature = call.FunctionType.Signature;
                     bool thisCall = signature.CallConv == CallConvention.ThisCall || signature.ReturnType.Modifiers.Any(modifier =>

@@ -32,6 +32,11 @@ public partial class Compilation
             builder.Emit(new CilIntrinsic.Initialization(typeHelper));
             return;
         }
+        if (initializeType && GetTypeInitializationField(target.DeclaringType, caller) is { } field) {
+            // Accessing the target type's static storage activates its module too.
+            builder.Emit(new CilIntrinsic.Initialization(field));
+            return;
+        }
 
         if (target.Module != caller.Module && target.Module.RequiresModuleInitialization()) {
             var moduleHelper = target.Module.FindType(null, "<>_Cilica_Aux") is { } owner
@@ -60,6 +65,19 @@ public partial class Compilation
             helper = FindInitializationHelper(type.Definition, TypeInitializationHelperName);
         }
         return helper?.GetSpec(new GenericContext(type));
+    }
+
+    private static FieldDefOrSpec? GetTypeInitializationField(TypeDefOrSpec type, MethodDef caller)
+    {
+        var access = new InliningAccess(caller.DeclaringType);
+        foreach (var definition in type.Definition.Fields) {
+            if (!definition.IsStatic || (definition.Attribs & (FieldAttributes.Literal | FieldAttributes.HasFieldRVA)) != 0 ||
+                definition.HasCustomAttrib("System", "ThreadStaticAttribute")) continue;
+
+            var field = (FieldDefOrSpec)definition.GetSpec(new GenericContext(type));
+            if (access.CanUseMember(field)) return field;
+        }
+        return null;
     }
 
     private MethodDef GetOrCreateInitializationHelper(TypeDef owner, string baseName)

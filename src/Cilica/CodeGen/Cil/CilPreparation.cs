@@ -1,5 +1,6 @@
 namespace Cilica.CodeGen.Cil;
 
+using System.Runtime.CompilerServices;
 using Cilica.Analysis;
 using Cilica.IR.Utils;
 
@@ -35,25 +36,7 @@ internal sealed class CilPreparation
     {
         foreach (var inst in method.Instructions().ToArray()) {
             if (inst is CilIntrinsic.Initialization initialization) {
-                // Keep handle lookups inside the initialization operation until
-                // code generation so redundant checks eliminate the entire chain.
-                var init = new IRBuilder(inst, InsertionDir.Before).SetNextDebugLocation(inst.DebugLocation);
-                if (initialization.Helper is { } helper) {
-                    init.CreateCall(helper);
-                } else {
-                    var resolver = init.Resolver;
-                    Value handle = init.Emit(new CilIntrinsic.LoadHandle(resolver, initialization.Target));
-                    if (initialization.IsModule) {
-                        var typeClass = resolver.Import(typeof(Type));
-                        var type = init.CreateCall(typeClass.FindMethod("GetTypeFromHandle"), handle);
-                        var module = init.CreateCallVirt(typeClass.FindMethod("get_Module", searchBaseAndItfs: true), type);
-                        handle = init.CreateCallVirt(resolver.Import(typeof(System.Reflection.Module)).FindMethod("get_ModuleHandle"), module);
-                    }
-                    var runtimeHelper = resolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers)).FindMethod(
-                        initialization.IsModule ? "RunModuleConstructor" : "RunClassConstructor", new MethodSig(PrimType.Void, [handle.ResultType]));
-                    init.CreateCall(runtimeHelper, handle);
-                }
-                inst.Remove();
+                LowerInitialization(initialization);
                 continue;
             }
             if (inst is CilIntrinsic.RefCast { ResultType: ByrefType } cast) {
@@ -96,6 +79,36 @@ internal sealed class CilPreparation
             var orderedNotEqual = builder.CreateOr(lower, greater);
             compare.ReplaceWith(compare.Op == CompareOp.FOne ? orderedNotEqual : builder.CreateEq(orderedNotEqual, ConstInt.CreateI(0)));
         }
+    }
+
+    private static void LowerInitialization(CilIntrinsic.Initialization initialization)
+    {
+        // Keep handle lookups inside the initialization operation until code
+        // generation so redundant checks eliminate the entire chain.
+        var builder = new IRBuilder(initialization, InsertionDir.Before).SetNextDebugLocation(initialization.DebugLocation);
+        if (initialization.Helper is { } helper) {
+            builder.CreateCall(helper);
+        } else if (initialization.Target is FieldDefOrSpec field) {
+            // An unused static-field load retains the CLR initialization check
+            // and permits readonly fields without taking their address.
+            builder.CreateFieldLoad(field);
+        } else {
+            var resolver = builder.Resolver;
+            var typeHandle = builder.Emit(new CilIntrinsic.LoadHandle(resolver, initialization.Target));
+            Value handle = initialization.IsModule ? LoadModuleHandle(builder, typeHandle) : typeHandle;
+            string name = initialization.IsModule ? nameof(RuntimeHelpers.RunModuleConstructor) : nameof(RuntimeHelpers.RunClassConstructor);
+            var runtimeHelper = resolver.Import(typeof(RuntimeHelpers)).FindMethod(name, new MethodSig(PrimType.Void, [handle.ResultType]));
+            builder.CreateCall(runtimeHelper, handle);
+        }
+        initialization.Remove();
+    }
+
+    private static Value LoadModuleHandle(IRBuilder builder, Value typeHandle)
+    {
+        var slot = builder.Method.CreateVar(typeHandle.ResultType, "typeHandle");
+        builder.CreateStore(slot, typeHandle);
+        var getModuleHandle = builder.Resolver.Import(typeof(RuntimeTypeHandle)).FindMethod(nameof(RuntimeTypeHandle.GetModuleHandle));
+        return builder.CreateCall(getModuleHandle, slot);
     }
 
     private static void PreparePhiEdges(MethodBody method)

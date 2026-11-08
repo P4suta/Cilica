@@ -2,7 +2,7 @@ namespace Cilica.IR;
 
 public abstract class CilIntrinsic : IntrinsicInst
 {
-    /// <summary> Ensures type or module initialization through a helper or the runtime API. </summary>
+    /// <summary> Ensures type or module initialization. </summary>
     public class Initialization : CilIntrinsic
     {
         public EntityDesc Target => StaticArgs[0];
@@ -18,7 +18,11 @@ public abstract class CilIntrinsic : IntrinsicInst
 
         public Initialization(MethodDefOrSpec helper) : base(PrimType.Void, [helper], []) { }
 
-        public Initialization(TypeDesc type, bool module = false) : base(PrimType.Void, [type], [])
+        internal Initialization(FieldDefOrSpec field) : base(PrimType.Void, [field], []) { }
+
+        // Module initialization is independent of a type's generic arguments.
+        public Initialization(TypeDesc type, bool module = false)
+            : base(PrimType.Void, [module && type is TypeDefOrSpec nominal ? nominal.Definition : type], [])
             => IsModule = module;
     }
 

@@ -91,7 +91,7 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
 
         body = Optimize(body);
         Assert.Equal(dominates ? 1 : 2, EmittedCalls(body).Count(method => method.ReturnType == PrimType.Void));
-        if (moduleInitializer) Assert.Equal(dominates ? 1 : 2, EmittedCalls(body).Count(method => method.Name == "get_Module"));
+        if (moduleInitializer) Assert.Equal(dominates ? 1 : 2, EmittedCalls(body).Count(method => method.Name == nameof(RuntimeTypeHandle.GetModuleHandle)));
         CheckExecution<Func<bool, int>>(body, run => Assert.Equal(51, run(true)), external ? [module] : []);
         CheckExecution<Func<bool, int>>(body, run => Assert.Equal(52, run(false)), external ? [module] : []);
     }
@@ -129,7 +129,7 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
 
         body = Optimize(body);
         Assert.Equal(2, EmittedCalls(body).Count(method => method.ReturnType == PrimType.Void));
-        if (moduleInitializer) Assert.Equal(2, EmittedCalls(body).Count(method => method.Name == "get_Module"));
+        if (moduleInitializer) Assert.Equal(2, EmittedCalls(body).Count(method => method.Name == nameof(RuntimeTypeHandle.GetModuleHandle)));
         CheckExecution(body, run => Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(() => run()).InnerException),
             external ? [module] : []);
     }
@@ -170,7 +170,7 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
 
         var calls = EmittedCalls(body).ToArray();
         Assert.DoesNotContain(calls, method => method.Name == "Value");
-        Assert.Equal(separateModules ? 2 : 1, calls.Count(method => method.Name == "get_Module"));
+        Assert.Equal(separateModules ? 2 : 1, calls.Count(method => method.Name == nameof(RuntimeTypeHandle.GetModuleHandle)));
         Assert.Equal(separateModules ? 2 : 1, calls.Count(method => method.Name == "RunModuleConstructor"));
         Assert.Equal(3, calls.Count(method => method.Name == "RunClassConstructor"));
         CheckExecution(body, run => Assert.Equal(separateModules ? 238 : 218, run()), separateModules ? [library, otherLibrary] : [library]);
@@ -194,13 +194,16 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void RuntimeTypeInitializationPreservesGenericDefinitionTokens(bool constructed)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void TypeInitializationPreservesGenericDefinitionTokens(bool constructed, bool staticField)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
         var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
         var type = body.Definition.Module.CreateType(null, "Initialized`1", genericParams: [new GenericParamType(0, false)]);
+        if (staticField) type.CreateField("Value", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
         Initialize(type, effect, 50);
         var wrapperType = body.Definition.Module.CreateType(null, "Consumer`1", genericParams: [new GenericParamType(0, false)]);
         var wrapper = Constant(wrapperType);
@@ -212,8 +215,107 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
 
         body = Optimize(body);
 
-        Assert.Single(EmittedCalls(body), method => method.Name == "RunClassConstructor");
         CheckExecution(body, run => Assert.Equal(constructed ? 50 : 0, run()));
+    }
+
+    [Theory]
+    [InlineData(false, false, false, false)]
+    [InlineData(false, true, false, false)]
+    [InlineData(true, false, false, false)]
+    [InlineData(true, true, false, false)]
+    [InlineData(false, false, true, false)]
+    [InlineData(false, true, true, false)]
+    [InlineData(true, false, true, false)]
+    [InlineData(true, true, true, false)]
+    [InlineData(false, false, false, true)]
+    public void ExternalTypeInitializationCanAvoidRuntimeCalls(bool generic, bool readOnly, bool throwing, bool moduleThrows)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var library = _modResolver.Create("InitializationLibrary_" + Guid.NewGuid().ToString("N"));
+        Initialize(library.FindType(null, "<Module>")!, effect, 10, throwing: moduleThrows);
+        var type = library.CreateType(null, generic ? "Initialized`1" : "Initialized",
+            genericParams: generic ? [new GenericParamType(0, false)] : []);
+        type.CreateField("Trigger", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static | (readOnly ? FieldAttributes.InitOnly : 0));
+        Initialize(type, effect, 50, throwing);
+        var callee = Constant(type);
+        if (generic) {
+            var wrapperType = body.Definition.Module.CreateType(null, "Consumer`1", genericParams: [new GenericParamType(0, false)]);
+            var wrapper = Constant(wrapperType);
+            wrapper.Body = new MethodBody(wrapper);
+            var invoke = new IRBuilder(wrapper.Body.CreateBlock());
+            invoke.CreateReturn(invoke.CreateCall(type.GetSpec([.. wrapperType.GenericParams]).FindMethod(callee.Name)));
+            Optimize(wrapper.Body);
+            type = wrapperType;
+            callee = wrapper;
+        }
+        TypeDefOrSpec first = generic ? type.GetSpec([PrimType.Int32]) : type;
+        TypeDefOrSpec second = generic ? type.GetSpec([PrimType.String]) : type;
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateCall(first.FindMethod(callee.Name));
+        builder.CreateCall(second.FindMethod(callee.Name));
+        builder.CreateCall(first.FindMethod(callee.Name));
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+
+        body = Optimize(body);
+
+        Assert.Empty(EmittedCalls(body));
+        CheckExecution(body, run => {
+            for (int i = 0; i < 2; i++) {
+                if (throwing || moduleThrows) Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(() => run()).InnerException);
+                else Assert.Equal(generic ? 110 : 60, run());
+            }
+        }, library);
+    }
+
+    [Theory]
+    [InlineData(FieldAttributes.Private | FieldAttributes.Static, false)]
+    [InlineData(FieldAttributes.Public | FieldAttributes.Static | FieldAttributes.Literal | FieldAttributes.HasDefault, false)]
+    [InlineData(FieldAttributes.Public | FieldAttributes.Static, true)]
+    public void TypeInitializationDoesNotRequireAccessToIneligibleFields(FieldAttributes attributes, bool threadStatic)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var library = _modResolver.Create("InitializationLibrary_" + Guid.NewGuid().ToString("N"));
+        var type = library.CreateType(null, "Initialized");
+        var field = type.CreateField("Value", PrimType.Int32, attributes,
+            defaultValue: attributes.HasFlag(FieldAttributes.Literal) ? 0 : null);
+        if (threadStatic) field.GetCustomAttribs(readOnly: false).Add(new CustomAttrib(_modResolver.Import(typeof(ThreadStaticAttribute)).FindMethod(".ctor")));
+        Initialize(type, effect, 50);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateCall(Constant(type));
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+
+        body = Optimize(body);
+
+        Assert.Single(EmittedCalls(body), method => method.Name == "RunClassConstructor");
+        CheckExecution(body, run => Assert.Equal(50, run()), library);
+    }
+
+    [Fact]
+    public void ModuleInitializationUsesAGenericDefinitionHandle()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        var library = _modResolver.Create("InitializationLibrary_" + Guid.NewGuid().ToString("N"));
+        Initialize(library.FindType(null, "<Module>")!, effect, 10);
+        var type = library.CreateType(null, "Initialized`1", genericParams: [new GenericParamType(0, false)]);
+        Initialize(type, effect, 50, throwing: true);
+        var wrapperType = body.Definition.Module.CreateType(null, "Consumer`1", genericParams: [new GenericParamType(0, false)]);
+        var wrapper = Constant(wrapperType);
+        var initialize = new IRBuilder(wrapper.Body!.EntryBlock, InsertionDir.BeforeLast);
+        initialize.CreateModuleInitialization(type.GetSpec([.. wrapperType.GenericParams]));
+        Optimize(wrapper.Body);
+
+        var token = Assert.Single(wrapper.ILBody!.Instructions.Where(inst => inst.OpCode == ILCode.Ldtoken));
+        Assert.Same(type, token.Operand);
+
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateCall(wrapperType.GetSpec([PrimType.String]).FindMethod(wrapper.Name));
+        builder.CreateReturn(builder.CreateFieldLoad(effect));
+        body = Optimize(body);
+
+        CheckExecution(body, run => Assert.Equal(10, run()), library);
     }
 
     [Theory]
@@ -331,7 +433,7 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
             Assert.Same(library, ((MethodDefOrSpec)helper).Module);
             Assert.Equal(initializeType, helper.DeclaringType == type);
         } else {
-            Assert.Single(calls, method => method.Name == "get_Module");
+            Assert.Single(calls, method => method.Name == nameof(RuntimeTypeHandle.GetModuleHandle));
             Assert.Single(calls, method => method.Name == "RunModuleConstructor");
             Assert.Equal(initializeType ? 1 : 0, calls.Count(method => method.Name == "RunClassConstructor"));
         }
@@ -347,15 +449,17 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
     }
 
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public void ReentrantInitializationCannotCacheSuccessBeforeTheInitializerThrows(bool moduleInitializer, bool publishHelpers)
+    [InlineData(false, false, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(false, false, true)]
+    public void ReentrantInitializationCannotCacheSuccessBeforeTheInitializerThrows(bool moduleInitializer, bool publishHelpers, bool staticField)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
         body.Definition.ImplAttribs = MethodImplAttributes.NoInlining;
-        var library = moduleInitializer ? _modResolver.Create("Reentrant_" + Guid.NewGuid().ToString("N")) : body.Definition.Module;
+        var library = moduleInitializer || staticField ? _modResolver.Create("Reentrant_" + Guid.NewGuid().ToString("N")) : body.Definition.Module;
         var type = library.CreateType(null, "Initialized");
+        if (staticField) type.CreateField("Trigger", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
         var callee = Constant(type);
         var initializerOwner = moduleInitializer ? library.FindType(null, "<Module>")! : type;
         var initializer = CreateInitializer(initializerOwner);
@@ -379,7 +483,7 @@ public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(f
             for (int i = 0; i < 2; i++) {
                 Assert.IsType<InvalidOperationException>(Assert.Throws<TypeInitializationException>(() => run()).InnerException);
             }
-        }, moduleInitializer ? [library] : []);
+        }, moduleInitializer || staticField ? [library] : []);
     }
 
     [Fact]
