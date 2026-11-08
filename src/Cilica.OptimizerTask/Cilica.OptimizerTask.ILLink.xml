@@ -1,0 +1,15 @@
+<linker>
+  <assembly fullname="System.Private.CoreLib">
+    <type fullname="System.Runtime.Intrinsics.Vector128" preserve="methods" />
+    <type fullname="System.Runtime.Intrinsics.Vector128`1" preserve="methods" />
+    <type fullname="System.Runtime.Intrinsics.Vector256" preserve="methods" />
+    <type fullname="System.Runtime.Intrinsics.Vector256`1" preserve="methods" />
+    <type fullname="System.Numerics.BitOperations">
+      <method name="PopCount" />
+    </type>
+    <type fullname="System.Runtime.InteropServices.MemoryMarshal">
+      <method name="GetArrayDataReference" />
+      <method name="CreateSpan" />
+    </type>
+  </assembly>
+</linker>

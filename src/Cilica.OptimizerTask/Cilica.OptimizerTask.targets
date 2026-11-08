@@ -12,6 +12,13 @@
     <CilicaExtraArgs Condition="'$(CilicaAllAssemblies)' == 'true'">$(CilicaExtraArgs) --strip-signatures --strip-readytorun</CilicaExtraArgs>
   </PropertyGroup>
 
+  <Target Name="_AddCilicaTrimmerRoots" BeforeTargets="PrepareForILLink"
+          Condition="'$(RunCilica)' == 'true' and '$(PublishTrimmed)' == 'true' and '$(PublishAot)' != 'true'">
+    <ItemGroup>
+      <TrimmerRootDescriptor Include="$(MSBuildThisFileDirectory)Cilica.OptimizerTask.ILLink.xml" />
+    </ItemGroup>
+  </Target>
+
   <Target Name="_ResolveCilica">
     <RemoveDuplicates Inputs="@(_CilicaInput -> '%(RootDir)%(Directory)');@(ReferencePath -> '%(RootDir)%(Directory)')">
       <Output TaskParameter="Filtered" ItemName="AsmRefPaths"/>
@@ -41,7 +48,7 @@
 
   <!-- Specifying Inputs and Outputs will enable support for incremental builds. -->
   <Target Name="_DoRunCilica" AfterTargets="Compile" DependsOnTargets="_ResolveCilica"
-          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' != 'true'"
+          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' != 'true' and ('$(PublishTrimmed)' != 'true' or '$(PublishAot)' == 'true')"
           Inputs="@(IntermediateAssembly)" Outputs="@(IntermediateAssembly -> '%(Identity).bak')">
     <Message Text="Cilica: optimizing %(IntermediateAssembly.FullPath)" Importance="high" />
     <Exec
@@ -63,12 +70,11 @@
   <Target Name="_CollectCilicaPublishInputs" DependsOnTargets="_ComputeAssembliesToPostprocessOnPublish">
     <PropertyGroup>
       <_CilicaMode>publish</_CilicaMode>
-      <_CilicaPrimaryAssembly>@(IntermediateAssembly->'%(FullPath)')</_CilicaPrimaryAssembly>
     </PropertyGroup>
     <ItemGroup>
       <_CilicaInput Include="@(ResolvedFileToPublish)"
-                    Condition="'%(ResolvedFileToPublish.PostprocessAssembly)' == 'true' or '%(ResolvedFileToPublish.AssetType)' == 'resources'">
-        <CilicaItemGroup Condition="'%(ResolvedFileToPublish.FullPath)' == '$(_CilicaPrimaryAssembly)'">Assembly</CilicaItemGroup>
+                    Condition="('%(ResolvedFileToPublish.PostprocessAssembly)' == 'true' or '%(ResolvedFileToPublish.AssetType)' == 'resources') and ('$(CilicaAllAssemblies)' == 'true' or '%(ResolvedFileToPublish.RelativePath)' == '$(TargetFileName)')">
+        <CilicaItemGroup Condition="'%(ResolvedFileToPublish.RelativePath)' == '$(TargetFileName)'">Assembly</CilicaItemGroup>
       </_CilicaInput>
     </ItemGroup>
     <JoinItems Left="@(_CilicaInput->'%(RootDir)%(Directory)%(Filename).pdb')" Right="@(ResolvedFileToPublish)" RightMetadata="*">
@@ -89,7 +95,7 @@
   </Target>
 
   <Target Name="_PrepareCilicaAssemblies" DependsOnTargets="_ResolveCilica">
-    <Error Condition="'$(SelfContained)' != 'true'" Text="CilicaAllAssemblies requires a self-contained build (SelfContained=true)." />
+    <Error Condition="'$(CilicaAllAssemblies)' == 'true' and '$(SelfContained)' != 'true'" Text="CilicaAllAssemblies requires a self-contained build (SelfContained=true)." />
     <PropertyGroup>
       <_CilicaDirectory>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'cilica', '$(_CilicaMode)'))</_CilicaDirectory>
     </PropertyGroup>
@@ -152,7 +158,7 @@
   </Target>
 
   <Target Name="_RunCilicaAllBuildAssemblies" AfterTargets="Compile"
-          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(_IsPublishing)' != 'true' and '$(DesignTimeBuild)' != 'true'"
+          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(_IsPublishing)' != 'true' and '$(DesignTimeBuild)' != 'true' and ('$(PublishTrimmed)' != 'true' or '$(PublishAot)' == 'true')"
           DependsOnTargets="_CollectCilicaBuildInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
     <ItemGroup>
       <IntermediateAssembly Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
@@ -164,13 +170,13 @@
     </ItemGroup>
   </Target>
 
-  <Target Name="_RunCilicaAllPublishAssemblies" AfterTargets="ComputeResolvedFilesToPublishList"
-          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(PublishAot)' != 'true'"
+  <Target Name="_RunCilicaPublishAssemblies" AfterTargets="ILLink"
+          Condition="'$(RunCilica)' == 'true' and ('$(CilicaAllAssemblies)' == 'true' or '$(PublishTrimmed)' == 'true') and '$(PublishAot)' != 'true'"
           DependsOnTargets="_CollectCilicaPublishInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
     <ItemGroup>
       <ResolvedFileToPublish Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
       <ResolvedFileToPublish Include="@(_CilicaOutput)" />
-      <IntermediateAssembly Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IntermediateAssembly Remove="@(IntermediateAssembly)" />
       <IntermediateAssembly Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))" />
     </ItemGroup>
   </Target>
