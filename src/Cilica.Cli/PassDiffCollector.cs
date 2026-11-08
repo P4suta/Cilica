@@ -3,7 +3,6 @@ using System.Text.Json.Serialization;
 
 using Cilica;
 using Cilica.AsmIO;
-using Cilica.IR;
 using Cilica.IR.Utils;
 using Cilica.Passes;
 
@@ -29,14 +28,7 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
         var method = ctx.Method.Definition;
 
         if (_entries.TryGetValue(method, out var entry)) {
-            bool changed = result.Changes != MethodInvalidations.None;
-
-            // sanity hash check
-            if (!changed) {
-                int newHash = ComputeHash(method.Body!);
-                changed = newHash != entry.LastHash;
-                entry.LastHash = newHash;
-            }
+            bool changed = ctx.Method.Revision != entry.LastRevision;
             entry.TakeSnapshot(method, pass.GetType().Name, captureCode: changed);
         }
     }
@@ -56,27 +48,12 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
         comp.Logger.Info($"Collected pass dumps for {_entries.Count} methods.");
     }
 
-    private static int ComputeHash(MethodBody body)
-    {
-        var hc = new HashCode();
-        hc.Add(body.NumBlocks);
-
-        foreach (var inst in body.Instructions()) {
-            hc.Add(inst);
-
-            foreach (var oper in inst.Operands) {
-                hc.Add(oper);
-            }
-        }
-        return hc.ToHashCode();
-    }
-
     class MethodTimeline(DumpFormats formats)
     {
         public string Name { get; set; } = "";
         public List<MethodSnapshot> Passes { get; set; } = [];
 
-        [JsonIgnore] public int LastHash { get; set; }
+        [JsonIgnore] public long LastRevision { get; private set; }
 
         public void TakeSnapshot(MethodDef method, string passName, bool captureCode)
         {
@@ -104,6 +81,7 @@ class PassDiffCollector(string outputPath, Predicate<MethodDef>? filter, DumpFor
                 }
             }
             Passes.Add(sn);
+            LastRevision = method.Body!.Revision;
         }
     }
     struct MethodSnapshot
