@@ -2,6 +2,7 @@ namespace Cilica.Tests.Passes;
 
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Diagnostics.CodeAnalysis;
 using Cilica.Analysis;
 using Cilica.AsmIO;
 using Cilica.CodeGen.Cil;
@@ -14,6 +15,50 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    public static class Features
+    {
+        [FeatureSwitchDefinition("Cilica.Tests.IsEnabled")]
+        public static bool Switch => true;
+
+        [FeatureGuard(typeof(RequiresDynamicCodeAttribute))]
+        public static bool Guard => true;
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void FeatureGettersRemainSubstitutableAfterOptimization(bool featureGuard)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.DeclaringType;
+        var getter = type.CreateMethod("get_IsEnabled", PrimType.Bool, [],
+            MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName);
+        getter.ImplAttribs = MethodImplAttributes.AggressiveInlining;
+        getter.Body = new MethodBody(getter);
+        getter.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(1)));
+        var property = new PropertyDef(type, "IsEnabled", new MethodSig(PrimType.Bool, [], isInstance: false), getter);
+        var sourceProperty = ((TypeDef)_modResolver.Import(typeof(Features))).Properties
+            .Single(property => property.Name == (featureGuard ? nameof(Features.Guard) : nameof(Features.Switch)));
+        property.GetCustomAttribs(readOnly: false).Add(Assert.Single(sourceProperty.GetCustomAttribs()));
+        type.Properties.Add(property);
+        var entry = body.CreateBlock();
+        var enabled = body.CreateBlock();
+        var disabled = body.CreateBlock();
+        var builder = new IRBuilder(entry);
+        builder.SetBranch(builder.CreateCall(getter), enabled, disabled);
+        enabled.SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        disabled.SetBranch(new ReturnInst(ConstInt.CreateI(0)));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { VerifyEachPass = true });
+
+        var result = CompilationPipeline.CreateDefault(compilation).Run([getter, body.Definition]);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(42, Utils.Compile<Func<int>>(body.Definition.Body!)());
+        getter.Body = new MethodBody(getter);
+        getter.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(0)));
+        Assert.Equal(0, Utils.Compile<Func<int>>(body.Definition.Body!)());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

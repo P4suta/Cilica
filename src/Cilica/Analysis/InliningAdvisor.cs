@@ -100,6 +100,14 @@ public class InliningAdvisor : IGlobalAnalysis
     {
         if (method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method) ||
             method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return InlineRejectReason.Ineligible;
+
+        // Publish-time feature substitution and analysis require the getter call.
+        if (method.DeclaringType.Properties.Any(property => property.Getter == method &&
+            (property.HasCustomAttrib("System.Diagnostics.CodeAnalysis", "FeatureSwitchDefinitionAttribute") ||
+             property.HasCustomAttrib("System.Diagnostics.CodeAnalysis", "FeatureGuardAttribute")))) {
+            return InlineRejectReason.Ineligible;
+        }
+
         int maxInstrs = method.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining)
             ? 4096
             : 256;
