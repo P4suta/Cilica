@@ -4,6 +4,10 @@
 
     <!-- If set to false, only methods and classes annotated with `Cilica.Attributes.OptimizeAttribute` will be transformed. -->
     <CilicaAllMethods Condition="'$(CilicaAllMethods)' == ''">false</CilicaAllMethods>
+
+    <CilicaSkipModuleInitializers Condition="'$(CilicaSkipModuleInitializers)' == '' and '$(PublishAot)' == 'true'">true</CilicaSkipModuleInitializers>
+    <CilicaSkipModuleInitializers Condition="'$(CilicaSkipModuleInitializers)' == ''">false</CilicaSkipModuleInitializers>
+    <CilicaExtraArgs Condition="'$(CilicaSkipModuleInitializers)' == 'true'">$(CilicaExtraArgs) --skip-module-initializers</CilicaExtraArgs>
   </PropertyGroup>
 
   <!-- Specifying Inputs and Outputs will enable support for incremental builds. -->
