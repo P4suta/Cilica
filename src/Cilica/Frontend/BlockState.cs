@@ -888,6 +888,12 @@ internal class BlockState
     private void ImportCall(MethodDesc method, bool isVirt)
     {
         var args = PopCallArgs(method);
+        if (!HasPrefix(InstFlags.Tailcall) && method.Name == "InitializeArray" &&
+            method.DeclaringType.IsCorelibType(typeof(System.Runtime.CompilerServices.RuntimeHelpers)) &&
+            args[1] is CilIntrinsic.LoadHandle { StaticArgs: [FieldDesc data] }) {
+            Emit(new CilIntrinsic.InitializeArray(method, args[0], data));
+            return;
+        }
         var constraint = HasPrefix(InstFlags.Constrained) ? _callConstraint : null;
         var inst = new CallInst(method, args, isVirt, constraint);
         inst.IsTailCall = HasPrefix(InstFlags.Tailcall);

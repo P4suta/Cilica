@@ -1,26 +1,24 @@
 <Project>
   <PropertyGroup>
     <RunCilica Condition="'$(Configuration)|$(RunCilica)' == 'Release|'">true</RunCilica>
+    <CilicaAllAssemblies Condition="'$(CilicaAllAssemblies)' == ''">false</CilicaAllAssemblies>
 
     <!-- If set to false, only methods and classes annotated with `Cilica.Attributes.OptimizeAttribute` will be transformed. -->
-    <CilicaAllMethods Condition="'$(CilicaAllMethods)' == ''">false</CilicaAllMethods>
+    <CilicaAllMethods Condition="'$(CilicaAllMethods)' == ''">$(CilicaAllAssemblies)</CilicaAllMethods>
 
     <CilicaSkipModuleInitializers Condition="'$(CilicaSkipModuleInitializers)' == '' and '$(PublishAot)' == 'true'">true</CilicaSkipModuleInitializers>
     <CilicaSkipModuleInitializers Condition="'$(CilicaSkipModuleInitializers)' == ''">false</CilicaSkipModuleInitializers>
     <CilicaExtraArgs Condition="'$(CilicaSkipModuleInitializers)' == 'true'">$(CilicaExtraArgs) --skip-module-initializers</CilicaExtraArgs>
+    <CilicaExtraArgs Condition="'$(CilicaAllAssemblies)' == 'true'">$(CilicaExtraArgs) --strip-signatures --strip-readytorun</CilicaExtraArgs>
   </PropertyGroup>
 
-  <!-- Specifying Inputs and Outputs will enable support for incremental builds. -->
-  <Target Name="_DoRunCilica" AfterTargets="Compile" Condition="'$(RunCilica)' == 'true'"
-          Inputs="@(IntermediateAssembly)" Outputs="@(IntermediateAssembly -> '%(Identity).bak')"
-  >
-    <RemoveDuplicates Inputs="@(ReferencePath -> '%(RootDir)%(Directory)')">
+  <Target Name="_ResolveCilica">
+    <RemoveDuplicates Inputs="@(_CilicaInput -> '%(RootDir)%(Directory)');@(ReferencePath -> '%(RootDir)%(Directory)')">
       <Output TaskParameter="Filtered" ItemName="AsmRefPaths"/>
     </RemoveDuplicates>
 
     <PropertyGroup>
-      <CliOptimizerPath>$(MSBuildThisFileDirectory)../tools/net10.0/Cilica.Cli.dll</CliOptimizerPath>
-      <InputAsmPath>%(IntermediateAssembly.FullPath)</InputAsmPath>
+      <CliOptimizerPath Condition="'$(CliOptimizerPath)' == ''">$(MSBuildThisFileDirectory)../tools/net10.0/Cilica.Cli.dll</CliOptimizerPath>
 
       <!-- Trailing slashes are removed to prevent issues with argument splitting. -->
       <JoinedAsmRefPaths>@(AsmRefPaths -> '"%(Identity)"', ' ')</JoinedAsmRefPaths>
@@ -39,11 +37,152 @@
     >
       <Output TaskParameter="ResolvedFiles" PropertyName="CliOptimizerPath" />
     </ResolveAssemblyReference>
+  </Target>
 
+  <!-- Specifying Inputs and Outputs will enable support for incremental builds. -->
+  <Target Name="_DoRunCilica" AfterTargets="Compile" DependsOnTargets="_ResolveCilica"
+          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' != 'true'"
+          Inputs="@(IntermediateAssembly)" Outputs="@(IntermediateAssembly -> '%(Identity).bak')">
+    <Message Text="Cilica: optimizing %(IntermediateAssembly.FullPath)" Importance="high" />
     <Exec
       WorkingDirectory="$(TargetDir)"
-      Command='dotnet "$(CliOptimizerPath)" -i "$(InputAsmPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)'
+      Command='dotnet "$(CliOptimizerPath)" -i "%(IntermediateAssembly.FullPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)'
     />
     <Touch Files="@(IntermediateAssembly -> '%(Identity).bak')" />
+  </Target>
+
+  <Target Name="_CollectCilicaBuildInputs" DependsOnTargets="_CheckForCompileOutputs">
+    <PropertyGroup><_CilicaMode>build</_CilicaMode></PropertyGroup>
+    <ItemGroup>
+      <_CilicaInput Include="@(IntermediateAssembly)" CilicaItemGroup="Assembly" />
+      <_CilicaInput Include="@(ReferenceCopyLocalPaths)" CilicaItemGroup="Reference" />
+      <_CilicaInput Include="@(_DebugSymbolsIntermediatePath)" CilicaItemGroup="Symbols" Condition="'$(_DebugSymbolsProduced)' == 'true'" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_CollectCilicaPublishInputs" DependsOnTargets="_ComputeAssembliesToPostprocessOnPublish">
+    <PropertyGroup>
+      <_CilicaMode>publish</_CilicaMode>
+      <_CilicaPrimaryAssembly>@(IntermediateAssembly->'%(FullPath)')</_CilicaPrimaryAssembly>
+    </PropertyGroup>
+    <ItemGroup>
+      <_CilicaInput Include="@(ResolvedFileToPublish)"
+                    Condition="'%(ResolvedFileToPublish.PostprocessAssembly)' == 'true' or '%(ResolvedFileToPublish.AssetType)' == 'resources'">
+        <CilicaItemGroup Condition="'%(ResolvedFileToPublish.FullPath)' == '$(_CilicaPrimaryAssembly)'">Assembly</CilicaItemGroup>
+      </_CilicaInput>
+    </ItemGroup>
+    <JoinItems Left="@(_CilicaInput->'%(RootDir)%(Directory)%(Filename).pdb')" Right="@(ResolvedFileToPublish)" RightMetadata="*">
+      <Output TaskParameter="JoinResult" ItemName="_CilicaInput" />
+    </JoinItems>
+  </Target>
+
+  <Target Name="_CollectCilicaAotInputs">
+    <PropertyGroup><_CilicaMode>aot</_CilicaMode></PropertyGroup>
+    <ItemGroup>
+      <!-- ILC inputs contain the NativeAOT implementations of framework assemblies. -->
+      <_CilicaAotInput Include="@(IlcCompileInput)" CilicaItemGroup="Assembly" />
+      <_CilicaAotInput Include="@(IlcReference)" CilicaItemGroup="Reference" />
+    </ItemGroup>
+    <ComputeManagedAssemblies Assemblies="@(_CilicaAotInput)">
+      <Output TaskParameter="ManagedAssemblies" ItemName="_CilicaInput" />
+    </ComputeManagedAssemblies>
+  </Target>
+
+  <Target Name="_PrepareCilicaAssemblies" DependsOnTargets="_ResolveCilica">
+    <Error Condition="'$(SelfContained)' != 'true'" Text="CilicaAllAssemblies requires a self-contained build (SelfContained=true)." />
+    <PropertyGroup>
+      <_CilicaDirectory>$([MSBuild]::NormalizeDirectory('$(MSBuildProjectDirectory)', '$(IntermediateOutputPath)', 'cilica', '$(_CilicaMode)'))</_CilicaDirectory>
+    </PropertyGroup>
+    <ItemGroup>
+      <_CilicaInput Remove="@(_CilicaInput)"
+                    Condition="'%(_CilicaInput.AssetType)' == 'native' or ('%(_CilicaInput.Extension)' != '.dll' and '%(_CilicaInput.Extension)' != '.exe' and '%(_CilicaInput.Extension)' != '.pdb')" />
+      <_CilicaInput>
+        <CilicaOriginalPath>%(_CilicaInput.Identity)</CilicaOriginalPath>
+        <CilicaOutputPath>$(_CilicaDirectory)%(_CilicaInput.DestinationSubDirectory)%(_CilicaInput.Filename)%(_CilicaInput.Extension)</CilicaOutputPath>
+        <CilicaOutputPath Condition="'%(_CilicaInput.RelativePath)' != ''">$(_CilicaDirectory)%(_CilicaInput.RelativePath)</CilicaOutputPath>
+        <CilicaOutputPdb>$([System.IO.Path]::ChangeExtension('%(_CilicaInput.CilicaOutputPath)', '.pdb'))</CilicaOutputPdb>
+      </_CilicaInput>
+      <_CilicaManagedInput Include="@(_CilicaInput)" Condition="'%(_CilicaInput.Extension)' != '.pdb'" />
+    </ItemGroup>
+    <RemoveDuplicates Inputs="@(_CilicaManagedInput->'%(FullPath)')">
+      <Output TaskParameter="Filtered" ItemName="_CilicaAssembly" />
+    </RemoveDuplicates>
+    <ItemGroup>
+      <_CilicaAssembly>
+        <CilicaSourcePath>%(_CilicaAssembly.FullPath)</CilicaSourcePath>
+      </_CilicaAssembly>
+    </ItemGroup>
+    <MakeDir Directories="$(_CilicaDirectory)" />
+    <WriteLinesToFile File="$(_CilicaDirectory)options" Lines="$(CliOptimizerPath);$(FilterUnmarkedArg);$(CilicaExtraArgs);@(AsmRefPaths);@(_CilicaInput)" Overwrite="true" WriteOnlyWhenDifferent="true" />
+  </Target>
+
+  <Target Name="_OptimizeCilicaAssemblies">
+    <WriteLinesToFile File="$(_CilicaDirectory)inputs"
+                      Lines="@(_CilicaInput->'%(FullPath)');$(MSBuildAllProjects);$(MSBuildThisFileFullPath);$(CliOptimizerPath);$(_CilicaDirectory)options"
+                      Overwrite="true" WriteOnlyWhenDifferent="true" />
+    <ItemGroup>
+      <_CilicaWork Include="@(_CilicaAssembly->'$(MSBuildThisFileFullPath)')">
+        <AdditionalProperties>_CilicaInputPath=%(CilicaSourcePath);_CilicaOutputPath=%(CilicaOutputPath)</AdditionalProperties>
+      </_CilicaWork>
+    </ItemGroup>
+    <MSBuild Projects="@(_CilicaWork)" Targets="_OptimizeCilicaAssembly" BuildInParallel="true"
+             Properties="CliOptimizerPath=$(CliOptimizerPath);ResolverPathsArg=$(ResolverPathsArg);FilterUnmarkedArg=$(FilterUnmarkedArg);CilicaExtraArgs=$([MSBuild]::Escape('$(CilicaExtraArgs)'));_CilicaInputsFile=$(_CilicaDirectory)inputs" />
+  </Target>
+
+  <Target Name="_ReadCilicaInputs">
+    <ReadLinesFromFile File="$(_CilicaInputsFile)">
+      <Output TaskParameter="Lines" ItemName="_CilicaDependency" />
+    </ReadLinesFromFile>
+  </Target>
+
+  <!-- All source assemblies participate in invalidation because inlining can cross assembly boundaries. -->
+  <Target Name="_OptimizeCilicaAssembly" DependsOnTargets="_ReadCilicaInputs"
+          Inputs="@(_CilicaDependency);$(_CilicaInputsFile)" Outputs="$(_CilicaOutputPath)">
+    <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_CilicaOutputPath)'))" />
+    <Delete Files="$([System.IO.Path]::ChangeExtension('$(_CilicaOutputPath)', '.pdb'))" />
+    <Message Text="Cilica: optimizing $(_CilicaInputPath)" Importance="high" />
+    <Exec Command='dotnet "$(CliOptimizerPath)" -i "$(_CilicaInputPath)" -o "$(_CilicaOutputPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)' />
+  </Target>
+
+  <Target Name="_GetCilicaOutputs">
+    <ItemGroup>
+      <_CilicaOutput Include="@(_CilicaInput->'%(CilicaOutputPath)')" Condition="Exists('%(_CilicaInput.CilicaOutputPath)')" />
+      <FileWrites Include="@(_CilicaOutput);$(_CilicaDirectory)options;$(_CilicaDirectory)inputs;@(_CilicaAssembly->'%(CilicaOutputPdb)')" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_RunCilicaAllBuildAssemblies" AfterTargets="Compile"
+          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(_IsPublishing)' != 'true' and '$(DesignTimeBuild)' != 'true'"
+          DependsOnTargets="_CollectCilicaBuildInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
+    <ItemGroup>
+      <IntermediateAssembly Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IntermediateAssembly Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))" />
+      <ReferenceCopyLocalPaths Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <ReferenceCopyLocalPaths Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Reference'))" />
+      <_DebugSymbolsIntermediatePath Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <_DebugSymbolsIntermediatePath Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Symbols'))" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_RunCilicaAllPublishAssemblies" AfterTargets="ComputeResolvedFilesToPublishList"
+          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(PublishAot)' != 'true'"
+          DependsOnTargets="_CollectCilicaPublishInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
+    <ItemGroup>
+      <ResolvedFileToPublish Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <ResolvedFileToPublish Include="@(_CilicaOutput)" />
+      <IntermediateAssembly Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IntermediateAssembly Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))" />
+    </ItemGroup>
+  </Target>
+
+  <Target Name="_RunCilicaAllAotAssemblies" AfterTargets="ComputeIlcCompileInputs"
+          Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(PublishAot)' == 'true'"
+          DependsOnTargets="_CollectCilicaAotInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
+    <ItemGroup>
+      <IlcCompileInput Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IlcCompileInput Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))" />
+      <IlcReference Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IlcReference Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Reference'))" />
+    </ItemGroup>
   </Target>
 </Project>

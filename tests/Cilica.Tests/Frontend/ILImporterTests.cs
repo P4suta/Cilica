@@ -11,6 +11,28 @@ using Cilica.Util;
 [Collection("ModuleResolver")]
 public class ILImporterTests(ModuleResolverFixture fixture)
 {
+    [Fact]
+    public void ArrayInitializationWithKnownFieldDataImportsAsAnIntrinsic()
+    {
+        var resolver = fixture.Resolver;
+        var source = Utils.CreateTestMethod(resolver, PrimType.Int32.CreateArray());
+        var compilation = new Compilation(source.Definition.Module, new VoidLogger(), new() { VerifyEachPass = true });
+        int[] expected = [10, 20, 30];
+        var data = compilation.CreateStaticRva(System.Runtime.InteropServices.MemoryMarshal.AsBytes(expected.AsSpan()));
+        var initializer = resolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers)).FindMethod("InitializeArray");
+        var builder = new IRBuilder(source.CreateBlock());
+        var array = builder.CreateNewArray(PrimType.Int32, ConstInt.CreateI(expected.Length));
+        builder.CreateCall(initializer, array, builder.Emit(new CilIntrinsic.LoadHandle(resolver, data)));
+        builder.CreateReturn(array);
+        source.Definition.ILBody = Cilica.CodeGen.Cil.ILGenerator.GenerateCode(source);
+
+        var body = ILImporter.ParseCode(source.Definition);
+        Assert.Same(data, Assert.Single(body.Instructions().OfType<CilIntrinsic.InitializeArray>()).Data);
+        source.Definition.Body = body;
+        CompilationPipeline.CreateDefault(compilation).Run([source.Definition]).ThrowIfFailed();
+        Assert.Equal(expected, Utils.Compile<Func<int[]>>(source.Definition.Body!)());
+    }
+
     [Theory]
     [InlineData("ObjectByteOffset")]
     [InlineData("ObjectByteOffsetAcrossBlocks")]

@@ -43,6 +43,13 @@ Set `RunCilica` to enable or disable optimization explicitly, and use `CilicaExt
 
 Use `--skip-module-initializers` to omit explicit module-initialization checks when the runtime initializes modules before use. `Cilica.OptimizerTask` enables this by default with `PublishAot=true`; set `CilicaSkipModuleInitializers=false` to override it.
 
-Note that this optimizer task only performs optimizations against your main assembly. To optimize the references as well, you can use Cilica.Cli manually, which is shipped together in the Cilica.OptimizerTask package.
+The optimizer task processes your main assembly by default. To include managed dependencies and framework assemblies in a self-contained build or publish, enable `CilicaAllAssemblies`:
+
+```xml
+<SelfContained>true</SelfContained>
+<CilicaAllAssemblies>true</CilicaAllAssemblies>
+```
+
+Under this mode, assembly signatures and ReadyToRun code will be removed, and `CilicaAllMethods` will be set to `true`; set it to `false` to retain attribute filtering.
 
 There's also a `Cilica.Core` package that exposes the optimizer and intermediate representation APIs for direct use.

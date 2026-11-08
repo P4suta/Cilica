@@ -14,6 +14,72 @@ public class ILGeneratorTests(ModuleResolverFixture fixture) : PassTestBase(fixt
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void ArrayInitializationPreservesTheNativeRuntimeIntrinsicPattern(bool repeated)
+    {
+        int[] expected = [10, 20, 30];
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32.CreateArray());
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new());
+        var field = compilation.CreateStaticRva(System.Runtime.InteropServices.MemoryMarshal.AsBytes(expected.AsSpan()));
+        var initializer = _modResolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers)).FindMethod("InitializeArray");
+        var builder = new Cilica.IR.Utils.IRBuilder(body.CreateBlock());
+        Value array = builder.Emit(new CilIntrinsic.NewArray(PrimType.Int32, ConstInt.CreateI(expected.Length)));
+        builder.Emit(new CilIntrinsic.InitializeArray(initializer, array, field));
+        if (repeated) {
+            array = builder.Emit(new CilIntrinsic.NewArray(PrimType.Int32, ConstInt.CreateI(expected.Length)));
+            builder.Emit(new CilIntrinsic.InitializeArray(initializer, array, field));
+        }
+        builder.CreateReturn(array);
+
+        var instructions = ILGenerator.GenerateCode(body).Instructions;
+        int calls = 0;
+        for (int i = 3; i < instructions.Count; i++) {
+            if (instructions[i] is not { OpCode: ILCode.Call, Operand: MethodDesc { Name: "InitializeArray" } }) continue;
+            Assert.Equal(ILCode.Newarr, instructions[i - 3].OpCode);
+            Assert.Equal(ILCode.Dup, instructions[i - 2].OpCode);
+            Assert.Equal(ILCode.Ldtoken, instructions[i - 1].OpCode);
+            calls++;
+        }
+        Assert.Equal(repeated ? 2 : 1, calls);
+        Assert.Equal(expected, Utils.Compile<Func<int[]>>(body)());
+    }
+
+    [Fact]
+    public void ArrayInitializationPreservesEarlierReads()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new());
+        var field = compilation.CreateStaticRva(BitConverter.GetBytes(42));
+        var initializer = _modResolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers)).FindMethod("InitializeArray");
+        var builder = new Cilica.IR.Utils.IRBuilder(body.CreateBlock());
+        var array = builder.Emit(new CilIntrinsic.NewArray(PrimType.Int32, ConstInt.CreateI(1)));
+        var before = builder.CreateArrayLoad(array, ConstInt.CreateI(0));
+        builder.Emit(new CilIntrinsic.InitializeArray(initializer, array, field));
+        builder.CreateReturn(before);
+
+        Assert.Equal(0, Utils.Compile<Func<int>>(body)());
+    }
+
+    [Fact]
+    public void RepeatedArrayInitializationPreservesTheFirstFailure()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32.CreateArray());
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new());
+        var tooSmall = compilation.CreateStaticRva(BitConverter.GetBytes(42));
+        var largeEnough = compilation.CreateStaticRva(new byte[16]);
+        var initializer = _modResolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers)).FindMethod("InitializeArray");
+        var builder = new Cilica.IR.Utils.IRBuilder(body.CreateBlock());
+        var array = builder.Emit(new CilIntrinsic.NewArray(PrimType.Int32, ConstInt.CreateI(3)));
+        builder.Emit(new CilIntrinsic.InitializeArray(initializer, array, tooSmall));
+        builder.Emit(new CilIntrinsic.InitializeArray(initializer, array, largeEnough));
+        builder.CreateReturn(array);
+
+        var run = Utils.Compile<Func<int[]>>(body);
+        Assert.Throws<ArgumentException>(() => run());
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void ConditionalResultsReadOutValuesAfterTheirProducer(bool found)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Object, PrimType.Object, PrimType.Bool);
