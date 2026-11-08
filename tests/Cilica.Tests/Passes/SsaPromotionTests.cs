@@ -13,6 +13,148 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class SsaPromotionTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(2)]
+    [InlineData(128)]
+    [InlineData(1024)]
+    public void MergesValuesFromEveryPredecessor(int predecessorCount)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var slot = body.CreateVar(PrimType.Int32);
+        var entry = body.CreateBlock();
+        var predecessors = Enumerable.Range(0, predecessorCount).Select(_ => body.CreateBlock()).ToArray();
+        var merge = body.CreateBlock();
+        entry.SetBranch(new SwitchInst(body.Args[0], predecessors[^1], predecessors[..^1]));
+        for (int i = 0; i < predecessors.Length; i++) {
+            predecessors[i].InsertLast(new StoreInst(slot, ConstInt.CreateI(i + 7)));
+            predecessors[i].SetBranch(merge);
+        }
+        var unused = merge.InsertPhi(new PhiInst(PrimType.Int32,
+            predecessors.Select(pred => new PhiArg(pred, ConstInt.CreateI(0))).ToArray()));
+        var result = new LoadInst(slot);
+        merge.InsertLast(result);
+        merge.SetBranch(new ReturnInst(result));
+        IRVerifier.Verify(body);
+
+        Run(body, new SsaPromotion());
+
+        Assert.Empty(body.LocalVars());
+        Assert.Null(unused.Block);
+        var phi = Assert.Single(merge.Phis());
+        Assert.Equal(predecessorCount, phi.NumArgs);
+        var run = Utils.Compile<Func<int, int>>(body);
+        for (int i = 0; i < predecessorCount; i++) {
+            Assert.Equal(i + 7, Assert.IsType<ConstInt>(phi.GetValue(predecessors[i])).Value);
+            Assert.Equal(i + 7, run(i));
+        }
+        Assert.Equal(predecessorCount + 6, run(-1));
+        Assert.Equal(predecessorCount + 6, run(predecessorCount));
+    }
+
+    [Fact]
+    public void PreservesPhiUsedOnlyByAnotherPhi()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Bool, PrimType.Int32);
+        var source = body.CreateVar(PrimType.Int32);
+        var destination = body.CreateVar(PrimType.Int32);
+        var entry = body.CreateBlock();
+        var left = body.CreateBlock();
+        var right = body.CreateBlock();
+        var join = body.CreateBlock();
+        var carry = body.CreateBlock();
+        var fallback = body.CreateBlock();
+        var other = body.CreateBlock();
+        var exit = body.CreateBlock();
+        entry.SetBranch(new BranchInst(body.Args[0], left, right));
+        new IRBuilder(left).CreateStore(source, ConstInt.CreateI(17));
+        left.SetBranch(join);
+        new IRBuilder(right).CreateStore(source, ConstInt.CreateI(42));
+        right.SetBranch(join);
+        join.SetBranch(new SwitchInst(body.Args[1], other, carry, fallback));
+        var transfer = new IRBuilder(carry);
+        transfer.CreateStore(destination, transfer.CreateLoad(source));
+        carry.SetBranch(exit);
+        new IRBuilder(fallback).CreateStore(destination, ConstInt.CreateI(99));
+        fallback.SetBranch(exit);
+        new IRBuilder(other).CreateStore(destination, ConstInt.CreateI(123));
+        other.SetBranch(exit);
+        var result = new IRBuilder(exit).CreateLoad(destination);
+        exit.SetBranch(new ReturnInst(result));
+        IRVerifier.Verify(body);
+
+        Run(body, new SsaPromotion());
+
+        Assert.Empty(body.LocalVars());
+        var sourcePhi = Assert.Single(join.Phis());
+        var destinationPhi = Assert.Single(exit.Phis());
+        Assert.Same(sourcePhi, destinationPhi.GetValue(carry));
+        Assert.Equal(1, sourcePhi.NumUses);
+        var run = Utils.Compile<Func<bool, int, int>>(body);
+        Assert.Equal(17, run(true, 0));
+        Assert.Equal(42, run(false, 0));
+        foreach (bool chooseLeft in new[] { false, true }) {
+            Assert.Equal(99, run(chooseLeft, 1));
+            Assert.Equal(123, run(chooseLeft, 2));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void HandlesLiveAndDeadPhiCycles(bool useValues)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32, PrimType.Bool);
+        var first = body.CreateVar(PrimType.Int32);
+        var second = body.CreateVar(PrimType.Int32);
+        var counter = body.CreateVar(PrimType.Int32);
+        var entry = body.CreateBlock();
+        var alternate = body.CreateBlock();
+        var header = body.CreateBlock();
+        var loop = body.CreateBlock();
+        var exit = body.CreateBlock();
+        var start = new IRBuilder(entry);
+        start.CreateStore(first, ConstInt.CreateI(1));
+        start.CreateStore(second, ConstInt.CreateI(2));
+        start.CreateStore(counter, ConstInt.CreateI(0));
+        entry.SetBranch(new BranchInst(body.Args[1], alternate, header));
+        var alternative = new IRBuilder(alternate);
+        alternative.CreateStore(first, ConstInt.CreateI(3));
+        alternative.CreateStore(second, ConstInt.CreateI(4));
+        alternate.SetBranch(header);
+        var check = new IRBuilder(header);
+        var count = check.CreateLoad(counter);
+        header.SetBranch(new BranchInst(check.CreateSlt(count, body.Args[0]), loop, exit));
+        var update = new IRBuilder(loop);
+        var a = update.CreateLoad(first);
+        var b = update.CreateLoad(second);
+        update.CreateStore(first, b);
+        update.CreateStore(second, a);
+        update.CreateStore(counter, update.CreateAdd(count, ConstInt.CreateI(1)));
+        loop.SetBranch(header);
+        var finish = new IRBuilder(exit);
+        var result = useValues
+            ? finish.CreateAdd(finish.CreateMul(finish.CreateLoad(first), ConstInt.CreateI(10)), finish.CreateLoad(second))
+            : finish.CreateLoad(counter);
+        exit.SetBranch(new ReturnInst(result));
+        IRVerifier.Verify(body);
+
+        Run(body, new SsaPromotion());
+
+        Assert.Empty(body.LocalVars());
+        Assert.Equal(useValues ? 3 : 1, header.Phis().Count());
+        if (useValues) {
+            Assert.Contains(header.Phis(), phi => phi.GetValue(loop) is PhiInst input && input != phi);
+        }
+        var run = Utils.Compile<Func<int, bool, int>>(body);
+        foreach (bool useAlternate in new[] { false, true }) {
+            foreach (int iterations in new[] { 0, 1, 2, 9 }) {
+                int value = iterations % 2 == 0 ? 12 : 21;
+                if (useAlternate) value += 22;
+                Assert.Equal(useValues ? value : iterations, run(iterations, useAlternate));
+            }
+        }
+    }
+
     [Fact]
     public void TypedDefaultsArePromotedLikeOtherAssignments()
     {

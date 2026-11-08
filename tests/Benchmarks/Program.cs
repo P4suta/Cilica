@@ -21,7 +21,7 @@ var config = compilerBenchmarks ? DefaultConfig.Instance.AddJob(Job.ShortRun.Wit
     .AddJob(defaultJob.AsBaseline())
     .AddJob(defaultJob.WithToolchain(new OptToolchain(toolchain)));
 
-var benchmarks = compilerBenchmarks ? BenchmarkSwitcher.FromTypes([typeof(Cilica.Benchmarks.CompilerPasses)])
+var benchmarks = compilerBenchmarks ? BenchmarkSwitcher.FromTypes([typeof(Cilica.Benchmarks.CompilerPasses), typeof(Cilica.Benchmarks.SsaPromotionBenchmarks)])
     : BenchmarkSwitcher.FromTypes([typeof(LinqExpansion), typeof(AutoVectorization), typeof(ListArrayBuilding)]);
 benchmarks.Run(args, config);
 
