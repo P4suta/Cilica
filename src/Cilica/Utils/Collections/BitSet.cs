@@ -25,11 +25,11 @@ public class BitSet : IEquatable<BitSet>
             } else {
                 w &= ~mask;
             }
-            // w = (w & ~mask) | (value ? mask : 0);
         }
     }
 
-    /// <summary> Sets the bit at the specified index, and returns whether it was previously clear. </summary>
+    /// <summary> Sets the bit at the specified index, and returns whether it was previously clear.
+    /// </summary>
     public bool Add(int index)
     {
         ref ulong w = ref GetOrAddWord(index);
@@ -38,7 +38,8 @@ public class BitSet : IEquatable<BitSet>
         return w != prev;
     }
 
-    /// <summary> Clears the bit at the specified index, and returns whether it was previously set. </summary>
+    /// <summary> Clears the bit at the specified index, and returns whether it was previously set.
+    /// </summary>
     public bool Remove(int index)
     {
         if (!IsIndexValid(index)) {
@@ -50,14 +51,16 @@ public class BitSet : IEquatable<BitSet>
         return w != prev;
     }
 
-    /// <summary> Checks if the bit at the specified index is set. </summary>
+    /// <summary> Checks if the bit at the specified index is set.
+    /// </summary>
     public bool Contains(int index)
     {
         return IsIndexValid(index) &&
                ((GetWord(index) >> index) & 1) != 0;
     }
 
-    /// <summary> Computes the number of set bits. </summary>
+    /// <summary> Computes the number of set bits.
+    /// </summary>
     public int PopCount()
     {
         int r = 0;
@@ -73,7 +76,8 @@ public class BitSet : IEquatable<BitSet>
         return GetRangeEnumerator(start, end).MoveNext();
     }
 
-    /// <summary> Returns the index of the first unset bit. </summary>
+    /// <summary> Returns the index of the first unset bit.
+    /// </summary>
     public int FirstUnsetIndex()
     {
         for (int i = 0; i < _data.Length; i++) {
@@ -85,7 +89,8 @@ public class BitSet : IEquatable<BitSet>
         return _data.Length * 64;
     }
 
-    /// <summary> Removes the elements of the specified set from this set, and returns whether any change occurred. </summary>
+    /// <summary> Keeps only the elements shared with the specified set, and returns whether any change occurred.
+    /// </summary>
     public bool Intersect(BitSet other)
     {
         var wa = _data;
@@ -99,10 +104,15 @@ public class BitSet : IEquatable<BitSet>
             wa[i] = next;
             changed |= prev ^ next;
         }
+        for (int i = count; i < wa.Length; i++) {
+            changed |= wa[i];
+            wa[i] = 0;
+        }
         return changed != 0;
     }
 
-    /// <summary> Adds the elements of the specified set to this set, and returns whether any change occurred. </summary>
+    /// <summary> Adds the elements of the specified set to this set, and returns whether any change occurred.
+    /// </summary>
     public bool Union(BitSet other)
     {
         var wa = _data;
@@ -123,7 +133,8 @@ public class BitSet : IEquatable<BitSet>
         return changed != 0;
     }
 
-    /// <summary> Adds the differences between <paramref name="a"/> and <paramref name="b"/> (a ∩ b') to this set, and returns whether any change occurred. </summary>
+    /// <summary> Adds the differences between <paramref name="a"/> and <paramref name="b"/> (a ∩ b') to this set, and returns whether any change occurred.
+    /// </summary>
     public bool UnionDiffs(BitSet a, BitSet b)
     {
         var dst = _data;
@@ -136,9 +147,16 @@ public class BitSet : IEquatable<BitSet>
             Array.Resize(ref _data, wa.Length);
             dst = _data;
         }
-        for (int i = 0; i < wa.Length; i++) {
+        int count = Math.Min(wa.Length, wb.Length);
+        for (int i = 0; i < count; i++) {
             ulong prev = dst[i];
             ulong next = prev | (wa[i] & ~wb[i]);
+            dst[i] = next;
+            changed |= prev ^ next;
+        }
+        for (int i = count; i < wa.Length; i++) {
+            ulong prev = dst[i];
+            ulong next = prev | wa[i];
             dst[i] = next;
             changed |= prev ^ next;
         }

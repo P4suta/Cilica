@@ -7,6 +7,34 @@ using Cilica.IR;
 public class LivenessAnalysisTests
 {
     [Fact]
+    public void VariableLivenessHandlesMoreThan256Locals()
+    {
+        var method = Utils.CreateDummyMethodBody();
+        var entry = method.CreateBlock();
+        var bridge = method.CreateBlock();
+        var exit = method.CreateBlock();
+        var slots = Enumerable.Range(0, 257).Select(_ => method.CreateVar(PrimType.Int32)).ToArray();
+
+        for (int i = 0; i < slots.Length; i++) {
+            if (i % 2 == 0) entry.InsertLast(new StoreInst(slots[i], ConstInt.CreateI(i)));
+            exit.InsertLast(new LoadInst(slots[i]));
+        }
+        entry.SetBranch(bridge);
+        bridge.SetBranch(exit);
+        exit.SetBranch(new ReturnInst());
+
+        var analysis = new VarLivenessAnalysis(method);
+        for (int i = 0; i < slots.Length; i++) {
+            Assert.Equal(i % 2 != 0, analysis.GetLiveIn(entry).Contains(slots[i]));
+            Assert.True(analysis.GetLiveOut(entry).Contains(slots[i]));
+            Assert.True(analysis.GetLiveIn(bridge).Contains(slots[i]));
+            Assert.True(analysis.GetLiveOut(bridge).Contains(slots[i]));
+            Assert.True(analysis.GetLiveIn(exit).Contains(slots[i]));
+            Assert.False(analysis.GetLiveOut(exit).Contains(slots[i]));
+        }
+    }
+
+    [Fact]
     public void PhiEdgeUsesDoNotHideOrdinaryUsesInTheMergeBlock()
     {
         var method = Utils.CreateDummyMethodBody(PrimType.Int32, PrimType.Int32, PrimType.Bool);
