@@ -11,27 +11,23 @@ public class LoopStrengthReduction : IMethodPass
         var loopAnalysis = ctx.GetAnalysis<LoopAnalysis>();
         var domTree = ctx.GetAnalysis<DominatorTree>();
         int numChanges = 0;
-        int changedLoops = 0;
 
         foreach (var loop in loopAnalysis.Loops) {
-            long revision = ctx.Method.Revision;
-            numChanges += RemoveDuplicatedCounters(loop, domTree);
+            numChanges += RemoveDuplicatedCounters(loop, domTree, ctx.Logger);
 
             // Don't reduce loops with more than one body block, because the 
             // only benefit it has is in enabling vectorization.
             if (loop.NumBlocks <= 2 && ShapedLoopInfo.Parse(loop) is CountingLoopInfo countingLoop) {
-                numChanges += ReduceLoop(countingLoop, domTree);
+                numChanges += ReduceLoop(countingLoop, domTree, ctx.Logger);
             }
-            changedLoops += ctx.Method.Revision != revision ? 1 : 0;
         }
-        if (changedLoops != 0) ctx.Logger.Trace($"Simplified induction variables or indexing in {changedLoops} loops.");
         return numChanges > 0 ? MethodInvalidations.DataFlow : 0;
     }
 
     // TODO: maybe move this out to a separate pass
     
     // Dumb duplicate IV elimination, if that's a thing.
-    private int RemoveDuplicatedCounters(LoopInfo loop, DominatorTree domTree)
+    private int RemoveDuplicatedCounters(LoopInfo loop, DominatorTree domTree, ICompilationLogger logger)
     {
         var pred = loop.GetPredecessor();
         var latch = loop.GetLatch();
@@ -62,6 +58,7 @@ public class LoopStrengthReduction : IMethodPass
                 if (!a.UpdatedVal.Right.Equals(b.UpdatedVal.Right)) continue;
 
                 if (domTree.Dominates(b.UpdatedVal, a.UpdatedVal)) {
+                    logger.Trace($"Eliminated duplicate induction variable '{a.Phi}' in '{loop.Header}' using '{b.Phi}'.");
                     a.Phi.ReplaceWith(b.Phi);
                     phis.RemoveAt(i--);
                     numChanges++;
@@ -73,7 +70,7 @@ public class LoopStrengthReduction : IMethodPass
         return numChanges;
     }
 
-    private int ReduceLoop(CountingLoopInfo loop, DominatorTree dominators)
+    private int ReduceLoop(CountingLoopInfo loop, DominatorTree dominators, ICompilationLogger logger)
     {
         // Strength-reducing array indexes in backward loops is not trivial, as the GC
         // doesn't update refs pointing outside an object when compacting the heap.
@@ -81,6 +78,7 @@ public class LoopStrengthReduction : IMethodPass
         if (!loop.IsCanonical) return 0;
 
         int numChanges = HoistArrayBound(loop, dominators) ? 1 : 0;
+        if (numChanges != 0) logger.Trace($"Hoisted loop bound '{loop.End}' from '{loop.Header}' to '{loop.PreHeader}'.");
         var indexedAccs = new Dictionary<Value, (List<Instruction> Addrs, bool BoundsLoop, bool IsSpan)>();
 
         foreach (var user in loop.Counter.Users()) {
@@ -151,6 +149,7 @@ public class LoopStrengthReduction : IMethodPass
 
                     addr.ReplaceWith(currPtr);
                 }
+                logger.Trace($"Reduced indexing of '{source}' in '{loop.Header}' to pointer induction '{currPtr}'.");
             } else {
                 // Inline index calls with LEAs
                 foreach (var addr in addrs) {
@@ -171,7 +170,11 @@ public class LoopStrengthReduction : IMethodPass
                     } else {
                         oldBound.MoveBefore(loop.PreHeader.Last);
                     }
+                    if (oldBound.Block == loop.PreHeader) {
+                        logger.Trace($"Hoisted loop bound '{oldBound}' to '{loop.PreHeader}' for loop '{loop.Header}'.");
+                    }
                 }
+                logger.Trace($"Replaced indexing of '{source}' in '{loop.Header}' with pointer offsets.");
             }
         }
 

@@ -72,7 +72,7 @@ public class AssertionProp : IMethodPass
                                 }
                                 call.InBounds = true; break;
                             case CilIntrinsic.NullCheck check:
-                                ctx.Logger.Trace($"Removed null check for in '{block}' by propagating '{check}'.");
+                                ctx.Logger.Trace($"Removed null check in '{block}' by propagating '{check}'.");
                                 check.Remove(); break;
                         }
                     } else {

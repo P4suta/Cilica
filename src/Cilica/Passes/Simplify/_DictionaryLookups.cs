@@ -26,7 +26,7 @@ partial class SimplifyInsts
     //  BB_05: // preds: BB_01
     //    long r6 = ldvar $loc1
     //    ret r6
-    private bool SimplifyDictLookup(CallInst call)
+    private bool SimplifyDictLookup(CallInst call, ICompilationLogger logger)
     {
         Debug.Assert(call.Method.Name == "ContainsKey");
 
@@ -47,6 +47,7 @@ partial class SimplifyInsts
         
         var tempVar = builder.Method.CreateVar(declType.GenericParams[1], "dictLookupOut");
         var replacement = builder.CreateCallVirt("TryGetValue", instance, key, tempVar);
+        logger.Trace($"Combined '{call}' in '{call.Block}' and '{getCall}' in '{getCall.Block}' into '{replacement}'.");
         OnCallReplaced?.Invoke(call, replacement);
         call.ReplaceWith(replacement);
 

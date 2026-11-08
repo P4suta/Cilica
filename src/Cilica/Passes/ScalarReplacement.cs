@@ -28,13 +28,13 @@ public class ScalarReplacement : IMethodPass
             }
             var target = (MethodDefOrSpec)obj.Constructor;
             if (!sizeBudget.AllowsExpansion(obj, target, probe => InlineAlloc((NewObjInst)probe, ctx.Compilation), out var rejection, fields)) {
-                ctx.Logger.Trace($"Expansion declined for '{target}': {rejection}.");
+                ctx.Logger.Trace($"Expansion declined for '{obj}' in '{obj.Block}': {rejection}.");
                 continue;
             }
+            ctx.Logger.Trace($"Replaced allocation '{obj}' in '{obj.Block}' with {fields} scalar field slots.");
             InlineAlloc(obj, ctx.Compilation);
             sizeBudget.RecordExpansion();
             expanded++;
-            ctx.Logger.Trace($"Replaced allocation of '{target.DeclaringType}' with {fields} scalar field slots.");
         }
 
         if (expanded > 0) InliningSizeBudget.Cleanup(ctx, new SimplifyInsts(ctx.Compilation.Resolver));

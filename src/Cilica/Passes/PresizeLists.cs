@@ -14,7 +14,6 @@ public class PresizeLists : IMethodPass
 
         var candidateLists = new Dictionary<TrackedValue, (bool HasConditionalAdd, int AddCallCount)>();
         int numChanges = 0;
-        int arrayBuilders = 0;
 
         foreach (var loop in loopAnalysis.GetShapedLoops(innermostOnly: true)) {
             // Must be able to calculate loop trip count before entering it
@@ -72,10 +71,11 @@ public class PresizeLists : IMethodPass
 
                 var ctorWithCap = list.ResultType.FindMethod(".ctor", new MethodSig(PrimType.Void, [PrimType.Int32]));
                 var newList = builder.CreateNewObj(ctorWithCap, numAddedItems);
+                ctx.Logger.Trace($"Presized '{listAlloc}' in '{listAlloc.Block}' to capacity '{numAddedItems}' for loop '{loop.Header}'.");
                 listAlloc.ReplaceWith(newList);
 
                 if (!info.HasConditionalAdd && fitsCapacity) {
-                    arrayBuilders += TryReplaceArrayBuilder(loop, builder, newList, domTree) ? 1 : 0;
+                    TryReplaceArrayBuilder(loop, builder, newList, domTree, ctx.Logger);
                 }
 
                 numChanges++;
@@ -84,7 +84,6 @@ public class PresizeLists : IMethodPass
             candidateLists.Clear();
         }
 
-        if (numChanges > 0) ctx.Logger.Trace($"Presized {numChanges} lists; replaced {arrayBuilders} with direct array construction.");
         return numChanges > 0 ? MethodInvalidations.DataFlow : MethodInvalidations.None;
     }
 
@@ -94,7 +93,7 @@ public class PresizeLists : IMethodPass
 
     // A confined list construction can write directly to its result array.
     // Observable lists retain Add's versioning and incremental mutation semantics.
-    private static bool TryReplaceArrayBuilder(ShapedLoopInfo loop, IRBuilder builder, TrackedValue list, DominatorTree domTree)
+    private static bool TryReplaceArrayBuilder(ShapedLoopInfo loop, IRBuilder builder, TrackedValue list, DominatorTree domTree, ICompilationLogger logger)
     {
         var addCalls = new List<CallInst>();
         var toArrayCall = default(CallInst);
@@ -126,6 +125,7 @@ public class PresizeLists : IMethodPass
 
         var elemType = list.ResultType.GenericParams[0];
         var array = builder.CreateNewArray(elemType, listAlloc.Args[0]).SetName("arrbuilder_items");
+        logger.Trace($"Replaced '{toArrayCall}' in '{toArrayCall.Block}' with direct array construction '{array}' for loop '{loop.Header}'.");
         toArrayCall.ReplaceWith(array);
         listAlloc.Remove();
         Debug.Assert(listAlloc.NumUses == addCalls.Count);

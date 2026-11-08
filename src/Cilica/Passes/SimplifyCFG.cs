@@ -42,13 +42,13 @@ public class SimplifyCFG : IMethodPass
 
         switch (block.Last) {
             case BranchInst { IsConditional: true } br: {
-                changed |= SimplifyCond(br);
-                changed |= ConvertToBranchless(block);
-                changed |= JumpThreadThroughPhi(block);
+                changed |= SimplifyCond(br, ctx.Logger);
+                changed |= ConvertToBranchless(block, ctx.Logger);
+                changed |= JumpThreadThroughPhi(block, ctx.Logger);
                 break;
             }
             case BranchInst { IsJump: true } br: {
-                changed |= MergeWithSucc(block, br);
+                changed |= MergeWithSucc(block, br, ctx.Logger);
                 break;
             }
             case SwitchInst sw: {
@@ -59,13 +59,14 @@ public class SimplifyCFG : IMethodPass
         return changed;
     }
 
-    private static bool MergeWithSucc(BasicBlock block, BranchInst br)
+    private static bool MergeWithSucc(BasicBlock block, BranchInst br, ICompilationLogger logger)
     {
         Debug.Assert(br.IsJump);
 
         // succ can't start with a phi/guard, nor loop on itself, and we must be its only predecessor
         if (br.Then is not { HasPhisOrGuards: false, NumPreds: 1 } succ || succ == block) return false;
 
+        logger.Trace($"Merged block '{succ}' into '{block}'.");
         succ.MergeInto(block, replaceBranch: true);
         return true;
     }
@@ -73,9 +74,10 @@ public class SimplifyCFG : IMethodPass
     // goto x == 0 ? T : F  ->  goto x ? F : T
     // goto x != 0 ? T : F  ->  goto x ? T : F
     //   for `x is bool` 
-    private static bool SimplifyCond(BranchInst br)
+    private static bool SimplifyCond(BranchInst br, ICompilationLogger logger)
     {
         if (br.Cond is CompareInst { Op: CompareOp.Eq or CompareOp.Ne, Left.ResultType.Kind: TypeKind.Bool, Right: ConstInt { Value: 0 } } cond) {
+            logger.Trace($"Removed boolean comparison '{cond}' from branch in '{br.Block}'.");
             br.Cond = cond.Left;
 
             if (cond.Op == CompareOp.Eq) {
@@ -96,7 +98,7 @@ public class SimplifyCFG : IMethodPass
     // -->
     //  Block: ...; goto EndBlock
     //  EndBlock: int res = select cond ? x : y; ...
-    private static bool ConvertToBranchless(BasicBlock block)
+    private static bool ConvertToBranchless(BasicBlock block, ICompilationLogger logger)
     {
         if (block.Last is not BranchInst { IsConditional: true } br) return false;
 
@@ -128,6 +130,7 @@ public class SimplifyCFG : IMethodPass
         foreach (var phi in endBlock.Phis()) {
             var select = CreateSelect(phi);
             select.InsertBefore(block.Last);
+            logger.Trace($"Converted branch in '{block}' to '{select}' for '{phi}' in '{endBlock}'.");
 
             if (phi.NumArgs <= 2 && !keepT && !keepF) {
                 phi.ReplaceWith(select);
@@ -229,7 +232,7 @@ public class SimplifyCFG : IMethodPass
                     exitBlocks.Add(block);
                 }
             } else {
-                CollapseJumps(block);
+                CollapseJumps(block, comp.Logger);
             }
         }
 
@@ -238,13 +241,14 @@ public class SimplifyCFG : IMethodPass
         var singleExit = method.CreateBlock().SetName("CanonExit");
         var phi = singleExit.InsertPhi(method.ReturnType);
         singleExit.SetBranch(new ReturnInst(phi));
+        comp.Logger.Trace($"Merged returns from '{string.Join("', '", exitBlocks)}' into '{singleExit}'.");
 
         foreach (var block in exitBlocks) {
             var value = StoreInst.Coerce(method.ReturnType, ((ReturnInst)block.Last).Value!, block.Last);
             phi.AddArg(block, value);
             block.SetBranch(singleExit);
 
-            CollapseJumps(block);
+            CollapseJumps(block, comp.Logger);
         }
         return true;
     }
@@ -254,7 +258,7 @@ public class SimplifyCFG : IMethodPass
     //  BB_02: goto BB_03;
     //  ----
     //  BB_01: goto BB_03;
-    private static bool CollapseJumps(BasicBlock block)
+    private static bool CollapseJumps(BasicBlock block, ICompilationLogger logger)
     {
         // Not the entry block, first inst is a jump
         if (block is not { NumPreds: > 0, First: BranchInst { IsJump: true, Then: var succ } }) return false;
@@ -265,6 +269,7 @@ public class SimplifyCFG : IMethodPass
 
         // Transform is only valid if either the successor has no phis, or if threading won't introduce a duplicate edge
         if (!succ.HasPhis || (block.NumPreds == 1 && !block.Preds.First().IsUsedByPhis)) {
+            logger.Trace($"Collapsed jump block '{block}' to '{succ}'.");
             foreach (var pred in block.Preds) {
                 pred.RedirectSucc(block, succ);
                 succ.RedirectPhis(block, pred);
@@ -289,7 +294,7 @@ public class SimplifyCFG : IMethodPass
     // Note: LLVM does this in a very different way, replacing the branch condition to one from a dominating block.
     //       Their SimplifyCFG pass also seems to be doing lots of jump threadings-style transforms, but I don't think
     //       we can do that efficiently without keeping the dom tree up to date.
-    private static bool JumpThreadThroughPhi(BasicBlock block)
+    private static bool JumpThreadThroughPhi(BasicBlock block, ICompilationLogger logger)
     {
         if (block.Last is not BranchInst { IsConditional: true, Cond: PhiInst phi } br || phi.Block != block) return false;
         if (phi.NumUses >= 2 || br.Prev != phi || phi.Prev != null) return false; // block has other instructions that may have side effects
@@ -302,6 +307,7 @@ public class SimplifyCFG : IMethodPass
             var newSucc = cond ? br.Then : br.Else;
             if (newSucc.Phis().Any()) continue; // Don't mess with phi edges
 
+            logger.Trace($"Threaded edge from '{pred}' through '{block}' to '{newSucc}' for '{phi}' = '{value}'.");
             pred.RedirectEdge(block, newSucc);
             numChanged++;
         }
@@ -383,12 +389,14 @@ public class SimplifyCFG : IMethodPass
                     builder.CreateAnd(builder.CreateShrl(ConstInt.CreateL(mask), index), ConstInt.CreateL(1)),
                     phi.ResultType
                 );
+                comp.Logger.Trace($"Converted switch in '{block}' for '{phi}' to bitmask lookup '{result}'.");
             } else {
                 //  class Aux { public static BlockN FieldRVA = [...data] }
                 //  T result = load &FieldRVA + index * sizeof(T)
                 var fieldRva = comp.CreateStaticRva(data);
                 var addr = builder.CreatePtrOffset(builder.CreateFieldAddr(fieldRva), index, storageType);
                 result = builder.CreateLoad(addr);
+                comp.Logger.Trace($"Converted switch in '{block}' for '{phi}' to table lookup '{result}'.");
             }
             phi.ReplaceWith(result);
         }

@@ -32,7 +32,7 @@ public class ExtractThrows : IMethodPass
                 throwInst.Exception = ConstNull.Create();
                 excAlloc.Remove();
                 changed = true;
-                ctx.Logger.Trace($"Extracted throw of '{excAlloc.ResultType}' into helper '{helper}'.");
+                ctx.Logger.Trace($"Extracted throw of '{excAlloc.ResultType}' in '{block}' into helper '{helper}'.");
             }
         }
         return changed ? MethodInvalidations.DataFlow : MethodInvalidations.None;

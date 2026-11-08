@@ -50,6 +50,7 @@ public class Devirtualize : IMethodPass
             !(ExactType(receiver!) is PrimType primitive && primitive.GetDefinition(ctx.Compilation.Resolver) == target.DeclaringType)) return false;
         if (!call.IsVirtual && call.Constraint == null && VirtualDispatch.SameMethod(call.Method, target)) return false;
 
+        var originalCall = ctx.Logger.IsEnabled(LogLevel.Trace) ? call.ToString() : null;
         var builder = new IRBuilder(call, InsertionDir.Before);
         if (receiver != null) {
             if (loadReceiver) receiver = builder.CreateLoad(receiver, call.Constraint);
@@ -61,13 +62,10 @@ public class Devirtualize : IMethodPass
                 receiver = builder.Emit(new CilIntrinsic.RefCast(target.ParamSig[0].Type, receiver));
             call.SetArg(0, receiver);
         }
-        var originalTarget = call.Method;
-        var originalOpcode = call.IsVirtual ? "callvirt" : "call";
-        var originalConstraint = call.Constraint;
         call.Method = target;
         call.Constraint = null;
         call.IsVirtual = false;
-        ctx.Logger.Trace($"Devirtualized {(originalConstraint != null ? $"constrained({originalConstraint}) " : "")}{originalOpcode} '{originalTarget}'{(VirtualDispatch.SameMethod(originalTarget, target) ? "" : $" to '{target}'")}.");
+        ctx.Logger.Trace($"Devirtualized '{originalCall}' in '{call.Block}' to '{call}'.");
         return true;
     }
 
@@ -84,8 +82,8 @@ public class Devirtualize : IMethodPass
         if (VirtualDispatch.Resolve(method, nominal) is not MethodDefOrSpec target || !CanCall(ctx, target) ||
             !VirtualDispatch.SameMethod(VirtualDispatch.ResolveDirect(target), target)) return;
         if (address.IsVirtual && address.Object is not NewObjInst) new IRBuilder(address, InsertionDir.Before).CreateNullCheck(address.Object!);
+        ctx.Logger.Trace($"Devirtualized '{address}' in '{address.Block}' to a direct address of '{target}'.");
         address.ReplaceWith(new FuncAddrInst(target), insertIfInst: true);
-        ctx.Logger.Trace($"Devirtualized {(address.Constraint != null ? $"constrained({address.Constraint}) " : "")}{(address.IsVirtual ? "ldvirtftn" : "ldftn")} '{address.Method}'{(VirtualDispatch.SameMethod(address.Method, target) ? "" : $" to '{target}'")}.");
     }
 
     static bool CanCall(MethodTransformContext ctx, MethodDefOrSpec target)

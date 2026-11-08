@@ -72,9 +72,9 @@ partial class SimplifyInsts
 
             if (instanceObj is ConstNull) {
                 var replacement = new CallInst(method, call.Args[1..].ToArray()) { IsTailCall = call.IsTailCall };
+                logger.Trace($"Replaced delegate invocation '{call}' in '{call.Block}' with a direct call to '{method}'.");
                 OnCallReplaced?.Invoke(call, replacement);
                 call.ReplaceWith(replacement, insertIfInst: true);
-                logger.Trace($"Replaced delegate invocation with a direct call to '{method}'.");
                 return true;
             } else if (method.IsInstance) {
                 // Cached instance targets must be available on both phi edges.
@@ -102,10 +102,10 @@ partial class SimplifyInsts
                     address.InsertBefore(call);
                     instanceObj = address;
                 }
+                logger.Trace($"Replaced delegate invocation '{call}' in '{call.Block}' with a call to '{method}' using its captured receiver.");
                 call.Method = method;
                 call.SetArg(0, instanceObj);
                 call.IsVirtual = addr.IsVirtual;
-                logger.Trace($"Replaced delegate invocation with a call to '{method}' using its captured receiver.");
                 return true;
             }
             return false;
