@@ -1,5 +1,76 @@
 <linker>
   <assembly fullname="System.Private.CoreLib">
+    <type fullname="System.RuntimeTypeHandle">
+      <method signature="System.ModuleHandle GetModuleHandle()" />
+    </type>
+    <type fullname="System.Runtime.CompilerServices.RuntimeHelpers">
+      <method signature="System.Void RunClassConstructor(System.RuntimeTypeHandle)" />
+      <method signature="System.Void RunModuleConstructor(System.ModuleHandle)" />
+    </type>
+    <type fullname="System.Runtime.CompilerServices.CompilerGeneratedAttribute">
+      <method signature="System.Void .ctor()" />
+    </type>
+    <type fullname="System.Attribute">
+      <method signature="System.Void .ctor()" />
+    </type>
+    <type fullname="System.Array">
+      <method name="Empty" />
+    </type>
+    <type fullname="System.String">
+      <method name="GetPinnableReference" />
+      <method name="get_Length" />
+    </type>
+    <type fullname="System.Span`1" required="false">
+      <method name="GetPinnableReference" />
+      <method name="get_Length" />
+    </type>
+    <type fullname="System.ReadOnlySpan`1" required="false">
+      <method name="GetPinnableReference" />
+      <method name="get_Length" />
+    </type>
+    <type fullname="System.ArgumentNullException">
+      <method signature="System.Void ThrowIfNull(System.Object,System.String)" />
+    </type>
+    <type fullname="System.ArgumentOutOfRangeException">
+      <method name="ThrowIfNegative" />
+      <method name="ThrowIfGreaterThan" />
+    </type>
+    <type fullname="System.InvalidOperationException">
+      <method signature="System.Void .ctor()" />
+    </type>
+    <type fullname="System.Collections.Generic.List`1" required="false">
+      <method signature="System.Void .ctor()" />
+      <method signature="System.Void .ctor(System.Int32)" />
+      <method name="Add" />
+      <method name="get_Count" />
+    </type>
+    <type fullname="System.Collections.Generic.HashSet`1" required="false">
+      <method signature="System.Void .ctor()" />
+      <method signature="System.Void .ctor(System.Int32)" />
+      <method signature="System.Void .ctor(System.Collections.Generic.IEqualityComparer`1&lt;T&gt;)" />
+      <method signature="System.Void .ctor(System.Int32,System.Collections.Generic.IEqualityComparer`1&lt;T&gt;)" />
+      <method name="Add" />
+    </type>
+    <type fullname="System.Collections.Generic.Dictionary`2" required="false">
+      <method signature="System.Void .ctor()" />
+      <method signature="System.Void .ctor(System.Int32)" />
+      <method signature="System.Void .ctor(System.Collections.Generic.IEqualityComparer`1&lt;TKey&gt;)" />
+      <method signature="System.Void .ctor(System.Int32,System.Collections.Generic.IEqualityComparer`1&lt;TKey&gt;)" />
+      <method name="Add" />
+      <method name="TryGetValue" />
+    </type>
+    <type fullname="System.Collections.Generic.IEnumerable`1" required="false">
+      <method name="GetEnumerator" />
+    </type>
+    <type fullname="System.Collections.Generic.IEnumerator`1" required="false">
+      <method name="get_Current" />
+    </type>
+    <type fullname="System.Collections.IEnumerator" required="false">
+      <method name="MoveNext" />
+    </type>
+    <type fullname="System.IDisposable" required="false">
+      <method name="Dispose" />
+    </type>
     <type fullname="System.Runtime.Intrinsics.Vector128" preserve="methods" />
     <type fullname="System.Runtime.Intrinsics.Vector128`1" preserve="methods" />
     <type fullname="System.Runtime.Intrinsics.Vector256" preserve="methods" />
@@ -10,6 +81,18 @@
     <type fullname="System.Runtime.InteropServices.MemoryMarshal">
       <method name="GetArrayDataReference" />
       <method name="CreateSpan" />
+    </type>
+  </assembly>
+  <assembly fullname="System.Linq">
+    <type fullname="System.Collections.Generic.SegmentedArrayBuilder`1">
+      <method name=".ctor" />
+      <method name="Add" />
+      <method signature="T[] ToArray()" />
+      <method signature="System.Collections.Generic.List`1&lt;T&gt; ToList()" />
+      <method name="Dispose" />
+    </type>
+    <type fullname="System.Collections.Generic.SegmentedArrayBuilder`1/ScratchBuffer">
+      <field name="_item" />
     </type>
   </assembly>
 </linker>

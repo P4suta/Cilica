@@ -53,6 +53,7 @@
           Inputs="@(IntermediateAssembly)" Outputs="@(IntermediateAssembly -> '%(Identity).bak')">
     <Message Text="Cilica: optimizing %(IntermediateAssembly.FullPath)" Importance="high" />
     <Exec
+      IgnoreExitCode="true"
       WorkingDirectory="$(TargetDir)"
       Command='dotnet "$(CliOptimizerPath)" -i "%(IntermediateAssembly.FullPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)'
     />
@@ -148,7 +149,10 @@
     <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_CilicaOutputPath)'))" />
     <Delete Files="$([System.IO.Path]::ChangeExtension('$(_CilicaOutputPath)', '.pdb'))" />
     <Message Text="Cilica: optimizing $(_CilicaInputPath)" Importance="high" />
-    <Exec Command='dotnet "$(CliOptimizerPath)" -i "$(_CilicaInputPath)" -o "$(_CilicaOutputPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)' />
+    <Exec
+      IgnoreExitCode="true"
+      Command='dotnet "$(CliOptimizerPath)" -i "$(_CilicaInputPath)" -o "$(_CilicaOutputPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)'
+    />
   </Target>
 
   <Target Name="_GetCilicaOutputs">
