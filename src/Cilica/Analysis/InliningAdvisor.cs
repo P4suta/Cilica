@@ -101,10 +101,14 @@ public class InliningAdvisor : IGlobalAnalysis
         if (method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method) ||
             method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return InlineRejectReason.Ineligible;
 
-        // Publish-time feature substitution and analysis require the getter call.
-        if (method.DeclaringType.Properties.Any(property => property.Getter == method &&
-            (property.HasCustomAttrib("System.Diagnostics.CodeAnalysis", "FeatureSwitchDefinitionAttribute") ||
-             property.HasCustomAttrib("System.Diagnostics.CodeAnalysis", "FeatureGuardAttribute")))) {
+        // Feature substitutions and trimming dependencies attach to this metadata.
+        if (HasTrimmingContract(method.GetCustomAttribs()) ||
+            HasTrimmingContract(method.ReturnParam.GetCustomAttribs()) ||
+            method.Params.Any(parameter => HasTrimmingContract(parameter.GetCustomAttribs())) ||
+            method.GenericParams.Any(parameter => HasTrimmingContract(parameter.CustomAttribs)) ||
+            HasTrimmingContract(method.DeclaringType.GetCustomAttribs()) ||
+            method.DeclaringType.GenericParams.Any(parameter => HasTrimmingContract(parameter.CustomAttribs)) ||
+            method.DeclaringType.Properties.Any(property => (property.Getter == method || property.Setter == method) && HasTrimmingContract(property.GetCustomAttribs()))) {
             return InlineRejectReason.Ineligible;
         }
 
@@ -136,6 +140,14 @@ public class InliningAdvisor : IGlobalAnalysis
 
         return InlineRejectReason.Accepted;
     }
+
+    private bool HasTrimmingContract(IList<CustomAttrib> attributes)
+        => attributes.Any(attribute => (attribute.Type.Namespace, attribute.Type.Name) switch {
+            ("System.Diagnostics.CodeAnalysis", "FeatureSwitchDefinitionAttribute" or "FeatureGuardAttribute") => true,
+            ("System.Diagnostics.CodeAnalysis", "DynamicallyAccessedMembersAttribute" or "DynamicDependencyAttribute") or
+            ("System.Runtime.CompilerServices", "PreserveDependencyAttribute") => _comp.Settings.PreserveTrimmingDependencies,
+            _ => false
+        });
 
     private (InlineRejectReason Reason, FunctionMetrics? Metrics) ComputeMetrics(MethodBody method)
     {

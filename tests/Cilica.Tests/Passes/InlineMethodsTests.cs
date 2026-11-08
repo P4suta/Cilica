@@ -25,9 +25,11 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     }
 
     [Theory]
-    [InlineData(false)]
-    [InlineData(true)]
-    public void FeatureGettersRemainSubstitutableAfterOptimization(bool featureGuard)
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void FeatureGettersRemainSubstitutableAfterOptimization(bool featureGuard, bool preserveDependencies)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
         var type = body.Definition.DeclaringType;
@@ -48,7 +50,10 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
         builder.SetBranch(builder.CreateCall(getter), enabled, disabled);
         enabled.SetBranch(new ReturnInst(ConstInt.CreateI(42)));
         disabled.SetBranch(new ReturnInst(ConstInt.CreateI(0)));
-        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() { VerifyEachPass = true });
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            VerifyEachPass = true,
+            PreserveTrimmingDependencies = preserveDependencies
+        });
 
         var result = CompilationPipeline.CreateDefault(compilation).Run([getter, body.Definition]);
 

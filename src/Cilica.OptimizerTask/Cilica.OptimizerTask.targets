@@ -26,6 +26,7 @@
 
     <PropertyGroup>
       <CliOptimizerPath Condition="'$(CliOptimizerPath)' == ''">$(MSBuildThisFileDirectory)../tools/net10.0/Cilica.Cli.dll</CliOptimizerPath>
+      <CilicaExtraArgs Condition="'$(PublishTrimmed)' == 'true' or '$(PublishAot)' == 'true'">$(CilicaExtraArgs) --trimmer-compat</CilicaExtraArgs>
 
       <!-- Trailing slashes are removed to prevent issues with argument splitting. -->
       <JoinedAsmRefPaths>@(AsmRefPaths -> '"%(Identity)"', ' ')</JoinedAsmRefPaths>

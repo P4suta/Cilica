@@ -50,7 +50,10 @@ static void RunOptimizer(OptimizerOptions options)
 
     var module = resolver.Load(options.InputPath);
 
-    var comp = new Compilation(module, logger, new CompilationSettings() { VerifyEachPass = options.VerifyEachPass });
+    var comp = new Compilation(module, logger, new CompilationSettings() {
+        VerifyEachPass = options.VerifyEachPass,
+        PreserveTrimmingDependencies = options.PreserveTrimmingDependencies
+    });
     var compilationResult = RunPasses(options, comp);
 
     if (options.Strict && !compilationResult.Succeeded) {
