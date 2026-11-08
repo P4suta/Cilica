@@ -630,7 +630,7 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void CoreLibInliningPreservesTypeAccessBoundaries(bool corelib, bool sameType)
+    public void InliningPreservesCoreLibCallsAndOtherAssemblyAccess(bool corelib, bool sameType)
     {
         using var resolver = new ModuleResolver();
         resolver.AddTrustedSearchPaths();
@@ -651,7 +651,7 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
         PassRunner.Run(new InlineMethods(), new MethodTransformContext(compilation, caller.Body));
         compilation.EnsureReferencedMembersAccessible(caller.Body);
 
-        Assert.Equal(corelib && !sameType, call.Block != null);
+        Assert.Equal(corelib, call.Block != null);
         Assert.Equal(!corelib && !sameType, module.GetCustomAttribs(forAssembly: true)
             .Any(attribute => attribute.Type.Name == "IgnoresAccessChecksToAttribute"));
     }

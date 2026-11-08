@@ -8,8 +8,7 @@ public sealed class RuntimeLibrary(ModuleResolver resolver)
 {
     public ModuleResolver Resolver { get; } = resolver;
 
-    // Retain calls whose contracts are consumed by simplification, LINQ expansion,
-    // list presizing, or vectorization instead of exposing their runtime bodies.
+    // LINQ expansion consumes these calls directly.
     internal bool IsOptimizationIntrinsic(MethodDef method)
     {
         var type = method.DeclaringType;
@@ -25,21 +24,14 @@ public sealed class RuntimeLibrary(ModuleResolver resolver)
                 _ => false
             };
         }
-        if (!type.IsCorelibType()) return false;
-
-        return (type.Namespace, type.Name, method.Name) switch {
-            ("System", "Math" or "MathF", _) => ConstFolding.IsMathIntrinsic(method),
-            ("System", "String", "GetPinnableReference") => true,
-            ("System", "String", _) => ConstFolding.IsStringIntrinsic(method),
-            ("System", "Type", "GetTypeFromHandle" or "op_Equality") => true,
-            ("System", "Span`1" or "ReadOnlySpan`1", "get_Length" or "get_Item" or "GetPinnableReference") => true,
-            ("System.Collections.Generic", "List`1", "Add" or "ToArray" or "get_Count" or "get_Item") => true,
-            ("System.Collections.Generic", "Dictionary`2", "ContainsKey" or "get_Item") => true,
-            ("System.Runtime.InteropServices", "MemoryMarshal", "GetArrayDataReference") => true,
-            ("System.Runtime.CompilerServices", "RuntimeHelpers", "IsReferenceOrContainsReferences") => true,
-            _ => false
-        };
+        return false;
     }
+
+    // The trimmer uses the accessor to retain its declaring property's metadata.
+    internal bool IsTrimmingIntrinsic(MethodDef method)
+        => method.DeclaringType is { Namespace: "System.Linq.Expressions", Name: "Expression" } &&
+           method.Module == Resolver.Resolve("System.Linq.Expressions") && method.Name == "Property" &&
+           method.ParamSig is [_, { Type: var accessor }] && accessor.IsCorelibType(typeof(System.Reflection.MethodInfo));
 
     /// <summary> Whether the sequence uses mutable indexed storage with library-specific iteration rules. </summary>
     public static bool IsMutableIndexedSequence(TypeDesc type)

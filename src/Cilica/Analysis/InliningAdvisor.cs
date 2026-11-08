@@ -98,7 +98,8 @@ public class InliningAdvisor : IGlobalAnalysis
 
     public InlineRejectReason EarlyCheck(MethodDef method)
     {
-        if (method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method) ||
+        if (method.Module == _comp.Resolver.CoreLib || method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method) ||
+            _comp.Settings.PreserveTrimmingDependencies && _comp.Runtime.IsTrimmingIntrinsic(method) ||
             method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return InlineRejectReason.Ineligible;
 
         // Feature substitutions and trimming dependencies attach to this metadata.

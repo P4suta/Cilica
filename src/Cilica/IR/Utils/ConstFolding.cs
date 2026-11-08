@@ -364,7 +364,7 @@ public class ConstFolding
         return null;
     }
 
-    internal static bool IsMathIntrinsic(MethodDef method)
+    private static bool IsMathIntrinsic(MethodDef method)
         => method.Name is ("Sqrt" or "Cbrt" or "Log" or "Log2" or "Log10" or "Exp" or
             "Floor" or "Ceiling" or "Truncate" or "Abs" or "Sin" or "Cos" or "Tan" or
             "Asin" or "Acos" or "Atan" or "Asinh" or "Acosh" or "Atanh" or "Atan2" or
@@ -372,7 +372,7 @@ public class ConstFolding
            method.ParamSig.All(parameter => parameter.Type.Kind is >= TypeKind.SByte and <= TypeKind.Double ||
                parameter.Type.IsCorelibType(typeof(MidpointRounding)));
 
-    internal static bool IsStringIntrinsic(MethodDef method)
+    private static bool IsStringIntrinsic(MethodDef method)
         => method.Name switch {
             "get_Length" or "get_Chars" => true,
             "Concat" => method.ParamSig.All(parameter => parameter.Type == PrimType.String || parameter.Type == PrimType.Object),
