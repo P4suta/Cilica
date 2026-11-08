@@ -2,16 +2,24 @@ namespace Cilica.IR;
 
 public abstract class CilIntrinsic : IntrinsicInst
 {
-    /// <summary> Invokes an initialization helper whose call is preserved for the runtime JIT. </summary>
-    public class Initialization(MethodDefOrSpec helper) : CilIntrinsic(PrimType.Void, [helper], [])
+    /// <summary> Ensures type or module initialization through a helper or the runtime API. </summary>
+    public class Initialization : CilIntrinsic
     {
-        public MethodDefOrSpec Helper => (MethodDefOrSpec)StaticArgs[0];
-        public override ILCode Opcode => ILCode.Call;
+        public EntityDesc Target => StaticArgs[0];
+        public MethodDefOrSpec? Helper => Target as MethodDefOrSpec;
+        public bool IsModule { get; }
+        public override string Name => Helper != null ? nameof(Initialization) : IsModule ? "ModuleInitialization" : "TypeInitialization";
+        public override ILCode Opcode => ILCode.Nop;
         public override bool HasSideEffects => true;
         public override bool MayThrow => true;
         public override bool MayReadFromMemory => true;
         public override bool MayWriteToMemory => true;
         public override bool IsMemoryBarrier => true;
+
+        public Initialization(MethodDefOrSpec helper) : base(PrimType.Void, [helper], []) { }
+
+        public Initialization(TypeDesc type, bool module = false) : base(PrimType.Void, [type], [])
+            => IsModule = module;
     }
 
     /// <summary> Produces default(T) without exposing temporary storage in the optimization IR. </summary>

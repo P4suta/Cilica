@@ -34,6 +34,28 @@ internal sealed class CilPreparation
     private static void Legalize(MethodBody method)
     {
         foreach (var inst in method.Instructions().ToArray()) {
+            if (inst is CilIntrinsic.Initialization initialization) {
+                // Keep handle lookups inside the initialization operation until
+                // code generation so redundant checks eliminate the entire chain.
+                var init = new IRBuilder(inst, InsertionDir.Before).SetNextDebugLocation(inst.DebugLocation);
+                if (initialization.Helper is { } helper) {
+                    init.CreateCall(helper);
+                } else {
+                    var resolver = init.Resolver;
+                    Value handle = init.Emit(new CilIntrinsic.LoadHandle(resolver, initialization.Target));
+                    if (initialization.IsModule) {
+                        var typeClass = resolver.Import(typeof(Type));
+                        var type = init.CreateCall(typeClass.FindMethod("GetTypeFromHandle"), handle);
+                        var module = init.CreateCallVirt(typeClass.FindMethod("get_Module", searchBaseAndItfs: true), type);
+                        handle = init.CreateCallVirt(resolver.Import(typeof(System.Reflection.Module)).FindMethod("get_ModuleHandle"), module);
+                    }
+                    var runtimeHelper = resolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers)).FindMethod(
+                        initialization.IsModule ? "RunModuleConstructor" : "RunClassConstructor", new MethodSig(PrimType.Void, [handle.ResultType]));
+                    init.CreateCall(runtimeHelper, handle);
+                }
+                inst.Remove();
+                continue;
+            }
             if (inst is CilIntrinsic.RefCast { ResultType: ByrefType } cast) {
                 // A typed CIL local establishes the managed reference's GC tracking.
                 var conversion = new IRBuilder(cast, InsertionDir.Before).SetNextDebugLocation(cast.DebugLocation);

@@ -240,8 +240,8 @@ public class ValueNumbering : IMethodPass
             hash: (inst) => HashCode.Combine(inst.DestType, inst.Args[0])
         );
         Reg<CilIntrinsic.Initialization>(
-            comp: (a, b) => a.Helper.Definition == b.Helper.Definition && a.Helper.DeclaringType == b.Helper.DeclaringType,
-            hash: (inst) => HashCode.Combine(inst.Helper.Definition, inst.Helper.DeclaringType)
+            comp: (a, b) => InitializationKey(a).Equals(InitializationKey(b)),
+            hash: (inst) => InitializationKey(inst).GetHashCode()
         );
 
         // Volatile accesses are excluded by the value table.
@@ -271,6 +271,13 @@ public class ValueNumbering : IMethodPass
             });
         }
     }
+
+    private static (object Target, TypeDesc? Instantiation, bool Module) InitializationKey(CilIntrinsic.Initialization inst)
+        => inst.Target switch {
+            MethodDefOrSpec helper => (helper.Definition, helper.DeclaringType, false),
+            TypeDefOrSpec type when inst.IsModule => (type.Module, null, true),
+            var type => (type, null, inst.IsModule)
+        };
 
     class InstTagger
     {

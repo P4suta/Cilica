@@ -145,6 +145,7 @@ internal sealed class InliningSizeBudget(MethodTransformContext context, int ins
             size += inst switch {
                 SwitchInst table => 10 + 4L * table.NumTargets,
                 PhiInst phi => 13L * phi.NumArgs,
+                CilIntrinsic.Initialization { IsModule: true } => 32,
                 _ => 16
             };
             if (inst.HasResult) size += 4;

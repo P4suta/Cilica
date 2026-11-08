@@ -284,7 +284,7 @@ public class IRCloner
         {
             // ldtoken of a generic definition means typeof(G<>), even when
             // cloning into a generic context. Only constructed tokens substitute.
-            var staticArgs = inst is CilIntrinsic.LoadHandle { StaticArgs: [TypeDef] }
+            var staticArgs = inst is (CilIntrinsic.LoadHandle or CilIntrinsic.Initialization) and { StaticArgs: [TypeDef] }
                 ? inst.StaticArgs.ToArray() : RemapEntities(inst.StaticArgs);
             var cloned = inst.CloneWith(Remap(inst.ResultType), staticArgs, RemapArgs(inst.Args));
             var folded = _ctx._foldConstants ? ConstFolding.FoldIntrinsic(cloned) : null;

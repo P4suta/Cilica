@@ -266,7 +266,6 @@ partial class ILGenerator
                 break;
             }
             case ILCode.Isinst:
-            case ILCode.Call:
             case ILCode.Box:
             case ILCode.Ldtoken:
             case ILCode.Mkrefany:

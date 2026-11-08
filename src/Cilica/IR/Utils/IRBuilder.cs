@@ -214,24 +214,12 @@ public class IRBuilder
     public Instruction CreateNullCheck(Value value) => Emit(new CilIntrinsic.NullCheck(value));
 
     /// <summary> Ensures that the type initializer has completed before subsequent instructions execute. </summary>
-    public CallInst CreateTypeInitialization(TypeDesc type)
-    {
-        var helper = Resolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers))
-            .FindMethod("RunClassConstructor", new MethodSig(PrimType.Void, [Resolver.SysTypes.RuntimeTypeHandle]));
-        return CreateCall(helper, Emit(new CilIntrinsic.LoadHandle(Resolver, type)));
-    }
+    public CilIntrinsic.Initialization CreateTypeInitialization(TypeDesc type)
+        => Emit(new CilIntrinsic.Initialization(type));
 
     /// <summary> Ensures the defining module is initialized before an inlined cross-module call. </summary>
-    public CallInst CreateModuleInitialization(TypeDesc type)
-    {
-        var typeClass = Resolver.Import(typeof(Type));
-        var typeObject = CreateCall(typeClass.FindMethod("GetTypeFromHandle"), Emit(new CilIntrinsic.LoadHandle(Resolver, type)));
-        var module = CreateCallVirt(typeClass.FindMethod("get_Module", searchBaseAndItfs: true), typeObject);
-        var handle = CreateCallVirt(Resolver.Import(typeof(System.Reflection.Module)).FindMethod("get_ModuleHandle"), module);
-        var helper = Resolver.Import(typeof(System.Runtime.CompilerServices.RuntimeHelpers))
-            .FindMethod("RunModuleConstructor", new MethodSig(PrimType.Void, [handle.ResultType]));
-        return CreateCall(helper, handle);
-    }
+    public CilIntrinsic.Initialization CreateModuleInitialization(TypeDesc type)
+        => Emit(new CilIntrinsic.Initialization(type, module: true));
 
     /// <summary> Searches for <paramref name="methodName"/> in the instance object type (first argument), and creates a callvirt instruction for it. </summary>
     public CallInst CreateCallVirt(string methodName, params Value[] args)

@@ -134,8 +134,7 @@ public class IRVerifier
                     CheckArguments(allocation, allocation.Constructor, allocation.Args, 1);
                     break;
                 }
-            case CilIntrinsic.Initialization initialization: {
-                    var helper = initialization.Helper;
+            case CilIntrinsic.Initialization { Helper: { } helper } initialization: {
                     Check(helper.IsStatic && !helper.IsGeneric && helper.ParamSig.Count == 0 && helper.ReturnType == PrimType.Void,
                         initialization, "Initialization helper must be a non-generic static void method without parameters");
                     break;
