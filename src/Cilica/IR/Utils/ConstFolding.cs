@@ -310,26 +310,13 @@ public class ConstFolding
     // bool Type.op_Equality(Type a, Type b)
     private static bool? FoldTypeEquality(Value arg1, Value arg2)
     {
-        var typeA = UnwrapType(arg1);
-        var typeB = UnwrapType(arg2);
+        var typeA = TypeUtils.GetReflectedType(arg1);
+        var typeB = TypeUtils.GetReflectedType(arg2);
 
         if (typeA == null || typeB == null) return null;
         if ((typeA.IsUnboundGeneric || typeB.IsUnboundGeneric) && typeA != typeB) return null;
 
         return TypeUtils.GetRuntimeType(typeA) == TypeUtils.GetRuntimeType(typeB);
-
-        static TypeDesc? UnwrapType(Value obj)
-        {
-            if (obj is not CallInst call) return null;
-
-            if (call.Method.Name == "GetTypeFromHandle" && call.Method.DeclaringType.IsCorelibType(typeof(Type))) {
-                return (call.Args[0] as CilIntrinsic.LoadHandle)?.StaticArgs[0] as TypeDesc;
-            }
-            if (call.Method.Name == "GetType" && call.Method.DeclaringType == PrimType.Object) {
-                return TypeUtils.HasConcreteType(call.Args[0]) ? call.Args[0].ResultType : null;
-            }
-            return null;
-        }
     }
 
     public static Value? FoldIntrinsic(IntrinsicInst intrin)

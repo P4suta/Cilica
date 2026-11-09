@@ -76,6 +76,21 @@ public static class TypeUtils
             : type;
     }
 
+    /// <summary> Resolves a runtime Type value produced by typeof or an exact-type object. </summary>
+    internal static TypeDesc? GetReflectedType(Value value)
+    {
+        if (value is not CallInst call) return null;
+        if (call.Method.Name == "GetTypeFromHandle" && call.Method.DeclaringType.IsCorelibType(typeof(Type)) &&
+            call.Args is [CilIntrinsic.LoadHandle { StaticArgs: [TypeDesc type] }]) {
+            return type;
+        }
+        if (call.Method.Name == "GetType" && call.Method.DeclaringType == PrimType.Object &&
+            call.Args is [var receiver] && HasConcreteType(receiver)) {
+            return receiver.ResultType;
+        }
+        return null;
+    }
+
     /// <summary> Checks if the given value has a concrete result object type (it's statically known). </summary>
     public static bool HasConcreteType(Value obj)
     {

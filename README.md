@@ -11,7 +11,7 @@ Cilica is a continuation of [DistIL](https://github.com/dubiousconst282/DistIL).
 Try [Cilica Lab](https://hez2010.github.io/CilicaLab/) in your browser to explore optimization passes, control-flow graphs, and generated code.
 
 # Notable Features
-- [SSA-based Intermediate Representation](https://github.com/hez2010/Cilica/blob/main/docs/api-walkthrough.md)
+- [SSA-based Intermediate Representation](docs/api-walkthrough.md)
 - Linq Expansion
 - Loop Strength Reduction
 - Loop Vectorization
@@ -20,7 +20,7 @@ Try [Cilica Lab](https://hez2010.github.io/CilicaLab/) in your browser to explor
 - Method Inlining
 - Scalar Replacement
 
-See [Optimization Passes](https://github.com/hez2010/Cilica/blob/main/docs/opt-list.md) for a detailed list of optimizations passes available.
+See [Optimization Passes](docs/opt-list.md) for a detailed list of optimizations passes available.
 
 ```powershell
 Cilica.Cli -i input/MyLibrary.dll -o output/MyLibrary.dll

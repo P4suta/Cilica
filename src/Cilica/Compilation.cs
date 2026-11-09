@@ -161,7 +161,7 @@ public partial class Compilation
         return new InliningAccess(caller.DeclaringType, ignoreVisibility: Module != Resolver.CoreLib).CheckBody(body, scalarReplacement);
     }
 
-    private bool WrapsNonExceptions(ModuleDef module)
+    internal bool WrapsNonExceptions(ModuleDef module)
     {
         if (!_exceptionWrapping.TryGetValue(module, out bool wraps)) {
             wraps = module.GetCustomAttribs(forAssembly: true).Find(typeof(RuntimeCompatibilityAttribute))
@@ -171,7 +171,7 @@ public partial class Compilation
         return wraps;
     }
 
-    private static bool IsFrameSensitive(MethodDesc method)
+    internal static bool IsFrameSensitive(MethodDesc method)
     {
         if (method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return true;
         var type = method.DeclaringType;

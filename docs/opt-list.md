@@ -5,6 +5,7 @@
 - [Loop Vectorization](#loop-vectorization)
 - [Pre-size Lists / Array Builder Opts](#pre-size-lists--array-builder-opts)
 - [Scalar Replacement](#scalar-replacement)
+- [Reflection Folding](#reflection-folding)
 - [Algebraic Simplification](#algebraic-simplification)
 - [Common Sub-expression Elimination](#common-sub-expression-elimination)
 - [Assertion Propagation](#assertion-propagation)
@@ -97,7 +98,7 @@ Direct `source.Sum()` calls without a preceding stage retain the runtime's speci
 
 ### Benchmarks
 
-[Source](/tests/Benchmarks/LinqExpansion.cs). These workloads include mutable-list queries, a string predicate count, and a LINQ ray tracer. Their results measure the complete default pipeline together with the runtime JIT, rather than one isolated pass.
+[Source](../tests/Benchmarks/LinqExpansion.cs). These workloads include mutable-list queries, a string predicate count, and a LINQ ray tracer. Their results measure the complete default pipeline together with the runtime JIT, rather than one isolated pass.
 
 | Method         | Toolchain          | ElemCount |       Mean |      Error |     StdDev | Ratio | RatioSD |
 | -------------- | ------------------ | --------- | ---------: | ---------: | ---------: | ----: | ------: |
@@ -366,7 +367,7 @@ An empty source does not access the destination. A short destination receives th
 
 ### Benchmarks
 
-[Source](/tests/Benchmarks/AutoVectorization.cs). `CountLetters` uses vector character comparisons and population counts; `GenerateFloats` vectorizes its pointwise arithmetic. `GenerateInts` retains scalar integer `Abs` to preserve overflow exceptions. `NormalizeFloats` retains its scalar floating-point min/max reduction and vectorizes its pointwise normalization loop.
+[Source](../tests/Benchmarks/AutoVectorization.cs). `CountLetters` uses vector character comparisons and population counts; `GenerateFloats` vectorizes its pointwise arithmetic. `GenerateInts` retains scalar integer `Abs` to preserve overflow exceptions. `NormalizeFloats` retains its scalar floating-point min/max reduction and vectorizes its pointwise normalization loop.
 
 | Method          | Toolchain          | ElemCount |        Mean |     Error |    StdDev | Ratio | Code Size |
 | --------------- | ------------------ | --------- | ----------: | --------: | --------: | ----: | --------: |
@@ -458,7 +459,7 @@ An `IReadOnlyList<T>` parameter alone does not establish the same contract: its 
 
 ### Benchmarks
 
-[Source](/tests/Benchmarks/ListArrayBuilding.cs). `DirectArray_Gen` provides a direct-allocation reference; `DynamicList_Gen` exercises a counting loop; `DynamicList_Enumer` intentionally enumerates through `IReadOnlyList<int>`.
+[Source](../tests/Benchmarks/ListArrayBuilding.cs). `DirectArray_Gen` provides a direct-allocation reference; `DynamicList_Gen` exercises a counting loop; `DynamicList_Enumer` intentionally enumerates through `IReadOnlyList<int>`.
 
 | Method             | Toolchain          | Count |         Mean |      Error |     StdDev | Ratio | RatioSD |   Gen0 |   Gen1 | Allocated | Alloc Ratio |
 | ------------------ | ------------------ | ----- | -----------: | ---------: | ---------: | ----: | ------: | -----: | -----: | --------: | ----------: |
@@ -533,6 +534,29 @@ public static int SROA_ClassEnumerator(int[] array)
 ```
 
 The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding. Constructor expansion follows the [inlining size policy](#inlining-policy), so an eligible allocation can remain when expanding its constructor would exceed the caller's budget.
+
+## Reflection Folding
+
+Statically known reflection accesses can become field loads, field stores, method calls, delegate construction, and function-pointer loads. Property accesses call their getters or setters. The default pipeline applies reflection folding before inlining and revisits accesses after inlining exposes constant types and member names.
+
+The pass recognizes closed `typeof(T)` values and exact-type `GetType()` results, followed by `GetField`, `GetMethod`, or `GetProperty` with a constant name and optional constant binding flags. Supported flags are `Public`, `NonPublic`, `Instance`, `Static`, and `DeclaredOnly`. A lookup must identify one declared member; inherited members and names that collide with base members remain reflective unless `DeclaredOnly` excludes the base members.
+
+| Operation | Eligible accesses |
+| --- | --- |
+| `FieldInfo.GetValue` | Accessible fields whose values can be boxed or returned as object references |
+| `FieldInfo.SetValue` | Mutable, accessible fields with compatible reference values or exactly typed boxed values; 64-bit numeric and struct stores remain reflective |
+| `MethodInfo.Invoke` | Nongeneric methods with compatible arguments supplied through `null`, `Array.Empty<object>()`, or a local argument array whose contents are known at invocation |
+| `PropertyInfo.GetValue` / `SetValue` | Non-indexed properties with an accessible accessor and compatible values |
+| `MethodInfo.CreateDelegate` / `Delegate.CreateDelegate` | Known delegate types and methods with matching signatures, including generic `CreateDelegate<T>()` overloads and the `MethodInfo`-based static factory overloads |
+| `MethodInfo.MethodHandle` / `RuntimeMethodHandle.GetFunctionPointer` | Known static methods; pointer lookup requires a local handle whose value is established and cannot be changed through an alias |
+
+Instance accesses require a receiver proven non-null and compatible with the declaring type. Boxed struct receivers retain their identity and mutations. Method calls preserve virtual dispatch, boxed results, and `TargetInvocationException` wrapping; the full `Invoke` overload also supports `BindingFlags.DoNotWrapExceptions` with null binder and culture arguments. Invocations requiring wrapping remain reflective inside exception filters or when the caller's non-Exception wrapping policy differs from the runtime library's policy. Reflective invocation with unsupported conversions, possible `Type.Missing` arguments, custom binders, `ref`/`out` parameters, or unresolved receivers retains its runtime calls.
+
+Delegate folding supports open static and instance methods, closed instance methods with proven non-null receivers, and static methods bound to a reference-type first argument, including null. Parameter and return signatures must match exactly; compatible `ref` parameters and returns are supported. Virtual dispatch, captured object identity, and delegate-type initialization are preserved. Closed null instance targets, signature variance, and name-based factory overloads remain reflective. Subsequent optimizations can turn eligible delegate invocations into direct calls.
+
+Function-pointer folding preserves managed calling conventions and unmanaged entry points for methods marked `UnmanagedCallersOnly`. Instance method handles, generic method definitions, and pointer lookups through reassigned or exposed local handles remain reflective. These pointers retain the initialization behavior of taking a method address; target type initialization occurs when required by invocation.
+
+Unused member-discovery calls are removed when their successful lookup is established. Discovery remains when other code observes the metadata or `CompilationSettings.PreserveTrimmingDependencies` is enabled. A `GetType()` call on a potentially null receiver retains its null check even when a subsequent static access folds.
 
 ## Algebraic Simplification
 
