@@ -9,7 +9,7 @@ public static class TypeUtils
     public static bool RequiresTypeInitialization(this TypeDesc type, bool fieldAccess = false)
         => fieldAccess && type.RequiresModuleInitialization() || type is TypeDefOrSpec def &&
            (fieldAccess || !def.Attribs.HasFlag(TypeAttributes.BeforeFieldInit)) &&
-           def.Methods.Any(m => m.Name == ".cctor");
+           def.Definition.HasStaticConstructor;
 
     /// <summary> Whether this type's module requires initialization before use. </summary>
     public static bool RequiresModuleInitialization(this TypeDesc type)
@@ -17,8 +17,8 @@ public static class TypeUtils
 
     /// <summary> Whether this module requires initialization before use. </summary>
     public static bool RequiresModuleInitialization(this ModuleDef module)
-        => !module.Resolver.SkipModuleInitializers && module.TypeDefs.FirstOrDefault(candidate => candidate.Name == "<Module>")
-            ?.Methods.Any(method => method.Name == ".cctor") == true;
+        => !module.Resolver.SkipModuleInitializers &&
+           module.FindType(null, "<Module>", includeExports: false)?.HasStaticConstructor == true;
 
     /// <summary> Whether invoking this method can run its declaring type's initializer. </summary>
     /// <remarks> Constructors (including base constructor calls), static methods, and value-type or interface instance methods trigger precise initialization. </remarks>
