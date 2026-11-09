@@ -45,6 +45,15 @@ public static unsafe class ReflectionDelegateCases
         return action == expected && action.Method == expected.Method && ReferenceEquals(action.Target, target);
     }
 
+    public static object DeclaredVirtualIdentity()
+    {
+        var target = new Target();
+        var action = typeof(Target).GetMethod(nameof(Target.Read), BindingFlags.Public | BindingFlags.Instance | BindingFlags.DeclaredOnly)!
+            .CreateDelegate<Func<int>>(target);
+        Func<int> expected = target.Read;
+        return action == expected && action.Method == expected.Method && ReferenceEquals(action.Target, target);
+    }
+
     public static object BoxedVirtual()
         => typeof(object).GetMethod(nameof(ToString))!.CreateDelegate<Func<string>>(new Counter { Value = 42 })();
 

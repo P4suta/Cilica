@@ -16,7 +16,7 @@ partial class FoldReflectionTests
     [InlineData("OpenInstance", 42)]
     [InlineData("OpenVirtual", 42)]
     [InlineData("ClosedVirtual", 42)]
-    [InlineData("ClosedVirtualIdentity", true)]
+    [InlineData("DeclaredVirtualIdentity", true)]
     [InlineData("BoxedVirtual", "42")]
     [InlineData("ClosedStatic", 42)]
     [InlineData("ClosedStaticNull", 42)]
@@ -51,6 +51,18 @@ partial class FoldReflectionTests
             Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => IsReflectionFactory(instruction.Operand));
             Assert.Equal(expected, test.Emit().Invoke(null, null));
         }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void ClosedVirtualDelegatesPreserveMethodIdentity(bool defaultPipeline)
+    {
+        using var test = new Case("ClosedVirtualIdentity", "ReflectionDelegateCases");
+        var expected = test.Original.Invoke(null, null);
+        test.Optimize(defaultPipeline: defaultPipeline);
+        Assert.Contains(test.Method.ILBody!.Instructions, instruction => IsReflectionFactory(instruction.Operand));
+        Assert.Equal(expected, test.Emit().Invoke(null, null));
     }
 
     [Theory]
