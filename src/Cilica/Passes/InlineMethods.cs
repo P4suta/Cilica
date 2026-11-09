@@ -47,7 +47,7 @@ public class InlineMethods : IMethodPass
             long revision = ctx.Method.Revision;
             PassRunner.Run(devirtualize, ctx);
 
-            while (HasBudget() && worklist.TryDequeue(out var call)) {
+            while (HasWorkBudget() && worklist.TryDequeue(out var call)) {
                 var ancestors = ancestry[call];
                 if (call.Block?.Method == null) continue;
                 if (call.IsTailCall || call.IsReadOnly || ancestors.Length >= _opts.MaxDepth) {
@@ -104,7 +104,7 @@ public class InlineMethods : IMethodPass
             // Expose concrete receivers and delegate targets hidden by the
             // locals, return phis, and branches introduced by inlining.
             InliningSizeBudget.Cleanup(ctx, simplify);
-            if (!HasBudget()) {
+            if (!HasWorkBudget()) {
                 PassRunner.Run(devirtualize, ctx);
                 break;
             }
@@ -118,7 +118,8 @@ public class InlineMethods : IMethodPass
         advisor.InvalidateMetrics(ctx.Method);
         return MethodInvalidations.Everything;
 
-        bool HasBudget() => budget > 0 && expansions < _opts.MaxExpansions && sizeBudget.HasBudget;
+        // Exhausting profitability credit still permits free specialization.
+        bool HasWorkBudget() => expansions < _opts.MaxExpansions && sizeBudget.HasBudget;
 
         void EnqueueCalls()
         {
@@ -394,9 +395,9 @@ public class InlineMethods : IMethodPass
         public int InitialBudget { get; init; } = 80;
 
         /// <summary> A factor used to derive inlining budget from method's own cost. </summary>
-        public double BudgetFactor { get; init; } = 0.5;
+        public double BudgetFactor { get; init; } = 0.45;
 
-        /// <summary> For inlinees with negative cost, sets the limit to increase inlining budget. </summary>
-        public int NegativeCostLimit { get; init; } = 50;
+        /// <summary> Maximum budget credit for a negative-cost inline; zero prevents budget growth. </summary>
+        public int NegativeCostLimit { get; init; }
     }
 }

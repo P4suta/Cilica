@@ -31,21 +31,29 @@ public class InliningAdvisor : IGlobalAnalysis
             return int.MaxValue;
         }
 
-        int cost = metrics!.BaseCost;
+        // Loop duplication affects profitability, not the caller's available budget.
+        int cost = metrics!.BaseCost + (metrics.HasLoops ? 30 : 0);
+        int argumentBenefit = 0;
+        int typeBenefit = 0;
+        bool hasConstantArgs = false;
 
         for (int i = 0; i < targetBody.Args.Length; i++) {
             var argMetrics = metrics.Args[i];
-            cost -= argMetrics.BenefitIfInlined;
+            argumentBenefit += argMetrics.BenefitIfInlined;
+            hasConstantArgs |= args[i] is Const;
 
-            if (args[i] is Const) {
-                cost -= argMetrics.BenefitIfKnownConst;
-            } else if (TypeUtils.HasConcreteType(args[i])) {
-                cost -= argMetrics.BenefitIfKnownType;
+            if (TypeUtils.HasConcreteType(args[i]) && !TypeUtils.HasConcreteType(targetBody.Args[i])) {
+                typeBenefit += argMetrics.BenefitIfKnownType;
             }
         }
+        // Passing and dispatch savings do not eliminate the expanded body.
+        cost -= Math.Min(argumentBenefit, 12);
+        cost -= Math.Min(typeBenefit, 80);
+        if (hasConstantArgs) cost -= EvaluateConstantBenefit(targetBody, args);
 
-        // AggressiveInlining discounts expansion costs without reducing folding benefits.
-        return cost > 0 && targetBody.Definition.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining) ? cost / 5 : cost;
+        // Keep a profitability cost for hinted expansion without reducing folding benefits.
+        return cost > 0 && targetBody.Definition.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining)
+            ? cost / 3 : cost;
     }
 
     /// <summary> Gets or attempts to import a method body for IPO purposes. </summary>
@@ -166,21 +174,19 @@ public class InliningAdvisor : IGlobalAnalysis
         foreach (var arg in method.Args) {
             ref var argMetrics = ref metrics.Args[i++];
 
-            foreach (var user in arg.Users()) {
-                UpdateArgumentUseInfo(ref argMetrics, user);
-            }
+            UpdateArgumentUseInfo(ref argMetrics, arg, new HashSet<Instruction>());
 
-            // Larger structs are more expansive to pass by value
+            // Passing costs are a small bonus, independent of specialization.
             if (arg.ResultType is TypeDefOrSpec { IsValueType: true } type) {
-                argMetrics.BenefitIfInlined += Math.Min(type.Definition.Fields.Count * 5, 50);
+                argMetrics.BenefitIfInlined += Math.Min(type.Definition.Fields.Count(field => field.IsInstance) * 2, 12);
             }
             // Inlining functions with `out var` may enable promotion of exposed local vars
             else if (arg.Param.Attribs.HasFlag(ParameterAttributes.Out)) {
-                argMetrics.BenefitIfInlined += 25;
+                argMetrics.BenefitIfInlined += 8;
             }
             // First few arguments are passed in registers, rest on stack
             else {
-                argMetrics.BenefitIfInlined += (i > 4 ? 5 : 1);
+                argMetrics.BenefitIfInlined += (i > 4 ? 2 : 1);
             }
         }
 
@@ -207,7 +213,7 @@ public class InliningAdvisor : IGlobalAnalysis
 
             // Penalize methods with more than one block
             if (block != method.EntryBlock) {
-                metrics.BaseCost += 15;
+                metrics.BaseCost += 5;
             }
 
             // Throws suggest cold blocks.
@@ -228,40 +234,60 @@ public class InliningAdvisor : IGlobalAnalysis
         if (numReturns == 0) {
             return (InlineRejectReason.DoesNotReturn, metrics);
         }
+        metrics.HasLoops = ControlFlowFacts.HasCycle(method);
         return (InlineRejectReason.Accepted, metrics);
     }
 
-    private static void UpdateArgumentUseInfo(ref ArgumentMetrics metrics, Instruction inst, int chainLen = 0)
+    private static int EvaluateConstantBenefit(MethodBody method, ReadOnlySpan<Value> args)
     {
-        bool checkDeps = false;
-
-        // Devirt
-        if (inst is CallInst { IsVirtual: true, Method: var callTarget }) {
-            metrics.BenefitIfKnownType += callTarget.Attribs.HasFlag(MethodAttributes.Virtual) ? 130 : 80;
-        }
-        // Cast folding
-        if (inst is CilIntrinsic.CastClass or CilIntrinsic.AsInstance) {
-            metrics.BenefitIfKnownType += 30;
-            checkDeps = true;
+        var constants = new Dictionary<Value, Const>();
+        var worklist = new Queue<Instruction>();
+        var credited = new HashSet<Instruction>();
+        for (int i = 0; i < args.Length; i++) {
+            if (args[i] is not Const constant) continue;
+            constants.Add(method.Args[i], constant);
+            foreach (var user in method.Args[i].Users()) worklist.Enqueue(user);
         }
 
-        // Op folding
-        if (inst is BinaryInst or CompareInst or UnaryInst or ConvertInst or SelectInst) {
-            metrics.BenefitIfKnownConst += 10;
-            checkDeps = true;
-        }
+        int benefit = 0;
+        while (worklist.TryDequeue(out var inst)) {
+            if (inst is BranchInst { IsConditional: true } branch && ConstFolding.FoldCondition(GetValue(branch.Cond)) != null ||
+                inst is SwitchInst table && GetValue(table.TargetIndex) is ConstInt) {
+                if (credited.Add(inst)) benefit += 60;
+                continue;
+            }
+            var folded = inst switch {
+                BinaryInst b => ConstFolding.FoldBinary(b.Op, GetValue(b.Left), GetValue(b.Right)),
+                CompareInst c => ConstFolding.FoldCompare(c.Op, GetValue(c.Left), GetValue(c.Right)),
+                UnaryInst u => ConstFolding.FoldUnary(u.Op, GetValue(u.Value)),
+                ConvertInst c => ConstFolding.FoldConvert(GetValue(c.Value), c.ResultType, c.CheckOverflow, c.SrcUnsigned),
+                SelectInst s => ConstFolding.FoldSelect(GetValue(s.Cond), GetValue(s.IfTrue), GetValue(s.IfFalse)),
+                _ => null
+            };
+            if (folded == null) continue;
 
-        // Branch folding
-        if (inst is BranchInst or SwitchInst) {
-            // TODO: consider computing total number of succ blocks
-            // (might be able to guesstimate by `PostOrderNo - PreOrderNo`?)
-            metrics.BenefitIfKnownConst += 60;
+            // Credit each eliminated operation once, at its expansion cost.
+            // Only constant results can make dependent expressions constant.
+            if (credited.Add(inst)) benefit += 3;
+            if (folded is Const constant && constants.TryAdd(inst, constant)) {
+                foreach (var user in inst.Users()) worklist.Enqueue(user);
+            }
         }
+        return benefit;
 
-        // Traverse dependency chain
-        if (checkDeps && chainLen <= 8) {
-            foreach (var user in inst.Users()) {
-                UpdateArgumentUseInfo(ref metrics, user, chainLen + 1);
+        Value GetValue(Value value) => constants.TryGetValue(value, out var constant) ? constant : value;
+    }
+
+    private static void UpdateArgumentUseInfo(ref ArgumentMetrics metrics, TrackedValue value, HashSet<Instruction> visited)
+    {
+        foreach (var use in value.Uses()) {
+            if (use.OperIndex != 0 || !visited.Add(use.Parent)) continue;
+            if (use.Parent is CallInst { IsVirtual: true, IsStatic: false, Method: var target } &&
+                (target.Attribs & (MethodAttributes.Virtual | MethodAttributes.Final)) == MethodAttributes.Virtual) {
+                metrics.BenefitIfKnownType += 40;
+            } else if (use.Parent is CilIntrinsic.CastClass or CilIntrinsic.AsInstance) {
+                metrics.BenefitIfKnownType += 3;
+                UpdateArgumentUseInfo(ref metrics, use.Parent, visited);
             }
         }
     }
@@ -270,11 +296,11 @@ public class InliningAdvisor : IGlobalAnalysis
     {
         public ArgumentMetrics[] Args = [];
         public int BaseCost;
+        public bool HasLoops;
     }
     public struct ArgumentMetrics
     {
-        public int BenefitIfInlined;      // some arguments may be more expansive to pass than others, e.g. large structs.
-        public int BenefitIfKnownConst;
+        public int BenefitIfInlined;
         public int BenefitIfKnownType;
     }
 }
