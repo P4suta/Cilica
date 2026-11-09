@@ -13,7 +13,8 @@ public sealed partial class FoldReflection : IMethodPass
         long controlFlowRevision = ctx.Method.ControlFlowRevision;
         var lookups = new Dictionary<CallInst, ReflectionLookup.Result?>();
         var typeValues = new HashSet<CallInst>();
-        var access = new InliningAccess(ctx.Definition.DeclaringType);
+        var access = new InliningAccess(ctx.Definition.DeclaringType,
+            ignoreVisibility: ctx.Compilation.Module != ctx.Compilation.Resolver.CoreLib);
 
         foreach (var call in ctx.Method.Instructions().OfType<CallInst>().ToArray()) {
             if (call.IsTailCall || call.IsReadOnly || call.Constraint != null) continue;

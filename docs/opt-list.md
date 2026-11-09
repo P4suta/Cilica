@@ -541,6 +541,8 @@ Statically known reflection accesses can become field loads, field stores, metho
 
 The pass recognizes closed `typeof(T)` values and exact-type `GetType()` results, followed by `GetField`, `GetMethod`, or `GetProperty` with a constant name and optional constant binding flags. Supported flags are `Public`, `NonPublic`, `Instance`, `Static`, and `DeclaredOnly`. A lookup must identify one declared member; inherited members and names that collide with base members remain reflective unless `DeclaredOnly` excludes the base members.
 
+Non-public members and declaring types are eligible under the same access policy as inlining. When optimizing CoreLib itself, accesses that would require bypassing member visibility remain reflective.
+
 | Operation | Eligible accesses |
 | --- | --- |
 | `FieldInfo.GetValue` | Accessible fields whose values can be boxed or returned as object references |

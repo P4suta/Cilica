@@ -257,7 +257,7 @@ public static class ReflectionCases
         catch (InvalidOperationException exception) { return exception.GetType().Name; }
     }
 
-    public static object InaccessibleDirectField()
+    public static object PrivateField()
         => typeof(Target).GetField("Secret", BindingFlags.Instance | BindingFlags.NonPublic)!.GetValue(new Target())!;
 
     public static object RefArgument()
