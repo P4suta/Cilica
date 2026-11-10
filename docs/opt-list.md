@@ -533,7 +533,13 @@ public static int SROA_ClassEnumerator(int[] array)
 }
 ```
 
-The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding. Constructor expansion follows the [inlining size policy](#inlining-policy), so an eligible allocation can remain when expanding its constructor would exceed the caller's budget.
+The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding.
+
+### Scalar replacement policy
+
+`CompilationSettings.EnableScalarReplacement` controls scalar replacement independently of general method inlining and is enabled by default. Setting `EnableInlining = false` still allows eligible local allocations to be removed, including expansion of their constructors. Objects passed to remaining method calls or returned from the method are not eligible; general inlining can expose additional opportunities by bringing those uses into the same method.
+
+Constructor expansion respects `NoInlining` and the [inlining size policy](#inlining-policy), so an eligible allocation can remain when expanding its constructor would exceed the caller's budget. It can increase code size even when general method inlining is disabled.
 
 ## Reflection Folding
 
@@ -697,7 +703,7 @@ public static int ReadFromFactory() => 42;
 
 The optimizer API exposes these controls:
 
-- `CompilationSettings.EnableInlining` controls method inlining and constructor expansion, including scalar replacement. It is enabled by default.
+- `CompilationSettings.EnableInlining` controls general method inlining. It is enabled by default. [Scalar replacement](#scalar-replacement-policy) has a separate control for allocation removal and its constructor expansion.
 - `CompilationSettings.AllowCrossAssemblyIPO` permits optimizations across assembly boundaries. It is enabled by default.
 - `CompilationSettings.MaxInlinedMethodILSize` limits caller IL growth during method inlining and constructor expansion, with a default of 32 KiB. Methods already above the limit can still accept inlining that does not increase their size.
 

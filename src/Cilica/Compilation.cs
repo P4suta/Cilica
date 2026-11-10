@@ -396,8 +396,11 @@ public class CompilationSettings
     /// <summary> Whether to allow optimizations to inline or make assumptions about methods defined in other assemblies. </summary>
     public bool AllowCrossAssemblyIPO { get; init; } = true;
 
-    /// <summary> Whether to inline method bodies and expand constructors, including scalar replacement. </summary>
+    /// <summary> Whether to enable general method inlining. </summary>
     public bool EnableInlining { get; init; } = true;
+
+    /// <summary> Whether to replace eligible object allocations with scalar locals, including constructor expansion. </summary>
+    public bool EnableScalarReplacement { get; init; } = true;
 
     public bool PreserveTrimmingDependencies { get; init; }
 

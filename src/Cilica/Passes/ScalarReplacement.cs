@@ -8,7 +8,7 @@ public class ScalarReplacement : IMethodPass
 {
     public MethodPassResult Run(MethodTransformContext ctx)
     {
-        if (!ctx.Compilation.Settings.EnableInlining) return MethodInvalidations.None;
+        if (!ctx.Compilation.Settings.EnableScalarReplacement) return MethodInvalidations.None;
         var allocs = new List<NewObjInst>();
         
         // Find non-escaping object allocations
