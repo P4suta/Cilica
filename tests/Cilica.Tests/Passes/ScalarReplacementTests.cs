@@ -14,11 +14,9 @@ using MethodBody = Cilica.IR.MethodBody;
 public class ScalarReplacementTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
     [Theory]
-    [InlineData(false, false)]
-    [InlineData(false, true)]
-    [InlineData(true, false)]
-    [InlineData(true, true)]
-    public void SettingsControlScalarReplacementAndInliningIndependently(bool scalarReplacement, bool inline)
+    [InlineData(false)]
+    [InlineData(true)]
+    public void SettingsControlScalarReplacementAndInliningIndependently(bool inline)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
         var helper = body.Definition.DeclaringType.CreateMethod("Increment", PrimType.Int32,
@@ -46,14 +44,14 @@ public class ScalarReplacementTests(ModuleResolverFixture fixture) : PassTestBas
         var allocation = builder.CreateNewObj(ctor, body.Args[0]);
         builder.CreateReturn(builder.CreateCall(helper, builder.CreateFieldLoad(field, allocation)));
         var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
-            EnableInlining = inline, EnableScalarReplacement = scalarReplacement, VerifyEachPass = true
+            EnableInlining = inline, VerifyEachPass = true
         });
 
         var result = CompilationPipeline.CreateDefault(compilation).Run([body.Definition]);
 
         result.ThrowIfFailed();
         body = body.Definition.Body!;
-        Assert.Equal(!scalarReplacement, body.Instructions().Any(inst => inst is NewObjInst));
+        Assert.DoesNotContain(body.Instructions(), inst => inst is NewObjInst);
         Assert.Equal(!inline, body.Instructions().OfType<CallInst>().Any(call => call.Method == helper));
         var run = Utils.Compile<Func<int, int>>(body);
         Assert.Equal(42, run(40));

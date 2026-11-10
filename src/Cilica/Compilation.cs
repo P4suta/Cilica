@@ -399,8 +399,6 @@ public class CompilationSettings
     /// <summary> Whether to enable general method inlining. </summary>
     public bool EnableInlining { get; init; } = true;
 
-    /// <summary> Whether to replace eligible object allocations with scalar locals, including constructor expansion. </summary>
-    public bool EnableScalarReplacement { get; init; } = true;
 
     public bool PreserveTrimmingDependencies { get; init; }
 

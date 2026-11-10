@@ -1,17 +1,40 @@
 # Optimization Passes
 
-- [LINQ Expansion](#linq-expansion)
-- [Loop Strength Reduction](#loop-strength-reduction)
-- [Loop Vectorization](#loop-vectorization)
-- [Pre-size Lists / Array Builder Opts](#pre-size-lists--array-builder-opts)
-- [Scalar Replacement](#scalar-replacement)
-- [Reflection Folding](#reflection-folding)
-- [Algebraic Simplification](#algebraic-simplification)
-- [Common Sub-expression Elimination](#common-sub-expression-elimination)
-- [Assertion Propagation](#assertion-propagation)
-- [Devirtualization](#devirtualization)
-- [Method Inlining](#method-inlining)
-- [Pipeline and Compiler Benchmarks](#pipeline-and-compiler-benchmarks)
+- [Optimization Passes](#optimization-passes)
+  - [LINQ Expansion](#linq-expansion)
+    - [Examples](#examples)
+      - [Filtering and aggregation](#filtering-and-aggregation)
+      - [Fusion through helpers and checked sums](#fusion-through-helpers-and-checked-sums)
+    - [Benchmarks](#benchmarks)
+    - [Features](#features)
+  - [Loop Strength Reduction](#loop-strength-reduction)
+    - [Example](#example)
+  - [Loop Vectorization](#loop-vectorization)
+    - [Examples](#examples-1)
+      - [Predicate counts](#predicate-counts)
+      - [Generated sequences](#generated-sequences)
+      - [Runtime bounds guards](#runtime-bounds-guards)
+    - [Benchmarks](#benchmarks-1)
+    - [Features](#features-1)
+  - [Pre-size Lists / Array Builder Opts](#pre-size-lists--array-builder-opts)
+    - [Example](#example-1)
+    - [Benchmarks](#benchmarks-2)
+  - [Scalar Replacement](#scalar-replacement)
+    - [Example](#example-2)
+  - [Reflection Folding](#reflection-folding)
+    - [Example](#example-3)
+  - [Algebraic Simplification](#algebraic-simplification)
+    - [Bitwise expressions](#bitwise-expressions)
+  - [Common Sub-expression Elimination](#common-sub-expression-elimination)
+    - [Example](#example-4)
+  - [Assertion Propagation](#assertion-propagation)
+    - [Example](#example-5)
+  - [Devirtualization](#devirtualization)
+    - [Example](#example-6)
+  - [Method Inlining](#method-inlining)
+    - [Example](#example-7)
+    - [Inlining policy](#inlining-policy)
+  - [Pipeline and Compiler Benchmarks](#pipeline-and-compiler-benchmarks)
 
 Cilica also implements canonicalization, SSA promotion, control-flow simplification, and dead-code elimination. The default pipeline is defined by `CompilationPipeline.CreateDefault()`.
 
@@ -534,12 +557,6 @@ public static int SROA_ClassEnumerator(int[] array)
 ```
 
 The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding.
-
-### Scalar replacement policy
-
-`CompilationSettings.EnableScalarReplacement` controls scalar replacement and is enabled by default. Objects passed to remaining method calls or returned from the method are not eligible.
-
-Constructor expansion is subject to the caller IL size budget set by `CompilationSettings.MaxInlinedMethodILSize`, which can leave an otherwise eligible allocation intact.
 
 ## Reflection Folding
 
