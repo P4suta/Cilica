@@ -1,19 +1,16 @@
 namespace Cilica.Passes;
 
 using System.Reflection;
-using Cilica.Analysis;
 using Cilica.IR.Utils;
 
-partial class FoldReflection
+partial class ReflectionRewriter
 {
-    private static bool CanTakeMethodAddress(MethodDefOrSpec method, InliningAccess access, ReflectionTypeFacts types, bool allowAbstract = false)
-        => ReflectionTypeFacts.IsConstructedMethod(method) &&
-            method.CallConv == CallConvention.Managed && !method.IsRuntimeAsync &&
-            (!method.Attribs.HasFlag(MethodAttributes.Abstract) || allowAbstract && method.IsInstance && method.Attribs.HasFlag(MethodAttributes.Virtual)) &&
-            !(method.IsStatic && method.Attribs.HasFlag(MethodAttributes.Virtual)) &&
-            !method.DeclaringType.IsCorelibType(typeof(Nullable<>)) &&
-            types.IsBoxable(method.DeclaringType) && !Compilation.IsFrameSensitive(method) &&
-            !TypeUtils.HasClassMethodImpls(method) && access.CanUseMember(method);
+    private bool CanTakeMethodAddress(MethodDefOrSpec method, bool allowAbstract = false)
+    {
+        if (!CanReferenceMethod(method)) return false;
+        if (!method.Attribs.HasFlag(MethodAttributes.Abstract)) return true;
+        return allowAbstract && method.IsInstance && method.Attribs.HasFlag(MethodAttributes.Virtual);
+    }
 
     private static bool IsMethodHandleCall(CallInst call)
         => call.Method.ReturnType.IsCorelibType(typeof(RuntimeMethodHandle)) &&
@@ -22,19 +19,19 @@ partial class FoldReflection
     private static bool IsFunctionPointerCall(CallInst call)
         => Matches(call, typeof(RuntimeMethodHandle), "GetFunctionPointer", PrimType.IntPtr);
 
-    private static bool FoldMethodHandle(MethodTransformContext ctx, CallInst call, MethodDefOrSpec method, InliningAccess access, ReflectionTypeFacts types)
+    private bool FoldMethodHandle(CallInst call, MethodDefOrSpec method)
     {
         // Instance handles can identify unboxing or virtual entry points whose
         // receiver convention differs from an ordinary ldftn.
-        if (!method.IsStatic || !CanTakeMethodAddress(method, access, types)) return false;
-        call.ReplaceWith(new CilIntrinsic.LoadHandle(ctx.Module.Resolver, method) { DebugLocation = call.DebugLocation }, insertIfInst: true);
+        if (!method.IsStatic || !CanTakeMethodAddress(method)) return false;
+        call.ReplaceWith(new CilIntrinsic.LoadHandle(_ctx.Module.Resolver, method) { DebugLocation = call.DebugLocation }, insertIfInst: true);
         return true;
     }
 
-    private static bool FoldFunctionPointer(CallInst call, MethodDefOrSpec method, InliningAccess access, ReflectionTypeFacts types)
+    private bool FoldFunctionPointer(CallInst call, MethodDefOrSpec method)
     {
-        if (!method.IsStatic || !CanTakeMethodAddress(method, access, types)) return false;
-        var builder = new IRBuilder(call, InsertionDir.Before).SetNextDebugLocation(call.DebugLocation);
+        if (!method.IsStatic || !CanTakeMethodAddress(method)) return false;
+        var builder = BuilderBefore(call);
         // Preserve the MethodSpec so ldftn supplies an instantiating stub when
         // the shared implementation requires hidden generic-context arguments.
         call.ReplaceWith(builder.CreateConvert(builder.Emit(new FuncAddrInst(method)), PrimType.IntPtr));

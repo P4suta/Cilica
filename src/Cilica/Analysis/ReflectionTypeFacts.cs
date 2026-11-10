@@ -65,16 +65,26 @@ internal sealed class ReflectionTypeFacts(MethodDef caller)
         for (int i = 0; i < parameters.Count; i++) {
             var parameter = parameters[i];
             var argument = arguments[i];
-            if (!IsRuntimeType(argument) || argument is PointerType or FuncPtrType || argument.Kind is TypeKind.Void or TypeKind.TypedRef ||
-                MayBeByRefLike(argument) && !parameter.Attribs.HasFlag(GenericParameterAttributes.AllowByRefLike) ||
-                parameter.Attribs.HasFlag(GenericParameterAttributes.ReferenceTypeConstraint) && !IsReferenceType(argument) ||
-                parameter.Attribs.HasFlag(GenericParameterAttributes.NotNullableValueTypeConstraint) && !IsNonNullableValueType(argument) ||
-                parameter.Attribs.HasFlag(GenericParameterAttributes.DefaultConstructorConstraint) && !HasDefaultConstructor(argument)) return false;
+            if (!IsRuntimeType(argument) || argument is PointerType or FuncPtrType) return false;
+            if (argument.Kind is TypeKind.Void or TypeKind.TypedRef) return false;
+            if (!SatisfiesSpecialConstraints(parameter, argument)) return false;
 
+            // Base and interface constraints use the constructed type/method
+            // context; their generic variables may refer to other arguments.
             foreach (var constraint in parameter.Constraints) {
                 if (!IsAssignable(argument, constraint.Sig.Type.GetSpec(instantiation))) return false;
             }
         }
+        return true;
+    }
+
+    private bool SatisfiesSpecialConstraints(GenericParamType parameter, TypeDesc argument)
+    {
+        var flags = parameter.Attribs;
+        if (!flags.HasFlag(GenericParameterAttributes.AllowByRefLike) && MayBeByRefLike(argument)) return false;
+        if (flags.HasFlag(GenericParameterAttributes.ReferenceTypeConstraint) && !IsReferenceType(argument)) return false;
+        if (flags.HasFlag(GenericParameterAttributes.NotNullableValueTypeConstraint) && !IsNonNullableValueType(argument)) return false;
+        if (flags.HasFlag(GenericParameterAttributes.DefaultConstructorConstraint) && !HasDefaultConstructor(argument)) return false;
         return true;
     }
 

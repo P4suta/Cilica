@@ -34,48 +34,55 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
     {
         if (value is not CallInst call) return null;
         if (_types.TryGetValue(call, out var type)) return type;
-        type = TypeUtils.GetReflectedType(call);
-        if (type == null && call.IsVirtual && call.Method.Name == "MakeGenericType" && call.Method.DeclaringType.IsCorelibType(typeof(Type)) &&
-            call.Args.Length == 2 && ResolveType(call.Args[0]) is TypeDef { IsGeneric: true } definition &&
-            TryReadTypeArguments(call, definition.GenericParams, out var arguments, out var array) &&
-            types.SatisfiesConstraints(definition.GenericParams, arguments, new GenericContext(arguments))) {
-            type = definition.GetSpec(arguments);
-            _typeArguments.Add(call, array);
-        }
+        type = TypeUtils.GetReflectedType(call) ?? ResolveGenericType(call);
         _types.Add(call, type);
         if (type != null) _resolved.Add((call, true));
         return type;
     }
 
     private Result? ResolveMember(CallInst lookup)
+        => lookup.Method.Name switch {
+            "get_GetMethod" or "get_SetMethod" or "GetGetMethod" or "GetSetMethod"
+                when lookup.Method.DeclaringType.IsCorelibType(typeof(PropertyInfo)) => ResolveAccessor(lookup),
+            "MakeGenericMethod"
+                when lookup.Method.DeclaringType.IsCorelibType(typeof(MethodInfo)) => ResolveGenericMethod(lookup),
+            "GetField" or "GetMethod" or "GetProperty"
+                when lookup.Method.DeclaringType.IsCorelibType(typeof(Type)) => ResolveNamedMember(lookup),
+            _ => null
+        };
+
+    private TypeDesc? ResolveGenericType(CallInst call)
     {
-        if (lookup.Method.DeclaringType.IsCorelibType(typeof(PropertyInfo)) &&
-            lookup.Method.Name is "get_GetMethod" or "get_SetMethod" or "GetGetMethod" or "GetSetMethod") {
-            return ResolveAccessor(lookup);
-        }
+        if (!call.IsVirtual || call.NumArgs != 2 || call.Method.Name != "MakeGenericType") return null;
+        if (!call.Method.DeclaringType.IsCorelibType(typeof(Type))) return null;
+        if (ResolveType(call.Args[0]) is not TypeDef { IsGeneric: true } definition) return null;
+        if (!TryReadTypeArguments(call, definition.GenericParams, out var arguments, out var array)) return null;
+        if (!types.SatisfiesConstraints(definition.GenericParams, arguments, new GenericContext(arguments))) return null;
 
-        if (lookup.IsVirtual && lookup.Method.Name == "MakeGenericMethod" && lookup.Method.DeclaringType.IsCorelibType(typeof(MethodInfo)) &&
-            lookup.Args.Length == 2 && Resolve(lookup.Args[0]) is { Member: MethodDefOrSpec { IsGeneric: true } method } original &&
-            method is not MethodSpec { IsBoundGeneric: true } &&
-            TryReadTypeArguments(lookup, method.Definition.GenericParams, out var arguments, out var array) &&
-            types.SatisfiesConstraints(method.Definition.GenericParams, arguments, new GenericContext(method.DeclaringType.GenericParams, arguments))) {
-            _typeArguments.Add(lookup, array);
-            return new(method.GetSpec(arguments), original.ReflectedType);
-        }
+        _typeArguments.Add(call, array);
+        return definition.GetSpec(arguments);
+    }
 
-        if (!lookup.Method.DeclaringType.IsCorelibType(typeof(Type)) || lookup.IsStatic ||
-            lookup.Method.Name is not ("GetField" or "GetMethod" or "GetProperty") ||
-            lookup.Args.Length is not (2 or 3) || lookup.Args[1] is not ConstString name ||
-            ResolveType(lookup.Args[0]) is not TypeDefOrSpec type ||
-            !ReflectionTypeFacts.IsRuntimeType(type) || type.Attribs.HasFlag(TypeAttributes.Import)) return null;
+    private Result? ResolveGenericMethod(CallInst lookup)
+    {
+        if (!lookup.IsVirtual || lookup.NumArgs != 2) return null;
+        if (Resolve(lookup.Args[0]) is not { Member: MethodDefOrSpec { IsGeneric: true } method } original) return null;
+        if (method is MethodSpec { IsBoundGeneric: true }) return null;
+        if (!TryReadTypeArguments(lookup, method.Definition.GenericParams, out var arguments, out var array)) return null;
 
-        var flags = BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static;
-        if (lookup.Args.Length == 3) {
-            if (!lookup.Method.ParamSig[2].Type.IsCorelibType(typeof(BindingFlags)) ||
-                lookup.Args[2] is not ConstInt bits) return null;
-            flags = (BindingFlags)bits.Value;
-        }
-        if ((flags & ~SupportedFlags) != 0) return null;
+        var context = new GenericContext(method.DeclaringType.GenericParams, arguments);
+        if (!types.SatisfiesConstraints(method.Definition.GenericParams, arguments, context)) return null;
+        _typeArguments.Add(lookup, array);
+        return new(method.GetSpec(arguments), original.ReflectedType);
+    }
+
+    private Result? ResolveNamedMember(CallInst lookup)
+    {
+        if (lookup.IsStatic || lookup.NumArgs is not (2 or 3)) return null;
+        if (lookup.Args[1] is not ConstString name) return null;
+        if (ResolveType(lookup.Args[0]) is not TypeDefOrSpec type) return null;
+        if (!ReflectionTypeFacts.IsRuntimeType(type) || type.Attribs.HasFlag(TypeAttributes.Import)) return null;
+        if (GetBindingFlags(lookup) is not { } flags) return null;
 
         MemberDesc? selected = null;
         foreach (var member in Members(type, lookup.Method.Name)) {
@@ -84,19 +91,32 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
             selected = member;
         }
 
-        if (!flags.HasFlag(BindingFlags.DeclaredOnly)) {
-            for (var parent = type.BaseType; parent != null; parent = parent.BaseType) {
-                foreach (var inherited in Members(parent, lookup.Method.Name).Where(member => member.Name == name.Value)) {
-                    // A virtual override denotes the same inherited slot. Other
-                    // inherited/hiding cases require separate lookup selection rules.
-                    if (selected is MethodDefOrSpec derived && inherited is MethodDefOrSpec baseMethod &&
-                        baseMethod.Attribs.HasFlag(MethodAttributes.Virtual) &&
-                        VirtualDispatch.SameMethod(ResolveVirtualMethod(baseMethod, type), derived)) continue;
-                    return null;
-                }
+        if (!flags.HasFlag(BindingFlags.DeclaredOnly) && RequiresInheritedSelection(type, lookup.Method.Name, name.Value, selected)) return null;
+        return new(selected, type);
+    }
+
+    private static BindingFlags? GetBindingFlags(CallInst lookup)
+    {
+        if (lookup.NumArgs == 2) return BindingFlags.Public | BindingFlags.Instance | BindingFlags.Static;
+        if (!lookup.Method.ParamSig[2].Type.IsCorelibType(typeof(BindingFlags))) return null;
+        if (lookup.Args[2] is not ConstInt bits) return null;
+        var flags = (BindingFlags)bits.Value;
+        return (flags & ~SupportedFlags) == 0 ? flags : null;
+    }
+
+    private bool RequiresInheritedSelection(TypeDefOrSpec type, string operation, string name, MemberDesc? selected)
+    {
+        for (var parent = type.BaseType; parent != null; parent = parent.BaseType) {
+            foreach (var inherited in Members(parent, operation).Where(member => member.Name == name)) {
+                // A virtual override denotes the same inherited slot. Other
+                // inherited/hiding cases require separate lookup selection rules.
+                if (selected is MethodDefOrSpec derived && inherited is MethodDefOrSpec baseMethod &&
+                    baseMethod.Attribs.HasFlag(MethodAttributes.Virtual) &&
+                    VirtualDispatch.SameMethod(ResolveVirtualMethod(baseMethod, type), derived)) continue;
+                return true;
             }
         }
-        return new(selected, type);
+        return false;
     }
 
     private Result? ResolveAccessor(CallInst lookup)
@@ -112,9 +132,9 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
 
         if (Resolve(lookup.Args[0]) is not { Member: PropertyDef property, ReflectedType: var owner }) return null;
         var accessor = lookup.Method.Name is "get_GetMethod" or "GetGetMethod" ? property.Getter : property.Setter;
-        if (accessor == null || !accessor.IsPublic && nonPublic == false) return new(null, owner);
-        if (!accessor.IsPublic && nonPublic == null) return null;
-        return new(accessor.GetSpec(new GenericContext(owner)), owner);
+        if (accessor == null) return new(null, owner);
+        if (accessor.IsPublic || nonPublic == true) return new(accessor.GetSpec(new GenericContext(owner)), owner);
+        return nonPublic == false ? new(null, owner) : null;
     }
 
     private bool TryReadTypeArguments(CallInst call, GenericParamType[] parameters, out ImmutableArray<TypeDesc> arguments, out KnownArray array)
@@ -139,21 +159,19 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
         };
 
     public static bool IsTypeLookup(CallInst call)
-        => call.Method.Name == "GetTypeFromHandle" && call.Method.DeclaringType.IsCorelibType(typeof(Type)) ||
-            call.Method.Name == "GetType" && call.Method.DeclaringType.IsCorelibType(typeof(object));
+        => call.Method.Name switch {
+            "GetTypeFromHandle" => call.Method.DeclaringType.IsCorelibType(typeof(Type)),
+            "GetType" => call.Method.DeclaringType.IsCorelibType(typeof(object)),
+            _ => false
+        };
 
     public void ApplyFacts(bool preserveTrimmingDependencies, ICompilationLogger logger)
     {
+        // Resolve records dependencies first. Visit consumers first so their
+        // removal can expose unused prerequisite lookups in the same traversal.
         for (int i = _resolved.Count - 1; i >= 0; i--) {
             var (call, nonNull) = _resolved[i];
-            if (logger.IsEnabled(LogLevel.Trace) && (nonNull ? !call.ResultIsNonNull : call.NumUses != 0)) {
-                if (nonNull) {
-                    EntityDesc? target = _types.TryGetValue(call, out var type) ? type : _members[call]!.Member;
-                    logger.Trace($"Proved reflection lookup '{call}' in '{call.Block}' non-null for '{target}'.");
-                } else {
-                    logger.Trace($"Folded reflection lookup '{call}' in '{call.Block}' to null (no matching member in '{_members[call]!.ReflectedType}').");
-                }
-            }
+            LogFact(call, nonNull, logger);
             if (nonNull) call.ResultIsNonNull = true;
             else call.ReplaceUses(ConstNull.Create());
             if (preserveTrimmingDependencies) continue;
@@ -161,11 +179,26 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
             // Earlier inlining/devirtualization may have separated receiver
             // validation from the consuming call. Successful lookups are non-null.
             if (nonNull) {
-                foreach (var check in call.Users().AsEnumerable().OfType<CilIntrinsic.NullCheck>().ToArray()) check.Remove();
+                foreach (var check in call.Users().AsEnumerable().OfType<CilIntrinsic.NullCheck>().ToArray()) {
+                    check.Remove();
+                }
             }
-            if (call.NumUses != 0 || call.Method.Name == "GetType" && !types.IsNonNull(call.Args[0])) continue;
+            if (call.NumUses != 0) continue;
+            // Object.GetType still validates its receiver even if its result is known.
+            if (call.Method.Name == "GetType" && !types.IsNonNull(call.Args[0])) continue;
             call.Remove();
             if (_typeArguments.TryGetValue(call, out var array)) array.Remove();
+        }
+    }
+
+    private void LogFact(CallInst call, bool nonNull, ICompilationLogger logger)
+    {
+        if (!logger.IsEnabled(LogLevel.Trace)) return;
+        if (nonNull && !call.ResultIsNonNull) {
+            EntityDesc? target = _types.TryGetValue(call, out var type) ? type : _members[call]!.Member;
+            logger.Trace($"Proved reflection lookup '{call}' in '{call.Block}' non-null for '{target}'.");
+        } else if (!nonNull && call.NumUses != 0) {
+            logger.Trace($"Folded reflection lookup '{call}' in '{call.Block}' to null (no matching member in '{_members[call]!.ReflectedType}').");
         }
     }
 

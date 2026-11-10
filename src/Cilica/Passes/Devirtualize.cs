@@ -7,6 +7,8 @@ using Cilica.IR.Utils;
 /// <summary> Turns proven virtual targets into direct calls, independently of inlining. </summary>
 public class Devirtualize : IMethodPass
 {
+    private enum ReceiverConversion { None, LoadReference, Unbox }
+
     public MethodPassResult Run(MethodTransformContext ctx)
     {
         long revision = ctx.Method.Revision;
@@ -38,35 +40,61 @@ public class Devirtualize : IMethodPass
     {
         if (call.IsReadOnly || call.IsTailCall) return false;
         var target = ResolveTarget(ctx, call);
-        if (target == null || target.Attribs.HasFlag(MethodAttributes.Abstract) ||
-            !VirtualDispatch.SameMethod(VirtualDispatch.ResolveDirect(target), target) || !CanCall(ctx, target)) return false;
-
-        Value? receiver = call.IsStatic ? null : call.Args[0];
-        bool loadReceiver = call.Constraint is TypeDefOrSpec { IsValueType: false } or PrimType { StackType: StackType.Object };
-        bool unboxReceiver = call.Constraint == null && receiver != null && target.DeclaringType.IsValueType;
-        if (call.Constraint != null && !call.IsStatic && !loadReceiver &&
-            (!call.Constraint.IsValueType || target.DeclaringType != call.Constraint)) return false;
-        if (unboxReceiver && ExactType(receiver!) != target.DeclaringType &&
-            !(ExactType(receiver!) is PrimType primitive && primitive.GetDefinition(ctx.Compilation.Resolver) == target.DeclaringType)) return false;
+        if (target == null || target.Attribs.HasFlag(MethodAttributes.Abstract)) return false;
+        if (!VirtualDispatch.SameMethod(VirtualDispatch.ResolveDirect(target), target) || !CanCall(ctx, target)) return false;
+        if (!TryGetReceiverConversion(ctx, call, target, out var conversion)) return false;
         if (!call.IsVirtual && call.Constraint == null && VirtualDispatch.SameMethod(call.Method, target)) return false;
 
         var originalCall = ctx.Logger.IsEnabled(LogLevel.Trace) ? call.ToString() : null;
-        var builder = new IRBuilder(call, InsertionDir.Before);
-        if (receiver != null) {
-            if (loadReceiver) receiver = builder.CreateLoad(receiver, call.Constraint);
-            if ((call.IsVirtual || call.Constraint != null) && receiver.ResultType.IsManagedObject() && !call.InBounds &&
-                !IsNonNull(receiver))
-                builder.CreateNullCheck(receiver);
-            if (unboxReceiver) receiver = builder.Emit(new CilIntrinsic.UnboxRef(target.DeclaringType, receiver));
-            if (receiver.ResultType != target.ParamSig[0].Type && receiver.ResultType.IsManagedObject())
-                receiver = builder.Emit(new CilIntrinsic.RefCast(target.ParamSig[0].Type, receiver));
-            call.SetArg(0, receiver);
-        }
+        if (!call.IsStatic) call.SetArg(0, ConvertReceiver(call, target, conversion));
         call.Method = target;
         call.Constraint = null;
         call.IsVirtual = false;
         ctx.Logger.Trace($"Devirtualized '{originalCall}' in '{call.Block}' to '{call}'.");
         return true;
+    }
+
+    private static bool TryGetReceiverConversion(MethodTransformContext ctx, CallInst call, MethodDefOrSpec target,
+        out ReceiverConversion conversion)
+    {
+        conversion = ReceiverConversion.None;
+        if (call.IsStatic) return true;
+        if (call.Constraint != null) {
+            if (call.Constraint is TypeDefOrSpec { IsValueType: false } or PrimType { StackType: StackType.Object }) {
+                conversion = ReceiverConversion.LoadReference;
+                return true;
+            }
+            // A constrained value-type receiver is already a managed reference
+            // to the target's storage. Other receiver conventions require a stub.
+            return call.Constraint.IsValueType && target.DeclaringType == call.Constraint;
+        }
+        if (!target.DeclaringType.IsValueType) return true;
+
+        var actualType = ExactType(call.Args[0]);
+        if (actualType is PrimType primitive) actualType = primitive.GetDefinition(ctx.Compilation.Resolver);
+        if (actualType != target.DeclaringType) return false;
+        conversion = ReceiverConversion.Unbox;
+        return true;
+    }
+
+    private static Value ConvertReceiver(CallInst call, MethodDefOrSpec target, ReceiverConversion conversion)
+    {
+        var builder = new IRBuilder(call, InsertionDir.Before);
+        var receiver = call.Args[0];
+        if (conversion == ReceiverConversion.LoadReference) receiver = builder.CreateLoad(receiver, call.Constraint);
+
+        // Replacing callvirt must retain its null check even when the direct
+        // target's body does not dereference the receiver.
+        bool requiresNullCheck = (call.IsVirtual || call.Constraint != null) &&
+            receiver.ResultType.IsManagedObject() && !call.InBounds && !IsNonNull(receiver);
+        if (requiresNullCheck) builder.CreateNullCheck(receiver);
+        if (conversion == ReceiverConversion.Unbox) {
+            receiver = builder.Emit(new CilIntrinsic.UnboxRef(target.DeclaringType, receiver));
+        }
+        if (receiver.ResultType != target.ParamSig[0].Type && receiver.ResultType.IsManagedObject()) {
+            receiver = builder.Emit(new CilIntrinsic.RefCast(target.ParamSig[0].Type, receiver));
+        }
+        return receiver;
     }
 
     static void TryDevirtualizeAddress(MethodTransformContext ctx, FuncAddrInst address)
