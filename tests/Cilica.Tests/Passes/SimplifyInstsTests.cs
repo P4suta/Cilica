@@ -102,6 +102,61 @@ public class SimplifyInstsTests(ModuleResolverFixture fixture) : PassTestBase(fi
         Assert.Equal(2026, Utils.Compile<Func<DateTime, int>>(body)(new DateTime(2026, 11, 5)));
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void OpenInstanceConstructorsExposeTheInvocationReceiver(bool virtualTarget)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Object, PrimType.Object);
+        var builder = new IRBuilder(body.CreateBlock());
+        var owner = _modResolver.Import(virtualTarget ? typeof(object) : typeof(string));
+        var method = owner.FindMethod(virtualTarget ? "ToString" : "get_Length", new MethodSig(virtualTarget ? PrimType.String : PrimType.Int32, [], true));
+        var func = _modResolver.Import(virtualTarget ? typeof(Func<object, string>) : typeof(Func<string, int>));
+        var allocation = builder.CreateNewObj(func.FindMethod(".ctor"), ConstNull.Create(), builder.Emit(new FuncAddrInst(method)));
+        Value receiver = virtualTarget ? body.Args[0] : builder.CreateCastClass(PrimType.String, body.Args[0]);
+        var invoke = builder.CreateCallVirt("Invoke", allocation, receiver);
+        invoke.InBounds = true;
+        builder.CreateReturn(virtualTarget ? invoke : builder.CreateBox(PrimType.Int32, invoke));
+
+        Run(body, new SimplifyInsts(_modResolver));
+        Assert.DoesNotContain(body.Instructions().OfType<CallInst>(), call => call.Method.Name == "Invoke");
+        var run = Utils.Compile<Func<object?, object>>(body);
+        Assert.Equal(virtualTarget ? "abcd" : (object)4, run("abcd"));
+        Assert.Throws<NullReferenceException>(() => run(null));
+        if (virtualTarget) Assert.Equal("42", run(42));
+    }
+
+    [Fact]
+    public void CachedOpenInstanceDelegatesUseEachInvocationReceiver()
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.String);
+        var cacheType = body.Definition.Module.CreateType(null, "OpenCache");
+        cacheType.GetCustomAttribs(readOnly: false).Add(new CustomAttrib(_modResolver.Import(typeof(CompilerGeneratedAttribute)).FindMethod(".ctor")));
+        var func = _modResolver.Import(typeof(Func<string, int>));
+        var cache = cacheType.CreateField("Value", func, FieldAttributes.Assembly | FieldAttributes.Static);
+        var entry = body.CreateBlock();
+        var allocate = body.CreateBlock();
+        var merge = body.CreateBlock();
+        var builder = new IRBuilder(entry);
+        var cached = builder.CreateFieldLoad(cache);
+        builder.SetBranch(builder.CreateNe(cached, ConstNull.Create()), merge, allocate);
+        builder.SetPosition(allocate);
+        var method = _modResolver.Import(typeof(string)).FindMethod("get_Length");
+        var allocation = builder.CreateNewObj(func.FindMethod(".ctor"), ConstNull.Create(), builder.Emit(new FuncAddrInst(method)));
+        builder.CreateFieldStore(cache, null, allocation);
+        builder.SetBranch(merge);
+        builder.SetPosition(merge);
+        var callback = builder.CreatePhi(func, (entry, cached), (allocate, allocation));
+        builder.CreateReturn(builder.CreateCallVirt("Invoke", callback, body.Args[0]));
+
+        Run(body, new SimplifyInsts(_modResolver), new SimplifyCFG(), new DeadCodeElim());
+        Assert.DoesNotContain(body.Instructions().OfType<CallInst>(), call => call.Method.Name == "Invoke");
+        var run = Utils.Compile<Func<string?, int>>(body);
+        Assert.Equal(3, run("abc"));
+        Assert.Equal(5, run("hello"));
+        Assert.Throws<NullReferenceException>(() => run(null));
+    }
+
     [Fact]
     public void ReturnedBoxAddressesRetainTheirHeapStorage()
     {

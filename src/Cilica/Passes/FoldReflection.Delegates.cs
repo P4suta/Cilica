@@ -23,16 +23,7 @@ partial class FoldReflection
         bool open = count == method.ParamSig.Count;
         int offset;
         if (open) {
-            // NativeAOT supports open instance binding through reflection, but not
-            // through the ldftn/delegate-constructor IL pattern.
-            if (method.IsInstance && ctx.Compilation.Settings.NativeAotCompatibility) return false;
-            // ldftn cannot name an abstract method. A closed virtual delegate
-            // can instead obtain its callable entry point through ldvirtftn.
-            if (creation.Target is not ConstNull || method.Attribs.HasFlag(MethodAttributes.Abstract)) return false;
-            // The runtime's open-virtual dispatch stub rejects generic methods
-            // on reference types. Keep that failure at the reflection call site.
-            if (method.IsGeneric && method.IsInstance && !method.DeclaringType.IsValueType &&
-                method.Attribs.HasFlag(MethodAttributes.Virtual)) return false;
+            if (creation.Target is not ConstNull) return false;
             offset = 0;
         } else {
             if (!creation.AllowClosed || count != method.ParamSig.Count - 1) return false;
@@ -47,6 +38,15 @@ partial class FoldReflection
         }
         for (int i = 0; i < count; i++) {
             if (invoke.ParamSig[i + 1] != method.ParamSig[i + offset]) return false;
+        }
+
+        if (open && method.IsInstance && (ctx.Compilation.Settings.NativeAotCompatibility ||
+            method.Attribs.HasFlag(MethodAttributes.Abstract) ||
+            method.IsGeneric && !method.DeclaringType.IsValueType && method.Attribs.HasFlag(MethodAttributes.Virtual))) {
+            // Keep reflection where delegate-constructor IL is unsupported or
+            // cannot preserve binding failures. Its known invocations can still
+            // call the target directly after the factory has completed.
+            return FoldOpenInstanceInvocations(ctx, call, delegateType, method);
         }
 
         bool virtualTarget = !open && method.IsInstance && !method.DeclaringType.IsValueType && method.Attribs.HasFlag(MethodAttributes.Virtual);
@@ -70,6 +70,33 @@ partial class FoldReflection
         var address = builder.Emit(new FuncAddrInst(method, virtualTarget ? creation.Target : null));
         call.ReplaceWith(builder.CreateNewObj(constructor, creation.Target, address));
         return true;
+    }
+
+    private static bool FoldOpenInstanceInvocations(MethodTransformContext ctx, CallInst factory, TypeDefOrSpec delegateType, MethodDefOrSpec method)
+    {
+        bool changed = false;
+        var pending = new Stack<Instruction>();
+        var visited = new HashSet<Instruction>();
+        pending.Push(factory);
+        while (pending.TryPop(out var value)) {
+            if (!visited.Add(value)) continue;
+            foreach (var (user, operand) in value.Uses().AsEnumerable().ToArray()) {
+                if (operand != 0) continue;
+                if (user is CilIntrinsic.CastClass or CilIntrinsic.RefCast or CilIntrinsic.AsInstance && user.ResultType == delegateType) {
+                    pending.Push(user);
+                } else if (user is CallInst { Method.Name: "Invoke", IsStatic: false } invocation &&
+                    invocation.Method.DeclaringType == delegateType &&
+                    SimplifyInsts.CreateOpenInstanceDelegateCall(invocation, method) is { } direct) {
+                    // A factory that returns null must still fail at invocation,
+                    // after the invocation arguments have been evaluated.
+                    if (!invocation.InBounds) new IRBuilder(invocation, InsertionDir.Before).CreateNullCheck(value);
+                    ctx.Logger.Trace($"Replaced open delegate invocation '{invocation}' in '{invocation.Block}' with a call to '{method}'.");
+                    invocation.ReplaceWith(direct, insertIfInst: true);
+                    changed = true;
+                }
+            }
+        }
+        return changed;
     }
 
     private sealed record DelegateCreation(TypeDefOrSpec Type, Value MethodInfo, Value Target, bool AllowClosed)

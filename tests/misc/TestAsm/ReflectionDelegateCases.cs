@@ -34,6 +34,67 @@ public static unsafe class ReflectionDelegateCases
     public static object OpenVirtual()
         => typeof(Base).GetMethod(nameof(Base.Read))!.CreateDelegate<Func<Base, int>>()(new Target());
 
+    public static object OpenUntyped()
+        => ((Func<Target, int, int>)typeof(Target).GetMethod(nameof(Target.AddInstance))!
+            .CreateDelegate(typeof(Func<Target, int, int>)))(new Target(), 2);
+
+    public static object OpenStaticFactory()
+        => ((Func<Target, int, int>)Delegate.CreateDelegate(typeof(Func<Target, int, int>),
+            typeof(Target).GetMethod(nameof(Target.AddInstance))!))(new Target(), 2);
+
+    public static object OpenWithNullTarget()
+        => typeof(Target).GetMethod(nameof(Target.AddInstance))!.CreateDelegate<Func<Target, int, int>>(null)(new Target(), 2);
+
+    public static object OpenNullNonvirtual()
+        => typeof(Target).GetMethod(nameof(Target.WithoutThis))!.CreateDelegate<Func<Target, int>>()(null!);
+
+    public static object OpenMultipleCalls()
+    {
+        var action = typeof(Target).GetMethod(nameof(Target.AddInstance))!.CreateDelegate<Func<Target, int, int>>();
+        return action(new Target(), 2) + action(new Target(), 3);
+    }
+
+    public static object OpenObserved()
+    {
+        var action = typeof(Target).GetMethod(nameof(Target.AddInstance))!.CreateDelegate<Func<Target, int, int>>();
+        return action.Target == null && action.Method.Name == nameof(Target.AddInstance) && action(new Target(), 2) == 42;
+    }
+
+    public static object OpenReceiverEvaluation()
+    {
+        Result = 0;
+        var action = typeof(Target).GetMethod(nameof(Target.AddInstance))!.CreateDelegate<Func<Target, int, int>>();
+        int value = action(Receiver(), Argument());
+        return Result * 100 + value;
+    }
+
+    public static object OpenVirtualNullKeepsArgumentEffects()
+    {
+        Result = 0;
+        var action = typeof(Base).GetMethod(nameof(Base.Compute))!.CreateDelegate<Func<Base, int, int>>();
+        try { return action(null!, Argument()); }
+        catch (NullReferenceException) { return Result + ":NullReferenceException"; }
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static Target Receiver() { Result = Result * 10 + 1; return new Target(); }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static int Argument() { Result = Result * 10 + 2; return 2; }
+
+    public static object OpenMulticast()
+    {
+        Result = 0;
+        var action = typeof(Target).GetMethod(nameof(Target.Accumulate))!.CreateDelegate<Action<Target, int>>();
+        action += action;
+        action(new Target(), 2);
+        return Result;
+    }
+
+    private static Func<Target, int, int>? s_openCache;
+    public static object OpenMutableCache()
+        => (s_openCache ??= typeof(Target).GetMethod(nameof(Target.AddInstance))!.CreateDelegate<Func<Target, int, int>>())(new Target(), 2);
+
     public static object ClosedVirtual()
         => typeof(Base).GetMethod(nameof(Base.Read))!.CreateDelegate<Func<int>>(new Target())();
 
@@ -81,12 +142,20 @@ public static unsafe class ReflectionDelegateCases
     }
 
     public delegate int RefCounter(ref Counter receiver, int value);
+    public delegate string CounterText(ref Counter receiver);
 
     public static object OpenStruct()
     {
         var action = typeof(Counter).GetMethod(nameof(Counter.Increment))!.CreateDelegate<RefCounter>();
         var counter = new Counter { Value = 40 };
         return action(ref counter, 2);
+    }
+
+    public static object OpenVirtualStruct()
+    {
+        var action = typeof(Counter).GetMethod(nameof(Counter.ToString))!.CreateDelegate<CounterText>();
+        var counter = new Counter { Value = 42 };
+        return action(ref counter);
     }
 
     public delegate void RefAction(ref int value);
@@ -289,13 +358,14 @@ public static unsafe class ReflectionDelegateCases
     private static void ChangeHandle(ref RuntimeMethodHandle handle)
         => handle = typeof(Target).GetMethod(nameof(Target.AddTwo))!.MethodHandle;
 
-    public class Base { public virtual int Read() => 1; }
+    public class Base { public virtual int Read() => 1; public virtual int Compute(int value) => value; }
 
     public sealed class Target : Base
     {
         public int Value = 40;
         public int AddInstance(int value) => Value + value;
         public int WithoutThis() => 42;
+        public void Accumulate(int value) => Result += value;
         public override int Read() => 42;
         public static int Add(int value) => value + 1;
         public static int AddTwo(int value) => value + 2;

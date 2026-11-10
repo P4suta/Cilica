@@ -1,6 +1,7 @@
 namespace Cilica.Passes;
 
 using System.Runtime.CompilerServices;
+using System.Reflection;
 
 using Cilica.IR.Utils;
 
@@ -42,7 +43,7 @@ partial class SimplifyInsts
                 !DevirtWithCtorArgs(call, allocInst, cacheLoad)) return false;
 
             // Last lambda to be inlined is responsible for cleanup
-            if (phi.NumUses == 0) {
+            if (phi.NumUses == 0 && !RetainsOpenBinding(allocInst)) {
                 branch.Cond = ConstInt.CreateI(0);
                 phi.Remove();
                 store.Remove();
@@ -52,63 +53,77 @@ partial class SimplifyInsts
         } else if (lambdaInstance is NewObjInst immAlloc) {
             if (!DevirtWithCtorArgs(call, immAlloc)) return false;
             
-            if (immAlloc.NumUses == 0) {
+            if (immAlloc.NumUses == 0 && !RetainsOpenBinding(immAlloc)) {
                 immAlloc.Remove();
             }
             return true;
         }
         return false;
 
+        // Open binding can have runtime-specific failures and initialization
+        // effects. Rewriting Invoke does not remove the original construction.
+        static bool RetainsOpenBinding(NewObjInst allocation)
+            => allocation.Args is [ConstNull, FuncAddrInst { Method.IsInstance: true }];
+
         bool DevirtWithCtorArgs(CallInst call, NewObjInst alloc, LoadInst? cacheLoad = null)
         {
             if (alloc is not { Args: [var instanceObj, FuncAddrInst { Method: var method } addr] }) return false;
             if (addr.Constraint != null) return false;
-            if (call.NumArgs - (method.IsStatic ? 1 : 0) != method.ParamSig.Count) return false;
-            // A delegate may capture an unchecked or independently resolved
-            // virtual target. Only replace it when a direct call has the same receiver.
-            if (method.IsInstance && !method.DeclaringType.IsValueType &&
-                !instanceObj.ResultType.IsAssignableTo(method.DeclaringType)) return false;
-            if (addr.IsVirtual && addr.Object != instanceObj) return false;
-
             if (instanceObj is ConstNull) {
-                var replacement = new CallInst(method, call.Args[1..].ToArray()) { IsTailCall = call.IsTailCall };
-                logger.Trace($"Replaced delegate invocation '{call}' in '{call.Block}' with a direct call to '{method}'.");
+                if (addr.IsVirtual) return false;
+                CallInst? replacement;
+                if (method.IsStatic) {
+                    if (call.NumArgs - 1 != method.ParamSig.Count) return false;
+                    replacement = new CallInst(method, call.Args[1..].ToArray()) {
+                        IsTailCall = call.IsTailCall, ResultIsNonNull = call.ResultIsNonNull, DebugLocation = call.DebugLocation
+                    };
+                } else {
+                    replacement = CreateOpenInstanceDelegateCall(call, method);
+                    if (replacement == null) return false;
+                }
+                logger.Trace($"Replaced delegate invocation '{call}' in '{call.Block}' with a call to '{method}'.");
                 OnCallReplaced?.Invoke(call, replacement);
                 call.ReplaceWith(replacement, insertIfInst: true);
                 return true;
-            } else if (method.IsInstance) {
-                // Cached instance targets must be available on both phi edges.
-                if (cacheLoad != null) {
-                    if (!IRMatcher.StaticFieldLoad(instanceObj, out var field) ||
-                        !field.Attribs.HasFlag(System.Reflection.FieldAttributes.InitOnly)) return false;
-                    var fieldAddr = new FieldAddrInst(field);
-                    var newLoad = new LoadInst(fieldAddr);
-                    // Reading the cache already initialized this type. Its readonly
-                    // receiver can be loaded there, outside any consuming loop.
-                    // The single-entry allocation arm makes the cache block dominate
-                    // the merge and every use of the delegate phi.
-                    if (cacheLoad.Address is FieldAddrInst cacheAddr && cacheAddr.Field.DeclaringType == field.DeclaringType &&
-                        alloc.Block.NumPreds == 1 && alloc.Block.Preds.First() == cacheLoad.Block) {
-                        fieldAddr.InsertAfter(cacheLoad);
-                        newLoad.InsertAfter(fieldAddr);
-                    } else {
-                        fieldAddr.InsertBefore(call);
-                        newLoad.InsertBefore(call);
-                    }
-                    instanceObj = newLoad;
-                }
-                if (method.DeclaringType.IsValueType) {
-                    var address = new CilIntrinsic.UnboxRef(method.DeclaringType, instanceObj);
-                    address.InsertBefore(call);
-                    instanceObj = address;
-                }
-                logger.Trace($"Replaced delegate invocation '{call}' in '{call.Block}' with a call to '{method}' using its captured receiver.");
-                call.Method = method;
-                call.SetArg(0, instanceObj);
-                call.IsVirtual = addr.IsVirtual;
-                return true;
             }
-            return false;
+
+            if (method.IsStatic || call.NumArgs != method.ParamSig.Count) return false;
+            // A delegate may capture an unchecked or independently resolved
+            // virtual target. Only replace it when a direct call has the same receiver.
+            if (!method.DeclaringType.IsValueType &&
+                !instanceObj.ResultType.IsAssignableTo(method.DeclaringType)) return false;
+            if (addr.IsVirtual && addr.Object != instanceObj) return false;
+
+            // Cached instance targets must be available on both phi edges.
+            if (cacheLoad != null) {
+                if (!IRMatcher.StaticFieldLoad(instanceObj, out var field) ||
+                    !field.Attribs.HasFlag(FieldAttributes.InitOnly)) return false;
+                var fieldAddr = new FieldAddrInst(field);
+                var newLoad = new LoadInst(fieldAddr);
+                // Reading the cache already initialized this type. Its readonly
+                // receiver can be loaded there, outside any consuming loop.
+                // The single-entry allocation arm makes the cache block dominate
+                // the merge and every use of the delegate phi.
+                if (cacheLoad.Address is FieldAddrInst cacheAddr && cacheAddr.Field.DeclaringType == field.DeclaringType &&
+                    alloc.Block.NumPreds == 1 && alloc.Block.Preds.First() == cacheLoad.Block) {
+                    fieldAddr.InsertAfter(cacheLoad);
+                    newLoad.InsertAfter(fieldAddr);
+                } else {
+                    fieldAddr.InsertBefore(call);
+                    newLoad.InsertBefore(call);
+                }
+                instanceObj = newLoad;
+            }
+            if (method.DeclaringType.IsValueType) {
+                var address = new CilIntrinsic.UnboxRef(method.DeclaringType, instanceObj);
+                address.InsertBefore(call);
+                instanceObj = address;
+            }
+            logger.Trace($"Replaced delegate invocation '{call}' in '{call.Block}' with a call to '{method}' using its captured receiver.");
+            call.Method = method;
+            call.SetArg(0, instanceObj);
+            call.IsVirtual = addr.IsVirtual;
+            return true;
         }
         static bool MatchCache(PhiInst phi, NewObjInst allocInst, LoadInst cacheLoad,
             out BranchInst branch, out StoreInst store)
@@ -141,5 +156,22 @@ partial class SimplifyInsts
             store = cacheStore;
             return true;
         }
+    }
+
+    internal static CallInst? CreateOpenInstanceDelegateCall(CallInst call, MethodDesc method)
+    {
+        if (call.IsReadOnly || call.Constraint != null || call.Method.IsGeneric ||
+            (call.Method.ImplAttribs & MethodImplAttributes.CodeTypeMask) != MethodImplAttributes.Runtime ||
+            call.NumArgs - 1 != method.ParamSig.Count || call.Method.ReturnSig != method.ReturnSig ||
+            !call.Method.ParamSig.Skip(1).SequenceEqual(method.ParamSig)) return null;
+
+        // Open virtual delegates dispatch on the supplied receiver. Nonvirtual
+        // delegates may pass null through to a method that never dereferences it.
+        bool dispatch = !method.DeclaringType.IsValueType && method.Attribs.HasFlag(MethodAttributes.Virtual);
+        return new CallInst(method, call.Args[1..].ToArray(), isVirtual: dispatch) {
+            IsTailCall = call.IsTailCall,
+            ResultIsNonNull = call.ResultIsNonNull,
+            DebugLocation = call.DebugLocation
+        };
     }
 }

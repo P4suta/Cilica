@@ -5,6 +5,64 @@ using Cilica.AsmIO;
 partial class FoldReflectionTests
 {
     [Theory]
+    [InlineData("OpenInstance", 42)]
+    [InlineData("OpenVirtual", 42)]
+    [InlineData("OpenUntyped", 42)]
+    [InlineData("OpenStaticFactory", 42)]
+    [InlineData("OpenWithNullTarget", 42)]
+    [InlineData("OpenNullNonvirtual", 42)]
+    [InlineData("OpenMultipleCalls", 85)]
+    [InlineData("OpenObserved", true)]
+    [InlineData("OpenReceiverEvaluation", 1242)]
+    [InlineData("OpenVirtualNullKeepsArgumentEffects", "2:NullReferenceException")]
+    [InlineData("OpenStruct", 42)]
+    [InlineData("OpenVirtualStruct", "42")]
+    public void OpenInstanceDelegateInvocationsUseTheirSuppliedReceiver(string name, object expected)
+    {
+        foreach (bool nativeAot in new[] { false, true }) foreach (bool defaultPipeline in new[] { false, true }) {
+            using var test = new Case(name, "ReflectionDelegateCases");
+            Assert.Equal(expected, test.Original.Invoke(null, null));
+            test.Optimize(defaultPipeline: defaultPipeline, nativeAotCompatibility: nativeAot, simplifyDelegates: true);
+            Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => IsDelegateInvoke(instruction.Operand));
+            if (nativeAot) {
+                Assert.Contains(test.Method.ILBody.Instructions, instruction => IsReflectionFactory(instruction.Operand));
+                Assert.DoesNotContain(test.Method.ILBody.Instructions, instruction => instruction.OpCode is ILCode.Ldftn or ILCode.Ldvirtftn);
+            }
+            Assert.Equal(expected, test.Emit().Invoke(null, null));
+        }
+    }
+
+    [Theory]
+    [InlineData("OpenMulticast", 4)]
+    [InlineData("OpenMutableCache", 42)]
+    public void OpenDelegateCallsKeepUnknownAndMulticastTargets(string name, object expected)
+    {
+        foreach (bool nativeAot in new[] { false, true }) {
+            using var test = new Case(name, "ReflectionDelegateCases");
+            test.Optimize(defaultPipeline: true, nativeAotCompatibility: nativeAot);
+            Assert.Contains(test.Method.ILBody!.Instructions, instruction => IsDelegateInvoke(instruction.Operand));
+            Assert.Equal(expected, test.Emit().Invoke(null, null));
+        }
+    }
+
+    [Theory]
+    [InlineData("OpenInterfaceDelegate", 42)]
+    [InlineData("OpenAbstractDelegate", 42)]
+    [InlineData("OpenGenericStructDelegate", "String:Object:hello:41")]
+    public void OpenGenericAndAbstractDelegateCallsPreserveDispatch(string name, object expected)
+    {
+        foreach (bool nativeAot in new[] { false, true }) {
+            using var test = new Case(name, "ReflectionGenericCases");
+            test.Optimize(nativeAotCompatibility: nativeAot, simplifyDelegates: true);
+            Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => IsDelegateInvoke(instruction.Operand));
+            Assert.Equal(expected, test.Emit().Invoke(null, null));
+        }
+    }
+
+    private static bool IsDelegateInvoke(object? operand)
+        => operand is MethodDesc { Name: "Invoke" } method && method.DeclaringType.BaseType?.IsCorelibType(typeof(MulticastDelegate)) == true;
+
+    [Theory]
     [InlineData("GenericStatic", 42)]
     [InlineData("UntypedStatic", 42)]
     [InlineData("GenericClosedInstance", 42)]

@@ -62,7 +62,7 @@ public sealed partial class FoldReflection : IMethodPass
                 PropertyDef property => FoldProperty(ctx, call, property, resolved.ReflectedType, access, types),
                 _ => false
             };
-            if (changed) {
+            if (changed && call.Block == null) {
                 ctx.Logger.Trace($"Folded reflection access '{originalCall}' in '{block}' to '{resolved.Member}'.");
             }
         }

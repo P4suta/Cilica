@@ -510,17 +510,20 @@ public partial class FoldReflectionTests
             Original = Assembly.Load(File.ReadAllBytes(path)).GetType(typeName)!.GetMethod(name)!;
         }
 
-        public void Optimize(bool defaultPipeline = false, bool preserveTrimmingDependencies = false, bool propagateAssertions = false)
+        public void Optimize(bool defaultPipeline = false, bool preserveTrimmingDependencies = false, bool propagateAssertions = false,
+            bool nativeAotCompatibility = false, bool simplifyDelegates = false)
         {
             var compilation = new Compilation(_module, new VoidLogger(), new() {
                 VerifyEachPass = true,
-                PreserveTrimmingDependencies = preserveTrimmingDependencies
+                PreserveTrimmingDependencies = preserveTrimmingDependencies,
+                NativeAotCompatibility = nativeAotCompatibility
             });
             var manager = defaultPipeline ? CompilationPipeline.CreateDefault(compilation)
                 : new PassManager { Compilation = compilation };
             if (!defaultPipeline) {
                 var passes = manager.AddPasses().Apply<SimplifyCFG>().Apply<SsaPromotion>().Apply<FoldReflection>();
                 if (propagateAssertions) passes.Apply<AssertionProp>().Apply<SimplifyInsts>().Apply<SimplifyCFG>().Apply<FoldReflection>();
+                if (simplifyDelegates) passes.Apply<SimplifyInsts>();
                 passes.Apply<DeadCodeElim>();
             }
             var result = manager.Run([Method]);
