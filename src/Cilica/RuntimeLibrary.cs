@@ -8,10 +8,13 @@ public sealed class RuntimeLibrary(ModuleResolver resolver)
 {
     public ModuleResolver Resolver { get; } = resolver;
 
-    // LINQ expansion consumes these calls directly.
+    // Sequence optimizations consume these calls directly.
     internal bool IsOptimizationIntrinsic(MethodDef method)
     {
         var type = method.DeclaringType;
+        if (type.IsCorelibType(typeof(List<>))) {
+            return method.Name is "Add" or "ToArray" or "get_Count" or "get_Item";
+        }
         if (type.Namespace == "System.Linq" && type.Name == "Enumerable" &&
             method.Module == Resolver.Resolve("System.Linq")) {
             return method.Name switch {

@@ -8,6 +8,8 @@ using MethodAttributes = System.Reflection.MethodAttributes;
 using ParameterAttributes = System.Reflection.ParameterAttributes;
 using MethodImplAttributes = System.Reflection.MethodImplAttributes;
 
+using System.Runtime.CompilerServices;
+
 public class InliningAdvisor : IGlobalAnalysis
 {
     readonly Dictionary<MethodDef, Entry> _cache = new();
@@ -106,9 +108,13 @@ public class InliningAdvisor : IGlobalAnalysis
 
     public InlineRejectReason EarlyCheck(MethodDef method)
     {
-        if (method.Module == _comp.Resolver.CoreLib || method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method) ||
+        if (method.CallConv == CallConvention.VarArgs || _comp.Runtime.IsOptimizationIntrinsic(method) ||
             _comp.Settings.PreserveTrimmingDependencies && _comp.Runtime.IsTrimmingIntrinsic(method) ||
             method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return InlineRejectReason.Ineligible;
+
+        if (method.Module == _comp.Resolver.CoreLib && !CanInlineCoreLibMethod(method)) {
+            return InlineRejectReason.Ineligible;
+        }
 
         // Feature substitutions and trimming dependencies attach to this metadata.
         if (HasTrimmingContract(method.GetCustomAttribs()) ||
@@ -148,6 +154,46 @@ public class InliningAdvisor : IGlobalAnalysis
         }
 
         return InlineRejectReason.Accepted;
+    }
+
+    private bool CanInlineCoreLibMethod(MethodDef method)
+    {
+        Debug.Assert(method.Module == _comp.Resolver.CoreLib);
+        // Allow aggressive inlining methods
+        if (method.ImplAttribs.HasFlag(MethodImplAttributes.AggressiveInlining)) return true;
+        // Allow a list of types that are worth inlining
+        if (method.DeclaringType.IsCorelibType(typeof(Nullable<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(Lazy<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(Index)) ||
+            method.DeclaringType.IsCorelibType(typeof(Range)) ||
+            method.DeclaringType.IsCorelibType(typeof(Memory<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ReadOnlyMemory<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(KeyValuePair<,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<,,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<,,,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<,,,,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<,,,,,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<,,,,,,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTuple<,,,,,,,>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ArraySegment<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(CancellationToken)) ||
+            method.DeclaringType.IsCorelibType(typeof(Rune)) ||
+            method.DeclaringType.IsCorelibType(typeof(Task)) ||
+            method.DeclaringType.IsCorelibType(typeof(Task<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(TaskAwaiter)) ||
+            method.DeclaringType.IsCorelibType(typeof(TaskAwaiter<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTask)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTask<>)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTaskAwaiter)) ||
+            method.DeclaringType.IsCorelibType(typeof(ValueTaskAwaiter<>))) {
+            return true;
+        }
+
+        // Blocks others to prevent bloating the IL
+        return false;
     }
 
     private bool HasTrimmingContract(IList<CustomAttrib> attributes)
