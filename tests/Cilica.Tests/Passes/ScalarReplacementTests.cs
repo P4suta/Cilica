@@ -61,6 +61,44 @@ public class ScalarReplacementTests(ModuleResolverFixture fixture) : PassTestBas
     }
 
     [Theory]
+    [InlineData(false, false, false)]
+    [InlineData(false, true, false)]
+    [InlineData(true, false, false)]
+    [InlineData(true, true, false)]
+    [InlineData(true, false, true)]
+    [InlineData(true, true, true)]
+    public void ConstructorExpansionHonorsAssemblyPolicyForAvailableBodies(bool foreign, bool imported, bool crossAssembly)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var module = foreign ? _modResolver.Create("Dependency_" + Guid.NewGuid().ToString("N")) : body.Definition.Module;
+        var holder = module.CreateType(null, "Holder");
+        var field = holder.CreateField("Value", PrimType.Int32);
+        var ctor = holder.CreateMethod(".ctor", PrimType.Void, [new ParamDef(holder, "this")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        ctor.Body = new MethodBody(ctor);
+        var builder = new IRBuilder(ctor.Body.CreateBlock());
+        builder.CreateCall(_modResolver.Import(typeof(object)).FindMethod(".ctor"), ctor.Body.Args[0]);
+        builder.CreateFieldStore(field, ctor.Body.Args[0], ConstInt.CreateI(42));
+        builder.CreateReturn();
+        ctor.ILBody = ILGenerator.GenerateCode(ctor.Body);
+        if (!imported) ctor.Body = null;
+        builder = new IRBuilder(body.CreateBlock());
+        var allocation = builder.CreateNewObj(ctor);
+        builder.CreateReturn(builder.CreateFieldLoad(field, allocation));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            EnableInlining = false, AllowCrossAssemblyIPO = crossAssembly, VerifyEachPass = true
+        });
+
+        PassRunner.Run(new ScalarReplacement(), new MethodTransformContext(compilation, body));
+
+        bool replace = !foreign || crossAssembly;
+        Assert.Equal(!replace, body.Instructions().Any(inst => inst is NewObjInst));
+        if (replace) {
+            Assert.Equal(42, Assert.IsType<ConstInt>(Assert.Single(body.Instructions().OfType<ReturnInst>()).Value).Value);
+        }
+    }
+
+    [Theory]
     [InlineData(128, false, false)]
     [InlineData(128, false, true)]
     [InlineData(512, true, false)]

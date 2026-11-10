@@ -192,4 +192,74 @@ public class SimplifyCFGTests(ModuleResolverFixture fixture) : PassTestBase(fixt
         Assert.Equal(2, run(1));
         Assert.Equal(BitConverter.SingleToInt32Bits(-0f), BitConverter.SingleToInt32Bits(run(-1)));
     }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void ByteSizedSwitchResultsDoNotRequireLittleEndian(bool littleEndian, bool bitmask)
+    {
+        int[] values = bitmask ? [1, 0, 0, 1, 1, 0, 1, 0, 1] : [20, 10, 8, 6, 5, 3, 2, 5, -5];
+        int fallback = bitmask ? 0 : -1;
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var entry = body.CreateBlock();
+        var cases = values.Select(_ => body.CreateBlock()).ToArray();
+        var otherwise = body.CreateBlock();
+        var merge = body.CreateBlock();
+        entry.SetBranch(new SwitchInst(body.Args[0], otherwise, cases));
+        foreach (var block in cases) block.SetBranch(merge);
+        otherwise.SetBranch(merge);
+        var phi = merge.InsertPhi(new PhiInst(PrimType.Int32, cases
+            .Select((block, i) => new PhiArg(block, ConstInt.CreateI(values[i])))
+            .Append(new PhiArg(otherwise, ConstInt.CreateI(fallback))).ToArray()));
+        merge.SetBranch(new ReturnInst(phi));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            AssumeLittleEndian = littleEndian, VerifyEachPass = true
+        });
+
+        PassRunner.Run(new SimplifyCFG(), new MethodTransformContext(compilation, body));
+
+        Assert.DoesNotContain(body.Instructions(), inst => inst is SwitchInst);
+        var run = Utils.Compile<Func<int, int>>(body);
+        foreach (int input in Enumerable.Range(-2, values.Length + 5).Concat([int.MinValue, int.MaxValue])) {
+            Assert.Equal((uint)input < values.Length ? values[input] : fallback, run(input));
+        }
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MixedWidthSwitchResultsRequireLittleEndian(bool littleEndian)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
+        var entry = body.CreateBlock();
+        var a = body.CreateBlock();
+        var b = body.CreateBlock();
+        var fallback = body.CreateBlock();
+        var merge = body.CreateBlock();
+        entry.SetBranch(new SwitchInst(body.Args[0], fallback, a, b));
+        a.SetBranch(merge);
+        b.SetBranch(merge);
+        fallback.SetBranch(merge);
+        var small = merge.InsertPhi(new PhiInst(PrimType.Int32,
+            (a, ConstInt.CreateI(1)), (b, ConstInt.CreateI(0)), (fallback, ConstInt.CreateI(1))));
+        var wide = merge.InsertPhi(new PhiInst(PrimType.Int32,
+            (a, ConstInt.CreateI(256)), (b, ConstInt.CreateI(-1000)), (fallback, ConstInt.CreateI(-257))));
+        var builder = new IRBuilder(merge, InsertionDir.After);
+        builder.CreateReturn(builder.CreateAdd(small, wide));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            AssumeLittleEndian = littleEndian, VerifyEachPass = true
+        });
+
+        PassRunner.Run(new SimplifyCFG(), new MethodTransformContext(compilation, body));
+
+        Assert.Equal(!littleEndian, body.Instructions().Any(inst => inst is SwitchInst));
+        var run = Utils.Compile<Func<int, int>>(body);
+        Assert.Equal(257, run(0));
+        Assert.Equal(-1000, run(1));
+        foreach (int input in new[] { -1, 2, int.MinValue, int.MaxValue }) {
+            Assert.Equal(-256, run(input));
+        }
+    }
 }

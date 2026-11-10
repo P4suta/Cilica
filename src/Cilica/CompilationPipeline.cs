@@ -17,7 +17,7 @@ public static class CompilationPipeline
         var simplify = manager.AddPasses().Apply<SimplifyInsts>().Apply<FoldReflection>().Apply<SimplifyCFG>().Apply<DeadCodeElim>()
             .RepeatUntilFixedPoint(3);
         manager.AddPasses().Apply<ScalarReplacement>()
-            .IfChanged(child => child.Apply<SsaPromotion>().Apply<InlineMethods>()).RepeatUntilFixedPoint(3);
+            .IfChanged(child => child.Apply<SsaPromotion>().Apply<Devirtualize>().Apply<InlineMethods>()).RepeatUntilFixedPoint(3);
         manager.AddPasses().Apply<ValueNumbering>().Apply<AssertionProp>().Apply<PresizeLists>().Apply<LoopStrengthReduction>().IfChanged(simplify);
         manager.AddPasses().Apply<LoopVectorizer>().IfChanged(simplify);
 

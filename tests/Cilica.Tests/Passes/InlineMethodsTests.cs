@@ -529,6 +529,43 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void ConstructorExpansionExposesDevirtualizationIndependentlyOfInlining(bool inline)
+    {
+        var reader = _modResolver.Import(typeof(SealedReader));
+        var baseReader = _modResolver.Import(typeof(Reader));
+        var read = baseReader.FindMethod("Read");
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, reader);
+        var holder = body.Definition.Module.CreateType(null, "Holder");
+        var field = holder.CreateField("Value", PrimType.Int32);
+        var ctor = holder.CreateMethod(".ctor", PrimType.Void,
+            [new ParamDef(holder, "this"), new ParamDef(baseReader, "reader")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        ctor.Body = new MethodBody(ctor);
+        var builder = new IRBuilder(ctor.Body.CreateBlock());
+        builder.CreateCall(_modResolver.Import(typeof(object)).FindMethod(".ctor"), ctor.Body.Args[0]);
+        builder.CreateFieldStore(field, ctor.Body.Args[0], builder.CreateCallVirt(read, ctor.Body.Args[1]));
+        builder.CreateReturn();
+        builder = new IRBuilder(body.CreateBlock());
+        var allocation = builder.CreateNewObj(ctor, body.Args[0]);
+        builder.CreateReturn(builder.CreateFieldLoad(field, allocation));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            EnableInlining = inline, VerifyEachPass = true
+        });
+
+        CompilationPipeline.CreateDefault(compilation).Run([body.Definition]).ThrowIfFailed();
+
+        body = body.Definition.Body!;
+        Assert.DoesNotContain(body.Instructions(), inst => inst is NewObjInst);
+        var call = Assert.Single(body.Instructions().OfType<CallInst>().Where(call => call.Method == read));
+        Assert.False(call.IsVirtual);
+        var run = Utils.Compile<Func<SealedReader, int>>(body);
+        Assert.Equal(42, run(new SealedReader()));
+        Assert.Throws<NullReferenceException>(() => run(null!));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void DevirtualizationPreservesStructReceiverStorage(bool boxed)
     {
         var type = _modResolver.Import(typeof(Counter));

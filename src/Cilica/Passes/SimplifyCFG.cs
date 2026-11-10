@@ -325,7 +325,7 @@ public class SimplifyCFG : IMethodPass
     //  int result = (0b01010101 >> x) & 1;
     private static bool ConvertSwitchToLut(Compilation comp, BasicBlock block)
     {
-        if (!comp.Settings.AssumeLittleEndian || block.Last is not SwitchInst sw) return false;
+        if (block.Last is not SwitchInst sw) return false;
 
         var finalBlock = default(BasicBlock);
         int numUniqueTargets = 0;
@@ -349,6 +349,8 @@ public class SimplifyCFG : IMethodPass
         // Final block must have no preds other than switch targets, and phis must have all const args
         if (finalBlock == null || finalBlock.NumPreds > numUniqueTargets) return false;
         if (!finalBlock.Phis().All(IsPhiWithConstArgs)) return false;
+        // Bitmasks and single-byte table loads are independent of byte order.
+        if (!comp.Settings.AssumeLittleEndian && finalBlock.Phis().Any(phi => GetEffectiveStorageType(phi).Kind.Size() != 1)) return false;
 
         var builder = new IRBuilder(finalBlock.FirstNonHeader, InsertionDir.Before);
 

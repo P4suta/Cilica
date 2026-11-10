@@ -100,12 +100,11 @@ public class ScalarReplacement : IMethodPass
         if (advisor.EarlyCheck(ctor) != InlineRejectReason.Accepted) {
             return false;
         }
-        if (ctor.Body == null && advisor.GetMethodBodyForIPO(ctor) == null) {
+        if (advisor.GetMethodBodyForIPO(ctor) is not { } body) {
             return false;
         }
 
         // Ctor must be small and instance obj cannot escape
-        var body = ctor.Body!;
         return advisor.EvaluateInliningCost(body, [alloc, ..alloc.Args]) < 100 && !Escapes(body.Args[0], isCtor: true) &&
                ctx.Compilation.CanInlineBody(ctx.Definition, (MethodDefOrSpec)alloc.Constructor, scalarReplacement: true);
     }

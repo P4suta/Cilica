@@ -537,9 +537,9 @@ The sealed enumerator has no disposal contract. An enumerator with observable `D
 
 ### Scalar replacement policy
 
-`CompilationSettings.EnableScalarReplacement` controls scalar replacement independently of general method inlining and is enabled by default. Setting `EnableInlining = false` still allows eligible local allocations to be removed, including expansion of their constructors. Objects passed to remaining method calls or returned from the method are not eligible; general inlining can expose additional opportunities by bringing those uses into the same method.
+`CompilationSettings.EnableScalarReplacement` controls scalar replacement and is enabled by default. Objects passed to remaining method calls or returned from the method are not eligible.
 
-Constructor expansion respects `NoInlining` and the [inlining size policy](#inlining-policy), so an eligible allocation can remain when expanding its constructor would exceed the caller's budget. It can increase code size even when general method inlining is disabled.
+Constructor expansion is subject to the caller IL size budget set by `CompilationSettings.MaxInlinedMethodILSize`, which can leave an otherwise eligible allocation intact.
 
 ## Reflection Folding
 
@@ -703,7 +703,7 @@ public static int ReadFromFactory() => 42;
 
 The optimizer API exposes these controls:
 
-- `CompilationSettings.EnableInlining` controls general method inlining. It is enabled by default. [Scalar replacement](#scalar-replacement-policy) has a separate control for allocation removal and its constructor expansion.
+- `CompilationSettings.EnableInlining` controls method inlining. It is enabled by default.
 - `CompilationSettings.AllowCrossAssemblyIPO` permits optimizations across assembly boundaries. It is enabled by default.
 - `CompilationSettings.MaxInlinedMethodILSize` limits caller IL growth during method inlining and constructor expansion, with a default of 32 KiB. Methods already above the limit can still accept inlining that does not increase their size.
 
