@@ -184,7 +184,7 @@ public readonly struct UseRef
     internal ref Value OperandRef => ref Parent._operands[OperIndex];
 
     public Value Operand {
-        get => Parent._operands[OperIndex];
+        get => Parent.Operands[OperIndex];
         set => Parent.ReplaceOperand(OperIndex, value);
     }
 

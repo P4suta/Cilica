@@ -15,7 +15,6 @@ public class SsaPromotion : IMethodPass
         Dictionary<LocalSlot, NameStack> _slotNameStacks = new();
         Dictionary<LocalSlot, Value> _initialValues = new();
         DominatorTree _domTree = null!;
-        Dictionary<PhiInst, List<PhiArg>>? _phiArgs;
 
         public MethodPassResult Run()
         {
@@ -27,29 +26,12 @@ public class SsaPromotion : IMethodPass
             }
 
             _domTree = ctx.GetAnalysis<DominatorTree>();
-            if (_phiArgs != null) {
-                RenameWithBufferedPhis(_phiArgs);
-            } else {
-                _domTree.Traverse(preVisit: RenameBlock, postVisit: LeaveBlock);
-            }
+            _domTree.Traverse(preVisit: RenameBlock, postVisit: LeaveBlock);
 
             RemoveDeadPhis();
             RemovePromotedSlots();
 
             return MethodInvalidations.DataFlow;
-        }
-
-        private void RenameWithBufferedPhis(Dictionary<PhiInst, List<PhiArg>> phiArgs)
-        {
-            var postOrder = new List<BasicBlock>(ctx.Method.NumBlocks);
-            _domTree.Traverse(preVisit: RenameBlock, postVisit: postOrder.Add);
-
-            foreach (var (phi, args) in phiArgs) {
-                phi.AddArg(args.ToArray());
-            }
-            foreach (var block in postOrder) {
-                LeaveBlock(block);
-            }
         }
 
         private void FindSlotsAndInsertPhis(MethodTransformContext ctx)
@@ -72,12 +54,6 @@ public class SsaPromotion : IMethodPass
 
                             var phi = dom.InsertPhi(slot.Type);
                             _phiDefs.Add(phi, slot);
-                            if (dom.NumUses > 2) {
-                                int numPreds = dom.NumPreds;
-                                if (numPreds > 2) {
-                                    (_phiArgs ??= new()).Add(phi, new List<PhiArg>(numPreds));
-                                }
-                            }
 
                             worklist.Push(dom);
                         }
@@ -165,11 +141,8 @@ public class SsaPromotion : IMethodPass
             foreach (var succ in block.Succs) {
                 foreach (var phi in succ.Phis()) {
                     if (_phiDefs.TryGetValue(phi, out var slot)) {
-                        if (_phiArgs != null && _phiArgs.TryGetValue(phi, out var args)) {
-                            args.Add(new(block, ReadDef(_slotNameStacks[slot], block, slot)));
-                        } else {
-                            phi.AddArg(block, ReadDef(_slotNameStacks[slot], block, slot));
-                        }
+                        // TODO: AddArg() is O(n), maybe rewrite all phis in a final pass
+                        phi.AddArg(block, ReadDef(_slotNameStacks[slot], block, slot));
                     }
                 }
             }
@@ -177,7 +150,9 @@ public class SsaPromotion : IMethodPass
 
         private void LeaveBlock(BasicBlock block)
         {
-            // Remove phis with no uses outside themselves.
+            // Remove trivially useless phis
+            // This must be done in post-dominance order, before
+            // the materialization of useless phi-loops.
             foreach (var phi in block.Phis()) {
                 if (!phi.Users().Any(u => u != phi)) {
                     phi.Remove();

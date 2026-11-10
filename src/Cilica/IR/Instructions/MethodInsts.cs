@@ -6,10 +6,10 @@ public class CallInst : Instruction
 
     private MethodDesc _method = default!;
 
-    public ReadOnlySpan<Value> Args => _operands; // TODO: get rid of this, use Operands directly.
+    public ReadOnlySpan<Value> Args => Operands; // TODO: get rid of this, use Operands directly.
 
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-    public int NumArgs => _operands.Length;
+    public int NumArgs => NumOperands;
 
     public bool IsVirtual { get => _isVirtual; set => SetProperty(ref _isVirtual, value); }
 
@@ -97,10 +97,10 @@ public class NewObjInst : Instruction
 
     private MethodDesc _constructor = default!;
 
-    public ReadOnlySpan<Value> Args => _operands;
+    public ReadOnlySpan<Value> Args => Operands;
 
     [DebuggerBrowsable(DebuggerBrowsableState.Never)]
-    public int NumArgs => _operands.Length;
+    public int NumArgs => NumOperands;
 
     public override bool HasSideEffects => true;
 

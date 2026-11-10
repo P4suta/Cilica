@@ -7,6 +7,181 @@ using Cilica.Util;
 public class ValueTests
 {
     [Fact]
+    public void OperandViewsAcceptCovariantArrays()
+    {
+        var a = new FakeTrackedValue(1);
+        var b = new FakeTrackedValue(2);
+        FakeTrackedValue[] values = [a, b];
+        var inst = new GrowingIntrinsic(values);
+
+        Assert.Same(values, inst._operands);
+        Assert.Equal(new Value[] { a, b }, inst.Operands.ToArray());
+        Assert.Equal(new Value[] { a, b }, inst.Args.ToArray());
+        inst.RemoveAt(1);
+        CheckUses(b);
+        inst.Add(ConstInt.CreateI(3));
+        Assert.Equal(2, inst.Operands.Length);
+        inst.Add(b);
+        Assert.Equal(3, inst.Operands.Length);
+        CheckUses(a, (inst, 0));
+        CheckUses(b, (inst, 2));
+        inst.Remove();
+        CheckUses(a);
+        CheckUses(b);
+    }
+
+    [Fact]
+    public void IncrementalOperandGrowthCopiesLinearData()
+    {
+        const int count = 1025;
+        var value = new FakeTrackedValue(1);
+        var anchor = new BinaryInst(BinaryOp.Add, value, value);
+        var inst = new GrowingIntrinsic();
+        long operandCopies = 0, useDefCopies = 0;
+
+        for (int i = 0; i < count; i++) {
+            var storage = inst._operands;
+            var uses = inst._useDefs;
+            inst.Add(value);
+            if (inst._operands != storage) operandCopies += i;
+            if (inst._useDefs != uses) useDefCopies += i;
+            Assert.Equal(i + 1, inst.Operands.Length);
+        }
+
+        Assert.InRange(operandCopies, 0L, count * 4L);
+        Assert.InRange(useDefCopies, 0L, count * 4L);
+        Assert.InRange(inst._operands.Length, count, count * 4);
+        Assert.Equal(inst._operands.Length, inst._useDefs.Length);
+        CheckUses(value, [(anchor, 0), (anchor, 1), ..Enumerable.Range(0, count).Select(i => ((Instruction)inst, i))]);
+        inst.Remove();
+        CheckUses(value, (anchor, 0), (anchor, 1));
+        anchor.Remove();
+        CheckUses(value);
+    }
+
+    [Fact]
+    public void InvalidOperandGrowthPreservesExistingUses()
+    {
+        var value = new FakeTrackedValue(1);
+        var inst = new GrowingIntrinsic();
+        inst.Add(value);
+        var storage = inst._operands;
+        var uses = inst._useDefs;
+
+        Assert.Throws<ArgumentOutOfRangeException>(() => inst.Grow(-1));
+        Assert.Throws<OverflowException>(() => inst.Grow(int.MaxValue));
+        Assert.Equal(1, inst.Grow(0));
+        Assert.Same(storage, inst._operands);
+        Assert.Same(uses, inst._useDefs);
+        Assert.Same(value, Assert.Single(inst.Operands.ToArray()));
+        CheckUses(value, (inst, 0));
+        inst.Remove();
+        CheckUses(value);
+    }
+
+    [Theory]
+    [InlineData(0)]
+    [InlineData(2)]
+    [InlineData(4)]
+    public void OperandRemovalPreservesCapacityAndUseLinks(int removedIndex)
+    {
+        var a = new FakeTrackedValue(1);
+        var b = new FakeTrackedValue(2);
+        var anchor = new BinaryInst(BinaryOp.Add, a, a);
+        var inst = new GrowingIntrinsic();
+        Value[] values = [a, b, a, b, a];
+        foreach (var value in values) inst.Add(value);
+        var storage = inst._operands;
+        var uses = inst._useDefs;
+        var expected = values.Where((_, i) => i != removedIndex).ToList();
+        var tailReference = inst.GetOperandRef(values.Length - 1);
+
+        inst.RemoveAt(removedIndex);
+
+        Assert.Same(storage, inst._operands);
+        Assert.Same(uses, inst._useDefs);
+        Assert.Equal(expected, inst.Operands.ToArray());
+        Assert.All(inst._operands.Skip(expected.Count), value => Assert.Null(value));
+        Assert.Throws<IndexOutOfRangeException>(() => inst.GetOperandRef(expected.Count));
+        Assert.Throws<IndexOutOfRangeException>(() => inst.ReplaceOperand(expected.Count, a));
+        Assert.Throws<IndexOutOfRangeException>(() => tailReference.Operand);
+        CheckUses(a, [(anchor, 0), (anchor, 1), ..ExpectedUses(inst, expected, a)]);
+        CheckUses(b, ExpectedUses(inst, expected, b));
+
+        inst.Add(b);
+        inst.Add(a);
+        expected.Add(b);
+        expected.Add(a);
+        Assert.Same(b, tailReference.Operand);
+        Assert.Same(storage, inst._operands);
+        Assert.Same(uses, inst._useDefs);
+        Assert.Equal(expected, inst.Operands.ToArray());
+        CheckUses(a, [(anchor, 0), (anchor, 1), ..ExpectedUses(inst, expected, a)]);
+        CheckUses(b, ExpectedUses(inst, expected, b));
+
+        inst.Clear();
+        Assert.Empty(inst.Operands.ToArray());
+        Assert.All(inst._operands, value => Assert.Null(value));
+        inst.Remove();
+        CheckUses(a, (anchor, 0), (anchor, 1));
+        CheckUses(b);
+        anchor.Remove();
+        CheckUses(a);
+    }
+
+    [Fact]
+    public void IntrinsicCloningExcludesSpareOperandCapacity()
+    {
+        var a = new FakeTrackedValue(1);
+        var b = new FakeTrackedValue(2);
+        var c = new FakeTrackedValue(3);
+        var inst = new GrowingIntrinsic();
+        foreach (var value in new[] { a, b, c }) inst.Add(value);
+        Assert.DoesNotContain("null", inst.ToString());
+        var copy = (GrowingIntrinsic)inst.CloneWith(PrimType.Int32, [], [c, b, a]);
+        var reference = copy.GetOperandRef(2);
+
+        Assert.Equal(new Value[] { a, b, c }, inst.Args.ToArray());
+        Assert.Equal(new Value[] { c, b, a }, copy.Args.ToArray());
+        copy.Add(a);
+        Assert.Same(a, reference.Operand);
+        Assert.Equal(new Value[] { c, b, a, a }, copy.Args.ToArray());
+        Assert.Equal(3, inst.Args.Length);
+        copy.ReplaceOperand(a, b);
+        CheckUses(a, (inst, 0));
+        CheckUses(b, (inst, 1), (copy, 1), (copy, 2), (copy, 3));
+        CheckUses(c, (inst, 2), (copy, 0));
+        copy.Remove();
+        inst.Remove();
+        CheckUses(a);
+        CheckUses(b);
+        CheckUses(c);
+    }
+
+    [Fact]
+    public void PhiGrowthWithinCapacityAdvancesMethodRevision()
+    {
+        var method = Utils.CreateDummyMethodBody();
+        var block = method.CreateBlock();
+        var first = method.CreateBlock();
+        var second = method.CreateBlock();
+        var phi = block.InsertPhi(PrimType.Int32);
+        phi.AddArg(first, ConstInt.CreateI(1));
+        var storage = phi._operands;
+        long revision = method.Revision;
+
+        phi.AddArg(second, ConstInt.CreateI(2));
+
+        Assert.Same(storage, phi._operands);
+        Assert.True(method.Revision > revision);
+        Assert.Equal(2, phi.NumArgs);
+        phi.AddArg(method.CreateBlock(), ConstInt.CreateI(3));
+        Assert.Equal(3, phi.NumArgs);
+        Assert.Throws<IndexOutOfRangeException>(() => phi.GetValue(3));
+        Assert.Throws<IndexOutOfRangeException>(() => phi.GetBlock(3));
+    }
+
+    [Fact]
     public void SemanticEditsAdvanceMethodRevision()
     {
         var method = Utils.CreateDummyMethodBody(PrimType.Int32, PrimType.Int32);
@@ -158,10 +333,14 @@ public class ValueTests
         Assert.Equal(3, resume.GetExitTargets().Count());
         foreach (var target in new[] { a, b, c }) Assert.Equal(1, target.NumUses);
         resume.SetExitTargets(new HashSet<BasicBlock> { c });
+        Assert.Single(resume.GetExitTargets());
         CheckUses(a);
         CheckUses(b);
         CheckUses(c, (resume, start));
         resume.SetExitTargets(new HashSet<BasicBlock>());
+        Assert.Empty(resume.GetExitTargets());
+        Assert.Equal(start, resume.Operands.Length);
+        Assert.Contains("resume", resume.ToString());
         CheckUses(c);
         if (filter) {
             Assert.Same(condition, resume.FilterResult);
@@ -171,18 +350,37 @@ public class ValueTests
         CheckUses(condition);
     }
 
+    private static (Instruction, int)[] ExpectedUses(Instruction inst, IReadOnlyList<Value> operands, Value target)
+        => operands.Select((value, index) => (value, index))
+            .Where(pair => pair.value == target)
+            .Select(pair => (inst, pair.index)).ToArray();
+
     private void CheckUses(TrackedValue value, params (Instruction, int)[] expUses)
     {
         Assert.Equal(expUses.Length, value.NumUses);
+
+        var uses = value.Uses().AsEnumerable().Take(expUses.Length + 1).ToArray();
+        Assert.Equal(expUses.Length, uses.Length);
 
         var userSet = value.Users().AsEnumerable().ToHashSet();
         Assert.Equal(expUses.DistinctBy(u => u.Item1).Count(), userSet.Count);
         userSet.SymmetricExceptWith(expUses.Select(u => u.Item1));
         Assert.Empty(userSet);
 
-        var useSet = value.Uses().AsEnumerable().Select(u => (u.Parent, u.OperIndex)).ToHashSet();
+        var useSet = uses.Select(u => (u.Parent, u.OperIndex)).ToHashSet();
         Assert.Equal(expUses.Length, useSet.Count);
         useSet.SymmetricExceptWith(expUses);
         Assert.Empty(useSet);
+    }
+
+    sealed class GrowingIntrinsic(params Value[] operands) : IntrinsicInst(PrimType.Int32, operands)
+    {
+        public override string Namespace => "Tests";
+        public override string Name => "Operands";
+
+        public void Add(Value value) => ReplaceOperand(GrowOperands(1), value);
+        public int Grow(int amount) => GrowOperands(amount);
+        public void RemoveAt(int index) => RemoveOperands(index, 1);
+        public void Clear() => RemoveOperands(0, Operands.Length);
     }
 }

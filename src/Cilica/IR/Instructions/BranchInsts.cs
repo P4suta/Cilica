@@ -114,7 +114,7 @@ public class SwitchInst : Instruction
     /// <summary> Returns all unique target blocks in this switch. </summary>
     public IEnumerable<BasicBlock> GetUniqueTargets()
     {
-        for (int i = 1; i < _operands.Length; i++) {
+        for (int i = 1; i < NumOperands; i++) {
             yield return (BasicBlock)_operands[i];
         }
     }

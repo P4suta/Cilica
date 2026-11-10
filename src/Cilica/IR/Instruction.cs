@@ -14,7 +14,9 @@ public abstract class Instruction : TrackedValue
 
     internal Value[] _operands;
     internal UseDef[] _useDefs;
-    public ReadOnlySpan<Value> Operands => _operands;
+    private int _numOperands;
+    internal int NumOperands => _numOperands;
+    public ReadOnlySpan<Value> Operands => new ReadOnlySpan<Value>(_operands, 0, _numOperands);
 
     internal void NotifyChanged() => Block?.Method?.NotifyChanged(IsBranch || this is GuardInst);
 
@@ -56,6 +58,7 @@ public abstract class Instruction : TrackedValue
     {
         _operands = opers;
         _useDefs = new UseDef[opers.Length];
+        _numOperands = opers.Length;
 
         for (int i = 0; i < opers.Length; i++) {
             _operands[i].AddUse(this, i);
@@ -112,7 +115,7 @@ public abstract class Instruction : TrackedValue
     {
         if (_useDefs == null) return;
 
-        for (int i = 0; i < _operands.Length; i++) {
+        for (int i = 0; i < _numOperands; i++) {
             _operands[i].RemoveUse(this, i);
         }
         _useDefs = null!;
@@ -121,7 +124,7 @@ public abstract class Instruction : TrackedValue
     /// <summary> Replaces all operands set to <paramref name="oldValue"/> with <paramref name="newValue"/>. </summary>
     public void ReplaceOperand(Value oldValue, Value newValue)
     {
-        for (int i = 0; i < _operands.Length; i++) {
+        for (int i = 0; i < _numOperands; i++) {
             if (_operands[i] == oldValue) {
                 ReplaceOperand(i, newValue);
             }
@@ -131,6 +134,7 @@ public abstract class Instruction : TrackedValue
     /// <summary> Replaces the operand at <paramref name="operIndex"/> with <paramref name="newValue"/>. </summary>
     public void ReplaceOperand(int operIndex, Value newValue)
     {
+        Ensure.IndexValid(operIndex, _numOperands);
         var prevValue = _operands[operIndex];
 
         if (newValue != prevValue) {
@@ -145,50 +149,66 @@ public abstract class Instruction : TrackedValue
     /// <summary> Returns a reference wrapper to the operand at <paramref name="index"/>. </summary>
     public UseRef GetOperandRef(int index)
     {
-        Ensure.IndexValid(index, _operands.Length);
+        Ensure.IndexValid(index, _numOperands);
         return new(this, index);
     }
 
     /// <summary> 
-    /// Extends the operand array by <paramref name="amount"/> and returns the index of the first new element. <br/>
-    /// Newly allocated elements are set to null, they should be initialized immediately using <see cref="ReplaceOperand(int, Value)"/>.
+    /// Extends the operand list by <paramref name="amount"/> and returns the index of the first new element. <br/>
+    /// New operands are null.
+    /// Initialize them immediately using <see cref="ReplaceOperand(int, Value)"/>.
     /// </summary>
     protected int GrowOperands(int amount)
     {
+        ArgumentOutOfRangeException.ThrowIfNegative(amount);
+        int oldCount = _numOperands;
+        int newCount = checked(oldCount + amount);
         NotifyChanged();
-        int oldLen = _operands.Length;
-        Array.Resize(ref _operands, oldLen + amount);
-        Array.Resize(ref _useDefs, oldLen + amount);
-        return oldLen;
+        if (newCount > _operands.Length) {
+            GrowOperandBuffers(newCount);
+        }
+        _numOperands = newCount;
+        return oldCount;
+    }
+
+    private void GrowOperandBuffers(int required)
+    {
+        int capacity = (int)Math.Min(Math.Max(4L, _operands.Length * 2L), Array.MaxLength);
+        capacity = Math.Max(capacity, required);
+        var operands = new Value[capacity];
+        var useDefs = new UseDef[capacity];
+        Array.Copy(_operands, operands, _numOperands);
+        Array.Copy(_useDefs, useDefs, _numOperands);
+        _operands = operands;
+        _useDefs = useDefs;
     }
 
     /// <summary> Removes operands in the specified range. </summary>
     protected void RemoveOperands(int startIndex, int count)
     {
         NotifyChanged();
-        Debug.Assert(startIndex >= 0 && startIndex + count <= _operands.Length);
+        Debug.Assert(startIndex >= 0 && count >= 0 && startIndex + count <= _numOperands);
+        int oldCount = _numOperands;
 
-        var oldOpers = _operands;
-        var oldUses = _useDefs;
+        if (_operands.GetType() != typeof(Value[])) {
+            var operands = new Value[_operands.Length];
+            Array.Copy(_operands, operands, _numOperands);
+            _operands = operands;
+        }
 
         // Remove uses from middle and postfix, relocate them later
-        for (int i = startIndex; i < oldOpers.Length; i++) {
-            oldOpers[i].RemoveUse(this, i);
+        for (int i = startIndex; i < oldCount; i++) {
+            _operands[i].RemoveUse(this, i);
         }
 
-        var newOpers = _operands = new Value[oldOpers.Length - count];
-        var newUses = _useDefs = new UseDef[newOpers.Length];
+        _numOperands = oldCount - count;
+        Array.Copy(_operands, startIndex + count, _operands, startIndex, _numOperands - startIndex);
+        Array.Clear(_operands, _numOperands, count);
+        Array.Clear(_useDefs, _numOperands, count);
 
-        // Copy prefix
-        for (int i = 0; i < startIndex; i++) {
-            newOpers[i] = oldOpers[i];
-            newUses[i] = oldUses[i];
-        }
-        // Shift postfix
-        for (int i = startIndex + count; i < oldOpers.Length; i++) {
-            int j = i - count;
-            newOpers[j] = oldOpers[i];
-            newOpers[j].AddUse(this, j); // Relocate use
+        // Rebuild use links after shifting operands.
+        for (int i = startIndex; i < _numOperands; i++) {
+            _operands[i].AddUse(this, i);
         }
     }
 
@@ -217,7 +237,7 @@ public abstract class Instruction : TrackedValue
     }
     protected virtual void PrintOperands(PrintContext ctx)
     {
-        for (int i = 0; i < _operands.Length; i++) {
+        for (int i = 0; i < _numOperands; i++) {
             ctx.Print(i == 0 ? " " : ", ");
             ctx.PrintAsOperand(_operands[i]);
         }

@@ -15,8 +15,11 @@ public class SsaPromotionTests(ModuleResolverFixture fixture) : PassTestBase(fix
 {
     [Theory]
     [InlineData(2)]
+    [InlineData(3)]
     [InlineData(128)]
+    [InlineData(129)]
     [InlineData(1024)]
+    [InlineData(1025)]
     public void MergesValuesFromEveryPredecessor(int predecessorCount)
     {
         var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, PrimType.Int32);
@@ -42,6 +45,7 @@ public class SsaPromotionTests(ModuleResolverFixture fixture) : PassTestBase(fix
         Assert.Null(unused.Block);
         var phi = Assert.Single(merge.Phis());
         Assert.Equal(predecessorCount, phi.NumArgs);
+        IRVerifier.Verify(IRCloner.CloneBody(body));
         var run = Utils.Compile<Func<int, int>>(body);
         for (int i = 0; i < predecessorCount; i++) {
             Assert.Equal(i + 7, Assert.IsType<ConstInt>(phi.GetValue(predecessors[i])).Value);

@@ -104,10 +104,10 @@ public class ResumeInst : Instruction
         int startIdx = IsFromFilter ? 1 : 0;
         int newCount = targets.Count + startIdx;
 
-        if (newCount > _operands.Length) {
-            GrowOperands(newCount - _operands.Length);
-        } else if (newCount < _operands.Length) {
-            RemoveOperands(newCount, _operands.Length - newCount);
+        if (newCount > NumOperands) {
+            GrowOperands(newCount - NumOperands);
+        } else if (newCount < NumOperands) {
+            RemoveOperands(newCount, NumOperands - newCount);
         }
 
         foreach (var target in targets) {
@@ -116,7 +116,7 @@ public class ResumeInst : Instruction
         }
     }
 
-    public IEnumerable<BasicBlock> GetExitTargets() => _operands.Skip(IsFromFilter ? 1 : 0).Cast<BasicBlock>();
+    public IEnumerable<BasicBlock> GetExitTargets() => _operands.Take(NumOperands).Skip(IsFromFilter ? 1 : 0).Cast<BasicBlock>();
 }
 
 /// <summary> Throws or rethrows an exception. </summary>

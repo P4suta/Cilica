@@ -3,7 +3,7 @@ namespace Cilica.IR;
 /// <summary> Represents a </summary>
 public abstract class IntrinsicInst : Instruction
 {
-    public ReadOnlySpan<Value> Args => _operands;
+    public ReadOnlySpan<Value> Args => Operands;
     public EntityDesc[] StaticArgs { get; private set; }
 
     public sealed override string InstName => "intrinsic";
@@ -27,7 +27,7 @@ public abstract class IntrinsicInst : Instruction
     /// <remarks> This method is meant to be used internally by <see cref="Utils.IRCloner"/>. The ownership of the arrays is given to the new instruction. </remarks> 
     protected internal virtual IntrinsicInst CloneWith(TypeDesc resultType, EntityDesc[] staticArgs, Value[] args)
     {
-        Debug.Assert(args.Length == _operands.Length);
+        Debug.Assert(args.Length == NumOperands);
         Debug.Assert(staticArgs.Length == StaticArgs.Length);
 
         // MemberwiseClone() is only ~10-20% slower than actual ctors based on my tests (~30ms for 100k calls).
@@ -53,6 +53,6 @@ public abstract class IntrinsicInst : Instruction
         if (StaticArgs.Length > 0) {
             ctx.PrintSequence("<", ">", StaticArgs, ctx.Print);
         }
-        ctx.PrintSequence("(", ")", _operands, ctx.PrintAsOperand);
+        ctx.PrintSequence("(", ")", _operands.Take(NumOperands), ctx.PrintAsOperand);
     }
 }

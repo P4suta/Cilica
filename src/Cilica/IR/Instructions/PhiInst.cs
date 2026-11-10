@@ -6,7 +6,7 @@ namespace Cilica.IR;
 /// </summary>
 public class PhiInst : Instruction
 {
-    public int NumArgs => _operands.Length / 2;
+    public int NumArgs => NumOperands / 2;
     public override string InstName => "phi";
 
     public PhiInst(TypeDesc type)
@@ -32,7 +32,7 @@ public class PhiInst : Instruction
     
     /// <summary> Returns the incomming value for the given predecessor block. If it doesn't exist, an exception is thrown. </summary>
     public Value GetValue(BasicBlock block) => GetValue(FindArgIndex(block));
-    public Value GetValue(int index) => _operands[index * 2 + 1];
+    public Value GetValue(int index) => Operands[index * 2 + 1];
 
     /// <summary> Sets the incomming value for the given predecessor block. If it doesn't exist, an exception is thrown. </summary>
     public void SetValue(BasicBlock block, Value newValue) => SetValue(FindArgIndex(block), newValue);
@@ -40,7 +40,7 @@ public class PhiInst : Instruction
 
     /// <summary> Returns the first block mapping to <paramref name="value"/>. If it doesn't exist, an exception is thrown. </summary>
     public BasicBlock GetBlock(Value value) => GetBlock(FindArgIndex(value, true));
-    public BasicBlock GetBlock(int index) => (BasicBlock)_operands[index * 2 + 0];
+    public BasicBlock GetBlock(int index) => (BasicBlock)Operands[index * 2 + 0];
 
     public PhiArg GetArg(int index) => new(GetBlock(index), GetValue(index));
 
@@ -99,7 +99,7 @@ public class PhiInst : Instruction
 
     private int FindArgIndex(Value operand, bool isValue = false)
     {
-        for (int i = isValue ? 1 : 0; i < _operands.Length; i += 2) {
+        for (int i = isValue ? 1 : 0; i < NumOperands; i += 2) {
             if (_operands[i] == operand) {
                 return i / 2;
             }
