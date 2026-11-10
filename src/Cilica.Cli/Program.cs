@@ -52,7 +52,8 @@ static void RunOptimizer(OptimizerOptions options)
 
     var comp = new Compilation(module, logger, new CompilationSettings() {
         VerifyEachPass = options.VerifyEachPass,
-        PreserveTrimmingDependencies = options.PreserveTrimmingDependencies
+        PreserveTrimmingDependencies = options.PreserveTrimmingDependencies,
+        NativeAotCompatibility = options.NativeAotCompatibility
     });
     var compilationResult = RunPasses(options, comp);
 

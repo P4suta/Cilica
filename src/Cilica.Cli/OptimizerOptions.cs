@@ -17,6 +17,9 @@ class OptimizerOptions
     [Option("trimmer-compat", HelpText = "Prevent inlining methods with trimming dependency annotations.")]
     public bool PreserveTrimmingDependencies { get; set; }
 
+    [Option("nativeaot-compat", HelpText = "Restrict transformations to IL constructs supported by NativeAOT.")]
+    public bool NativeAotCompatibility { get; set; }
+
     [Option("public-sign", HelpText = "Keep the assembly public key and identity, with a zero-filled strong-name signature for .NET Core/.NET 5+. Does not preserve the publisher's cryptographic signature.")]
     public bool PublicSign { get; set; }
 

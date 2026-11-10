@@ -6,7 +6,7 @@ using Cilica.IR.Utils;
 
 partial class FoldReflection
 {
-    private static bool FoldDelegate(CallInst call, DelegateCreation creation, MethodDefOrSpec method, InliningAccess access,
+    private static bool FoldDelegate(MethodTransformContext ctx, CallInst call, DelegateCreation creation, MethodDefOrSpec method, InliningAccess access,
         ReflectionTypeFacts types, ReflectionLookup lookups)
     {
         var delegateType = creation.Type;
@@ -23,6 +23,9 @@ partial class FoldReflection
         bool open = count == method.ParamSig.Count;
         int offset;
         if (open) {
+            // NativeAOT supports open instance binding through reflection, but not
+            // through the ldftn/delegate-constructor IL pattern.
+            if (method.IsInstance && ctx.Compilation.Settings.NativeAotCompatibility) return false;
             // ldftn cannot name an abstract method. A closed virtual delegate
             // can instead obtain its callable entry point through ldvirtftn.
             if (creation.Target is not ConstNull || method.Attribs.HasFlag(MethodAttributes.Abstract)) return false;

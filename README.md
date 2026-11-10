@@ -43,6 +43,8 @@ Set `RunCilica` to enable or disable optimization explicitly, and use `CilicaExt
 
 Use `--skip-module-initializers` to omit explicit module-initialization checks when the runtime initializes modules before use. `Cilica.OptimizerTask` enables this by default with `PublishAot=true`; set `CilicaSkipModuleInitializers=false` to override it.
 
+Use `--nativeaot-compat` when invoking the CLI before NativeAOT compilation. `Cilica.OptimizerTask` enables this automatically with `PublishAot=true`.
+
 The optimizer task processes your main assembly by default. To include managed dependencies and framework assemblies in a self-contained build or publish, enable `CilicaAllAssemblies`:
 
 ```xml

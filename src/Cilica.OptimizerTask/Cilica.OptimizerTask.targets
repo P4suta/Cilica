@@ -27,6 +27,7 @@
     <PropertyGroup>
       <CliOptimizerPath Condition="'$(CliOptimizerPath)' == ''">$(MSBuildThisFileDirectory)../tools/net10.0/Cilica.Cli.dll</CliOptimizerPath>
       <CilicaExtraArgs Condition="'$(PublishTrimmed)' == 'true' or '$(PublishAot)' == 'true'">$(CilicaExtraArgs) --trimmer-compat</CilicaExtraArgs>
+      <CilicaExtraArgs Condition="'$(PublishAot)' == 'true'">$(CilicaExtraArgs) --nativeaot-compat</CilicaExtraArgs>
 
       <!-- Trailing slashes are removed to prevent issues with argument splitting. -->
       <JoinedAsmRefPaths>@(AsmRefPaths -> '"%(Identity)"', ' ')</JoinedAsmRefPaths>
@@ -147,17 +148,22 @@
   <Target Name="_OptimizeCilicaAssembly" DependsOnTargets="_ReadCilicaInputs"
           Inputs="@(_CilicaDependency);$(_CilicaInputsFile)" Outputs="$(_CilicaOutputPath)">
     <MakeDir Directories="$([System.IO.Path]::GetDirectoryName('$(_CilicaOutputPath)'))" />
-    <Delete Files="$([System.IO.Path]::ChangeExtension('$(_CilicaOutputPath)', '.pdb'))" />
+    <Delete Files="$(_CilicaOutputPath);$([System.IO.Path]::ChangeExtension('$(_CilicaOutputPath)', '.pdb'))" />
     <Message Text="Cilica: optimizing $(_CilicaInputPath)" Importance="high" />
     <Exec
       IgnoreExitCode="true"
       Command='dotnet "$(CliOptimizerPath)" -i "$(_CilicaInputPath)" -o "$(_CilicaOutputPath)" $(ResolverPathsArg) $(FilterUnmarkedArg) $(CilicaExtraArgs)'
-    />
+    >
+      <Output TaskParameter="ExitCode" PropertyName="_CilicaExitCode" />
+    </Exec>
+    <Warning Code="CILICA0001" Condition="'$(_CilicaExitCode)' != '0'" Text="Cilica could not optimize '$(_CilicaInputPath)' (exit code $(_CilicaExitCode)). The original assembly will be used." />
   </Target>
 
   <Target Name="_GetCilicaOutputs">
     <ItemGroup>
       <_CilicaOutput Include="@(_CilicaInput->'%(CilicaOutputPath)')" Condition="Exists('%(_CilicaInput.CilicaOutputPath)')" />
+      <_CilicaReplacedInput Include="@(_CilicaOutput->'%(CilicaOriginalPath)')" />
+      <_CilicaReplacedInput Include="$([System.IO.Path]::ChangeExtension('%(_CilicaOutput.CilicaOriginalPath)', '.pdb'))" Condition="'%(_CilicaOutput.Extension)' != '.pdb'" />
       <FileWrites Include="@(_CilicaOutput);$(_CilicaDirectory)options;$(_CilicaDirectory)inputs;@(_CilicaAssembly->'%(CilicaOutputPdb)')" />
     </ItemGroup>
   </Target>
@@ -166,11 +172,11 @@
           Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(_IsPublishing)' != 'true' and '$(DesignTimeBuild)' != 'true' and ('$(PublishTrimmed)' != 'true' or '$(PublishAot)' == 'true')"
           DependsOnTargets="_CollectCilicaBuildInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
     <ItemGroup>
-      <IntermediateAssembly Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IntermediateAssembly Remove="@(_CilicaReplacedInput)" />
       <IntermediateAssembly Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))" />
-      <ReferenceCopyLocalPaths Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <ReferenceCopyLocalPaths Remove="@(_CilicaReplacedInput)" />
       <ReferenceCopyLocalPaths Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Reference'))" />
-      <_DebugSymbolsIntermediatePath Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <_DebugSymbolsIntermediatePath Remove="@(_CilicaReplacedInput)" />
       <_DebugSymbolsIntermediatePath Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Symbols'))" />
     </ItemGroup>
   </Target>
@@ -179,9 +185,9 @@
           Condition="'$(RunCilica)' == 'true' and ('$(CilicaAllAssemblies)' == 'true' or '$(PublishTrimmed)' == 'true') and '$(PublishAot)' != 'true'"
           DependsOnTargets="_CollectCilicaPublishInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
     <ItemGroup>
-      <ResolvedFileToPublish Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <ResolvedFileToPublish Remove="@(_CilicaReplacedInput)" />
       <ResolvedFileToPublish Include="@(_CilicaOutput)" />
-      <IntermediateAssembly Remove="@(IntermediateAssembly)" />
+      <IntermediateAssembly Remove="@(IntermediateAssembly)" Condition="'@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))' != ''" />
       <IntermediateAssembly Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))" />
     </ItemGroup>
   </Target>
@@ -190,9 +196,9 @@
           Condition="'$(RunCilica)' == 'true' and '$(CilicaAllAssemblies)' == 'true' and '$(PublishAot)' == 'true'"
           DependsOnTargets="_CollectCilicaAotInputs;_PrepareCilicaAssemblies;_OptimizeCilicaAssemblies;_GetCilicaOutputs">
     <ItemGroup>
-      <IlcCompileInput Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IlcCompileInput Remove="@(_CilicaReplacedInput)" />
       <IlcCompileInput Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Assembly'))" />
-      <IlcReference Remove="@(_CilicaInput->'%(CilicaOriginalPath)')" />
+      <IlcReference Remove="@(_CilicaReplacedInput)" />
       <IlcReference Include="@(_CilicaOutput->WithMetadataValue('CilicaItemGroup', 'Reference'))" />
     </ItemGroup>
   </Target>

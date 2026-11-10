@@ -404,6 +404,9 @@ public class CompilationSettings
 
     public bool PreserveTrimmingDependencies { get; init; }
 
+    /// <summary> Restrict transformations to IL constructs supported by NativeAOT. </summary>
+    public bool NativeAotCompatibility { get; init; }
+
     /// <summary> Caller IL size budget in bytes; larger callers may only inline without growing. </summary>
     public int MaxInlinedMethodILSize { get; init; } = 32 * 1024;
 }
