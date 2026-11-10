@@ -10,6 +10,116 @@ using MethodBody = Cilica.IR.MethodBody;
 public partial class FoldReflectionTests
 {
     [Theory]
+    [InlineData("KnownMethodExists")]
+    [InlineData("KnownFieldExists")]
+    [InlineData("KnownPropertyExists")]
+    [InlineData("KnownGenericMethodExists")]
+    [InlineData("KnownGenericTypeExists")]
+    [InlineData("MissingMethodIsNull")]
+    [InlineData("MissingFieldIsNull")]
+    [InlineData("MissingPropertyIsNull")]
+    [InlineData("ExcludedFieldIsNull")]
+    [InlineData("MissingAccessorIsNull")]
+    [InlineData("ExcludedAccessorIsNull")]
+    public void ProvenLookupNullnessFoldsWithoutAMemberAccess(string name)
+    {
+        foreach (bool defaultPipeline in new[] { false, true }) {
+            using var test = new Case(name);
+            test.Optimize(defaultPipeline: defaultPipeline, propagateAssertions: true);
+            Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => instruction.Operand is MethodDesc);
+            Assert.True((bool)test.Emit().Invoke(null, null)!);
+        }
+    }
+
+    [Theory]
+    [InlineData("KnownMethodOperatorNullCheck")]
+    [InlineData("MissingMethodOperatorNullCheck")]
+    [InlineData("KnownFieldOperatorNullCheck")]
+    [InlineData("KnownPropertyOperatorNullCheck")]
+    [InlineData("KnownTypeOperatorNullCheck")]
+    [InlineData("KnownMemberOperatorNullCheck")]
+    [InlineData("KnownMethodBaseOperatorNullCheck")]
+    [InlineData("KnownMethodReversedNullCheck")]
+    public void LookupFactsSimplifyMetadataNullOperators(string name)
+    {
+        using var test = new Case(name);
+        test.Optimize(defaultPipeline: true);
+        Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => instruction.Operand is MethodDesc);
+        Assert.True((bool)test.Emit().Invoke(null, null)!);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void LookupFactsPropagateThroughBranchesAndPhis(bool defaultPipeline)
+    {
+        using var test = new Case("LookupChoice");
+        test.Optimize(defaultPipeline: defaultPipeline, propagateAssertions: true);
+        var method = test.Emit();
+        Assert.Equal(42, method.Invoke(null, [false]));
+        Assert.Equal(42, method.Invoke(null, [true]));
+        Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => instruction.OpCode is ILCode.Ldnull or ILCode.Ceq);
+    }
+
+    [Theory]
+    [InlineData("KnownMethodExists")]
+    [InlineData("MissingMethodIsNull")]
+    public void LookupFactsPreserveRequestedTrimmingDependencies(string name)
+    {
+        using var test = new Case(name);
+        test.Optimize(preserveTrimmingDependencies: true, propagateAssertions: true);
+        Assert.Contains(test.Method.ILBody!.Instructions, instruction => instruction.Operand is MethodDesc { Name: "GetMethod" });
+        Assert.DoesNotContain(test.Method.ILBody.Instructions, instruction => instruction.OpCode == ILCode.Ceq);
+        Assert.True((bool)test.Emit().Invoke(null, null)!);
+    }
+
+    [Theory]
+    [InlineData("KnownMethodMetadata", "Constant")]
+    [InlineData("MissingLookupWithReceiverEffects", 1)]
+    [InlineData("MissingAccessorWithFlagEffects", 1)]
+    [InlineData("MissingMethodResult", null)]
+    [InlineData("MetadataEqualityKeepsEqualsEffects", true)]
+    [InlineData("AmbiguousLookupNullCheck", "ambiguous")]
+    [InlineData("InheritedLookupNullCheck", true)]
+    [InlineData("LookupResultInCatch", true)]
+    public void LookupFactsPreserveMetadataEffectsAndExceptions(string name, object? expected)
+    {
+        using var test = new Case(name);
+        test.Optimize(defaultPipeline: true);
+        Assert.Equal(expected, test.Emit().Invoke(null, null));
+        if (name == "KnownMethodMetadata") {
+            Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => Equals(instruction.Operand, "missing"));
+        }
+    }
+
+    [Fact]
+    public void UnknownLookupsKeepTheirRuntimeNullness()
+    {
+        using var test = new Case("RuntimeLookupNullCheck");
+        test.Optimize(defaultPipeline: true);
+        var method = test.Emit();
+        Assert.False((bool)method.Invoke(null, ["Constant"])!);
+        Assert.True((bool)method.Invoke(null, ["Absent"])!);
+        Assert.IsType<AmbiguousMatchException>(Assert.Throws<TargetInvocationException>(() => method.Invoke(null, ["Overload"])).InnerException);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingLookupsKeepReceiverValidation(bool defaultPipeline)
+    {
+        using var test = new Case("LookupOnNullableReceiver");
+        test.Optimize(defaultPipeline: defaultPipeline, propagateAssertions: true);
+        var method = test.Emit();
+        Assert.IsType<NullReferenceException>(Assert.Throws<TargetInvocationException>(() => method.Invoke(null, [null])).InnerException);
+        Assert.True((bool)method.Invoke(null, [Activator.CreateInstance(method.GetParameters()[0].ParameterType)])!);
+
+        using var accessor = new Case("ThrowingAccessorNullCheck");
+        accessor.Optimize(defaultPipeline: defaultPipeline, propagateAssertions: true);
+        Assert.IsType<NullReferenceException>(Assert.Throws<TargetInvocationException>(() => accessor.Emit().Invoke(null, null)).InnerException);
+    }
+
+    [Theory]
     [InlineData("Fields", 42)]
     [InlineData("StaticFields", "updated")]
     [InlineData("ObjectFieldStoresMissing", true)]
@@ -400,7 +510,7 @@ public partial class FoldReflectionTests
             Original = Assembly.Load(File.ReadAllBytes(path)).GetType(typeName)!.GetMethod(name)!;
         }
 
-        public void Optimize(bool defaultPipeline = false, bool preserveTrimmingDependencies = false)
+        public void Optimize(bool defaultPipeline = false, bool preserveTrimmingDependencies = false, bool propagateAssertions = false)
         {
             var compilation = new Compilation(_module, new VoidLogger(), new() {
                 VerifyEachPass = true,
@@ -408,7 +518,11 @@ public partial class FoldReflectionTests
             });
             var manager = defaultPipeline ? CompilationPipeline.CreateDefault(compilation)
                 : new PassManager { Compilation = compilation };
-            if (!defaultPipeline) manager.AddPasses().Apply<SimplifyCFG>().Apply<SsaPromotion>().Apply<FoldReflection>().Apply<DeadCodeElim>();
+            if (!defaultPipeline) {
+                var passes = manager.AddPasses().Apply<SimplifyCFG>().Apply<SsaPromotion>().Apply<FoldReflection>();
+                if (propagateAssertions) passes.Apply<AssertionProp>().Apply<SimplifyInsts>().Apply<SimplifyCFG>().Apply<FoldReflection>();
+                passes.Apply<DeadCodeElim>();
+            }
             var result = manager.Run([Method]);
             Assert.True(result.Succeeded, string.Join("\n", result.Methods.Select(method => method.Error?.ToString())));
         }

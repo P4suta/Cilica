@@ -3,6 +3,108 @@ using System.Runtime.CompilerServices;
 
 public static class ReflectionCases
 {
+    public static bool KnownMethodExists() => typeof(Target).GetMethod(nameof(Target.Constant)) is not null;
+    public static bool KnownFieldExists() => typeof(Target).GetField(nameof(Target.Value)) is not null;
+    public static bool KnownPropertyExists() => typeof(Target).GetProperty(nameof(Target.Property)) is not null;
+    public static bool KnownGenericMethodExists() => typeof(Target).GetMethod(nameof(Target.Generic))!.MakeGenericMethod(typeof(int)) is not null;
+    public static bool KnownGenericTypeExists() => typeof(GenericTarget<>).MakeGenericType(typeof(int)) is not null;
+    public static bool KnownMethodOperatorNullCheck() => typeof(Target).GetMethod(nameof(Target.Constant)) != null;
+    public static bool MissingMethodOperatorNullCheck() => typeof(Target).GetMethod("Absent") == null;
+    public static bool KnownFieldOperatorNullCheck() => typeof(Target).GetField(nameof(Target.Value)) != null;
+    public static bool KnownPropertyOperatorNullCheck() => typeof(Target).GetProperty(nameof(Target.Property)) != null;
+    public static bool KnownTypeOperatorNullCheck() => typeof(GenericTarget<>).MakeGenericType(typeof(int)) != null;
+    public static bool KnownMemberOperatorNullCheck() => (MemberInfo?)typeof(Target).GetMethod(nameof(Target.Constant)) != null;
+    public static bool KnownMethodBaseOperatorNullCheck() => (MethodBase?)typeof(Target).GetMethod(nameof(Target.Constant)) != null;
+    public static bool KnownMethodReversedNullCheck() => null != typeof(Target).GetMethod(nameof(Target.Constant));
+    public static bool MissingMethodIsNull() => typeof(Target).GetMethod("Absent") is null;
+    public static bool MissingFieldIsNull() => typeof(Target).GetField("Absent") is null;
+    public static bool MissingPropertyIsNull() => typeof(Target).GetProperty("Absent") is null;
+    public static bool ExcludedFieldIsNull() => typeof(Target).GetField("Secret", BindingFlags.Instance | BindingFlags.Public) is null;
+    public static bool MissingAccessorIsNull() => typeof(ReflectionAccessorCases.Target).GetProperty("WriteOnly")!.GetMethod is null;
+    public static bool ExcludedAccessorIsNull() => typeof(ReflectionAccessorCases.Target).GetProperty("PrivateSet")!.GetSetMethod(false) is null;
+    public static MethodInfo? MissingMethodResult() => typeof(Target).GetMethod("Absent");
+
+    public static string KnownMethodMetadata()
+    {
+        var method = typeof(Target).GetMethod(nameof(Target.Constant));
+        return method is null ? "missing" : method.Name;
+    }
+
+    public static int LookupChoice(bool chooseField)
+    {
+        MemberInfo? member = chooseField ? typeof(Target).GetField(nameof(Target.Value)) : typeof(Target).GetMethod(nameof(Target.Constant));
+        return member is null ? 0 : 42;
+    }
+
+    public static bool LookupOnNullableReceiver(Target? target) => target!.GetType().GetField("Absent") is null;
+
+    public static int LookupEffects;
+
+    public static int MissingLookupWithReceiverEffects()
+    {
+        LookupEffects = 0;
+        return LookupReceiver().GetType().GetField("Absent") is null ? LookupEffects : -1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static Target LookupReceiver()
+    {
+        LookupEffects++;
+        return new Target();
+    }
+
+    public static int MissingAccessorWithFlagEffects()
+    {
+        LookupEffects = 0;
+        return typeof(ReflectionAccessorCases.Target).GetProperty("WriteOnly")!.GetGetMethod(AccessorFlag()) is null ? LookupEffects : -1;
+    }
+
+    [MethodImpl(MethodImplOptions.NoInlining)]
+    private static bool AccessorFlag()
+    {
+        LookupEffects++;
+        return false;
+    }
+
+    public static bool MetadataEqualityKeepsEqualsEffects()
+    {
+        LookupEffects = 0;
+        var first = new ObservedType();
+        var second = new ObservedType();
+        return first == second && LookupEffects == 1;
+    }
+
+    private sealed class ObservedType() : TypeDelegator(typeof(Target))
+    {
+        public override bool Equals(Type? other)
+        {
+            LookupEffects++;
+            return true;
+        }
+    }
+
+    public static string AmbiguousLookupNullCheck()
+    {
+        try { return typeof(Target).GetMethod(nameof(Target.Overload)) is null ? "missing" : "found"; }
+        catch (AmbiguousMatchException) { return "ambiguous"; }
+    }
+
+    public static bool InheritedLookupNullCheck() => typeof(Target).GetField(nameof(Target.Inherited)) is not null;
+    public static bool RuntimeLookupNullCheck(string name) => typeof(Target).GetMethod(name) is null;
+
+    public static bool ThrowingAccessorNullCheck() => typeof(Target).GetProperty("Absent")!.GetMethod is null;
+
+    public static bool LookupResultInCatch()
+    {
+        MethodInfo? method = null;
+        try {
+            method = typeof(Target).GetMethod(nameof(Target.Overload));
+        } catch (AmbiguousMatchException) {
+            return method is null;
+        }
+        return false;
+    }
+
     public static object Fields()
     {
         var target = new Target();

@@ -258,7 +258,7 @@ public class ValueNumbering : IMethodPass
         //       since we don't always create new instances.
         Reg<CallInst>(
             comp: (a, b) => a.Method == b.Method && a.IsVirtual == b.IsVirtual && a.Constraint == b.Constraint &&
-                a.IsReadOnly == b.IsReadOnly && a.IsTailCall == b.IsTailCall && a.Args.SequenceEqual(b.Args),
+                a.IsReadOnly == b.IsReadOnly && a.IsTailCall == b.IsTailCall && a.ResultIsNonNull == b.ResultIsNonNull && a.Args.SequenceEqual(b.Args),
             hash: (inst) => HashCode.Combine(inst.Method, inst.NumArgs > 0 ? inst.Args[0] : null)
         );
 

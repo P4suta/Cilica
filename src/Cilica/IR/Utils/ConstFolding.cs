@@ -256,6 +256,7 @@ public class ConstFolding
         return cond switch {
             ConstInt c => c.Value != 0,
             ConstNull => false,
+            CallInst { ResultIsNonNull: true } => true,
             CilIntrinsic.Box { SourceType: { IsValueType: true, Name: not "Nullable`1" } } => true, // either throws or returns non-null 
             NewObjInst => true,
             _ => null,
@@ -277,6 +278,16 @@ public class ConstFolding
     {
         if (IsCoreLibMethod(method, out var methodDef)) {
             var declType = methodDef.DeclaringType;
+
+            if (method.Name is "op_Equality" or "op_Inequality" && args.Length == 2 &&
+                (args[0] is ConstNull || args[1] is ConstNull) &&
+                (declType.Namespace, declType.Name) is ("System", "Type") or
+                    ("System.Reflection", "MemberInfo" or "MethodBase" or "MethodInfo" or "FieldInfo" or "PropertyInfo") &&
+                new MethodSig(PrimType.Bool, [declType, declType], false).Matches(method)) {
+                // Metadata equality operators test null before invoking virtual Equals.
+                var other = args[0] is ConstNull ? args[1] : args[0];
+                return FoldCompare(method.Name == "op_Equality" ? CompareOp.Eq : CompareOp.Ne, other, ConstNull.Create());
+            }
 
             object? result = (declType.Namespace, declType.Name, method.Name, AllConsts(args)) switch {
                 ("System", "Math" or "MathF", _, true)

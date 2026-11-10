@@ -8,12 +8,13 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
     const BindingFlags SupportedFlags = BindingFlags.Public | BindingFlags.NonPublic |
         BindingFlags.Instance | BindingFlags.Static | BindingFlags.DeclaredOnly;
 
-    public sealed record Result(MemberDesc Member, TypeDefOrSpec ReflectedType);
+    // A null Result is unknown; a null Member is a proven absence.
+    public sealed record Result(MemberDesc? Member, TypeDefOrSpec ReflectedType);
 
     readonly Dictionary<CallInst, Result?> _members = new();
     readonly Dictionary<CallInst, TypeDesc?> _types = new();
     readonly Dictionary<CallInst, KnownArray> _typeArguments = new();
-    readonly List<CallInst> _resolved = new();
+    readonly List<(CallInst Call, bool NonNull)> _resolved = new();
     VirtualDispatch.Cache? _dispatch;
 
     public MethodDesc? ResolveVirtualMethod(MethodDefOrSpec method, TypeDefOrSpec actualType)
@@ -25,7 +26,7 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
         if (_members.TryGetValue(call, out var result)) return result;
         result = ResolveMember(call);
         _members.Add(call, result);
-        if (result != null) _resolved.Add(call);
+        if (result != null) _resolved.Add((call, result.Member != null));
         return result;
     }
 
@@ -42,7 +43,7 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
             _typeArguments.Add(call, array);
         }
         _types.Add(call, type);
-        if (type != null) _resolved.Add(call);
+        if (type != null) _resolved.Add((call, true));
         return type;
     }
 
@@ -95,7 +96,7 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
                 }
             }
         }
-        return selected == null ? null : new(selected, type);
+        return new(selected, type);
     }
 
     private Result? ResolveAccessor(CallInst lookup)
@@ -111,7 +112,8 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
 
         if (Resolve(lookup.Args[0]) is not { Member: PropertyDef property, ReflectedType: var owner }) return null;
         var accessor = lookup.Method.Name is "get_GetMethod" or "GetGetMethod" ? property.Getter : property.Setter;
-        if (accessor == null || !accessor.IsPublic && nonPublic != true) return null;
+        if (accessor == null || !accessor.IsPublic && nonPublic == false) return new(null, owner);
+        if (!accessor.IsPublic && nonPublic == null) return null;
         return new(accessor.GetSpec(new GenericContext(owner)), owner);
     }
 
@@ -128,13 +130,39 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
         return true;
     }
 
-    public void RemoveUnused()
+    public static bool IsMemberLookup(CallInst call)
+        => call.Method.Name switch {
+            "GetField" or "GetMethod" or "GetProperty" => call.Method.DeclaringType.IsCorelibType(typeof(Type)),
+            "get_GetMethod" or "get_SetMethod" or "GetGetMethod" or "GetSetMethod" => call.Method.DeclaringType.IsCorelibType(typeof(PropertyInfo)),
+            "MakeGenericMethod" => call.Method.DeclaringType.IsCorelibType(typeof(MethodInfo)),
+            _ => false
+        };
+
+    public static bool IsTypeLookup(CallInst call)
+        => call.Method.Name == "GetTypeFromHandle" && call.Method.DeclaringType.IsCorelibType(typeof(Type)) ||
+            call.Method.Name == "GetType" && call.Method.DeclaringType.IsCorelibType(typeof(object));
+
+    public void ApplyFacts(bool preserveTrimmingDependencies, ICompilationLogger logger)
     {
         for (int i = _resolved.Count - 1; i >= 0; i--) {
-            var call = _resolved[i];
+            var (call, nonNull) = _resolved[i];
+            if (logger.IsEnabled(LogLevel.Trace) && (nonNull ? !call.ResultIsNonNull : call.NumUses != 0)) {
+                if (nonNull) {
+                    EntityDesc? target = _types.TryGetValue(call, out var type) ? type : _members[call]!.Member;
+                    logger.Trace($"Proved reflection lookup '{call}' in '{call.Block}' non-null for '{target}'.");
+                } else {
+                    logger.Trace($"Folded reflection lookup '{call}' in '{call.Block}' to null (no matching member in '{_members[call]!.ReflectedType}').");
+                }
+            }
+            if (nonNull) call.ResultIsNonNull = true;
+            else call.ReplaceUses(ConstNull.Create());
+            if (preserveTrimmingDependencies) continue;
+
             // Earlier inlining/devirtualization may have separated receiver
             // validation from the consuming call. Successful lookups are non-null.
-            foreach (var check in call.Users().AsEnumerable().OfType<CilIntrinsic.NullCheck>().ToArray()) check.Remove();
+            if (nonNull) {
+                foreach (var check in call.Users().AsEnumerable().OfType<CilIntrinsic.NullCheck>().ToArray()) check.Remove();
+            }
             if (call.NumUses != 0 || call.Method.Name == "GetType" && !types.IsNonNull(call.Args[0])) continue;
             call.Remove();
             if (_typeArguments.TryGetValue(call, out var array)) array.Remove();

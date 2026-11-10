@@ -397,6 +397,33 @@ Block1:
         }
     }
 
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void NonNullCallFactsSurvivePrintingAndCloning(bool tail)
+    {
+        string opcode = tail ? "call.tail.nonnull" : "call.nonnull";
+        var body = Parse($$"""
+            import $Root from TestAsm
+
+            static ParserDummy::TestCase(#left: string, #right: string) -> string {
+            Entry:
+                value = {{opcode}} String::Concat(string: #left, string: #right) -> string
+                ret value
+            }
+            """);
+        var clone = IRCloner.CloneBody(body);
+        var call = Assert.Single(clone.Instructions().OfType<CallInst>());
+        Assert.True(ConstFolding.FoldCondition(call));
+        Assert.Equal(tail, call.IsTailCall);
+        Assert.Contains(opcode, call.ToString());
+
+        long revision = clone.Revision;
+        call.ResultIsNonNull = false;
+        Assert.True(clone.Revision > revision);
+        Assert.Null(ConstFolding.FoldCondition(call));
+    }
+
     private IRParser CreateParser(string code)
     {
         return new IRParser(new FakeParserContext(code, _modResolver));

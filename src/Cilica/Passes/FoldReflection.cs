@@ -19,8 +19,8 @@ public sealed partial class FoldReflection : IMethodPass
         foreach (var call in ctx.Method.Instructions().OfType<CallInst>().ToArray()) {
             if (call.IsTailCall || call.IsReadOnly || call.Constraint != null) continue;
 
-            if (!ctx.Compilation.Settings.PreserveTrimmingDependencies && call.Method.Name == "MakeGenericType" &&
-                lookups.ResolveType(call) is { } constructedType && access.CanUseType(constructedType)) {
+            if (call.Method.Name == "MakeGenericType" && lookups.ResolveType(call) is { } constructedType) {
+                if (ctx.Compilation.Settings.PreserveTrimmingDependencies || !access.CanUseType(constructedType)) continue;
                 var original = ctx.Logger.IsEnabled(LogLevel.Trace) ? call.ToString() : null;
                 var builder = new IRBuilder(call, InsertionDir.Before).SetNextDebugLocation(call.DebugLocation);
                 var typeType = ctx.Module.Resolver.Import(typeof(Type));
@@ -30,6 +30,15 @@ public sealed partial class FoldReflection : IMethodPass
                 call.ReplaceUses(replacement);
                 lookups.ResolveType(replacement);
                 ctx.Logger.Trace($"Folded reflection type construction '{original}' in '{call.Block}' to '{constructedType}'.");
+                continue;
+            }
+
+            if (ReflectionLookup.IsMemberLookup(call)) {
+                lookups.Resolve(call);
+                continue;
+            }
+            if (ReflectionLookup.IsTypeLookup(call)) {
+                lookups.ResolveType(call);
                 continue;
             }
 
@@ -58,9 +67,7 @@ public sealed partial class FoldReflection : IMethodPass
             }
         }
 
-        if (!ctx.Compilation.Settings.PreserveTrimmingDependencies) {
-            lookups.RemoveUnused();
-        }
+        lookups.ApplyFacts(ctx.Compilation.Settings.PreserveTrimmingDependencies, ctx.Logger);
         return ctx.Method.Revision == revision ? MethodInvalidations.None :
             ctx.Method.ControlFlowRevision == controlFlowRevision ? MethodInvalidations.DataFlow : MethodInvalidations.ExceptionRegions;
     }

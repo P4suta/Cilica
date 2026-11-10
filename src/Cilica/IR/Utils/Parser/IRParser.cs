@@ -315,7 +315,7 @@ public partial class IRParser
             Opcode.Switch => ParseSwitch(),
             Opcode.Ret => ParseRet(),
             Opcode.Phi => ParsePhi(),
-            Opcode.Call or Opcode.CallVirt or Opcode.NewObj => ParseCallInst(op),
+            Opcode.Call or Opcode.CallVirt or Opcode.NewObj => ParseCallInst(op, mods),
             Opcode.FldAddr => ParseFieldAddr(mods),
             Opcode.ArrAddr => ParseArrayAddr(mods),
             Opcode.Load or Opcode.Store => ParseMemInst(op, mods),
@@ -451,7 +451,7 @@ public partial class IRParser
         return new PhiInst(type, args.ToArray());
     }
 
-    private Instruction ParseCallInst(Opcode op)
+    private Instruction ParseCallInst(Opcode op, OpcodeModifiers mods)
     {
         // Method := Type  "::"  Id  GenArgs  Call  ResultType
         int start = _lexer.Peek().Position.Start;
@@ -502,7 +502,10 @@ public partial class IRParser
         if (op == Opcode.NewObj) {
             return new NewObjInst(method, opers.ToArray());
         }
-        return new CallInst(method, opers.ToArray(), op == Opcode.CallVirt);
+        return new CallInst(method, opers.ToArray(), op == Opcode.CallVirt) {
+            ResultIsNonNull = mods.HasFlag(OpcodeModifiers.NonNull),
+            IsTailCall = mods.HasFlag(OpcodeModifiers.Tail)
+        };
     }
 
     private Instruction ParseFieldAddr(OpcodeModifiers mods)
