@@ -243,6 +243,8 @@ public class IRVerifier
                     break;
             }
             case CallInst call: {
+                    Check(!call.ResultIsNonNull || call.ResultType.StackType == StackType.Object, call,
+                        "A non-null call result must be an object reference");
                     Check(call.IsVirtual || call.Method.IsStatic && call.Constraint != null ||
                         !call.Method.Attribs.HasFlag(System.Reflection.MethodAttributes.Abstract), call,
                         "Abstract methods require virtual dispatch");

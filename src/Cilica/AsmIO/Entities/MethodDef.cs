@@ -97,7 +97,13 @@ public class MethodDef : MethodDefOrSpec
 {
     public override MethodDef Definition => this;
     public override TypeDef DeclaringType { get; }
-    public override string Name { get; set; }
+    public override string Name {
+        get;
+        set {
+            if (field == ".cctor" || value == ".cctor") DeclaringType.InvalidateStaticConstructor();
+            field = value;
+        }
+    }
 
     public override MethodAttributes Attribs { get; set; }
     public override MethodImplAttributes ImplAttribs { get; set; }

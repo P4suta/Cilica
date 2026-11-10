@@ -95,8 +95,12 @@ public class TypeDef : TypeDefOrSpec
     List<FieldDef>? _fields;
     public override List<FieldDef> Fields => _fields ??= (_loader?.LoadFields(this) ?? new());
 
-    List<MethodDef>? _methods;
-    public override List<MethodDef> Methods => _methods ??= (_loader?.LoadMethods(this) ?? new());
+    MethodDefCollection? _methods;
+    public override MethodDefCollection Methods => _methods ??= new(_loader?.LoadMethods(this) ?? new());
+
+    internal bool HasStaticConstructor => Methods.HasStaticConstructor;
+
+    internal void InvalidateStaticConstructor() => _methods?.InvalidateStaticConstructor();
     
     List<PropertyDef>? _properties;
     public List<PropertyDef> Properties => _properties ??= (_loader?.LoadProperties(this) ?? new());

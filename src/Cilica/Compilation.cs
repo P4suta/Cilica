@@ -161,7 +161,7 @@ public partial class Compilation
         return new InliningAccess(caller.DeclaringType, ignoreVisibility: Module != Resolver.CoreLib).CheckBody(body, scalarReplacement);
     }
 
-    private bool WrapsNonExceptions(ModuleDef module)
+    internal bool WrapsNonExceptions(ModuleDef module)
     {
         if (!_exceptionWrapping.TryGetValue(module, out bool wraps)) {
             wraps = module.GetCustomAttribs(forAssembly: true).Find(typeof(RuntimeCompatibilityAttribute))
@@ -171,7 +171,7 @@ public partial class Compilation
         return wraps;
     }
 
-    private static bool IsFrameSensitive(MethodDesc method)
+    internal static bool IsFrameSensitive(MethodDesc method)
     {
         if (method.Attribs.HasFlag(MethodAttributes.RequireSecObject)) return true;
         var type = method.DeclaringType;
@@ -396,8 +396,16 @@ public class CompilationSettings
     /// <summary> Whether to allow optimizations to inline or make assumptions about methods defined in other assemblies. </summary>
     public bool AllowCrossAssemblyIPO { get; init; } = true;
 
-    /// <summary> Whether to inline method bodies and expand constructors, including scalar replacement. </summary>
+    /// <summary> Whether to enable general method inlining. </summary>
     public bool EnableInlining { get; init; } = true;
+
+    /// <summary> Whether to replace eligible object allocations with scalar locals, including constructor expansion. </summary>
+    public bool EnableScalarReplacement { get; init; } = true;
+
+    public bool PreserveTrimmingDependencies { get; init; }
+
+    /// <summary> Restrict transformations to IL constructs supported by NativeAOT. </summary>
+    public bool NativeAotCompatibility { get; init; }
 
     /// <summary> Caller IL size budget in bytes; larger callers may only inline without growing. </summary>
     public int MaxInlinedMethodILSize { get; init; } = 32 * 1024;

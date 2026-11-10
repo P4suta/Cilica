@@ -201,6 +201,64 @@ public class ModuleWriterTests(ModuleResolverFixture fixture)
     }
 
     [Fact]
+    public void RewritingPreservesForwardersToUnavailableAssemblies()
+    {
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, "Forwarders.dll");
+        byte[] token = [1, 2, 3, 4, 5, 6, 7, 8];
+        Utils.WriteMetadataModule(path, metadata => {
+            var missing = metadata.AddAssemblyReference(metadata.GetOrAddString("OptionalDependency"), new Version(1, 2, 3, 4),
+                default, metadata.GetOrAddBlob(token), 0, default);
+            var parent = metadata.AddExportedType((System.Reflection.TypeAttributes)0x00200000,
+                metadata.GetOrAddString("Optional"), metadata.GetOrAddString("Parent"), missing, 0);
+            metadata.AddExportedType(System.Reflection.TypeAttributes.NestedPublic, default, metadata.GetOrAddString("Child"), parent, 0);
+        });
+        using var resolver = new ModuleResolver();
+        var module = resolver.Load(path);
+        using var output = new MemoryStream();
+        module.Save(output, null, "output.dll");
+        output.Position = 0;
+        using var pe = new PEReader(output);
+        var reader = pe.GetMetadataReader();
+        var types = reader.ExportedTypes.Select(reader.GetExportedType).ToArray();
+
+        Assert.Equal(2, types.Length);
+        Assert.Equal("Parent", reader.GetString(types[0].Name));
+        Assert.Equal("Optional", reader.GetString(types[0].Namespace));
+        Assert.True(types[0].IsForwarder);
+        var assembly = reader.GetAssemblyReference((AssemblyReferenceHandle)types[0].Implementation);
+        Assert.Equal("OptionalDependency", reader.GetString(assembly.Name));
+        Assert.Equal(new Version(1, 2, 3, 4), assembly.Version);
+        Assert.Equal(token, reader.GetBlobBytes(assembly.PublicKeyOrToken));
+        Assert.Equal("Child", reader.GetString(types[1].Name));
+        Assert.Equal(reader.ExportedTypes.First(), (ExportedTypeHandle)types[1].Implementation);
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void StrippedImagesWithoutPdbOutputHaveAValidDebugDirectory(bool symbols)
+    {
+        var module = CreateModule(symbols);
+        var machine = System.Runtime.InteropServices.RuntimeInformation.ProcessArchitecture switch {
+            System.Runtime.InteropServices.Architecture.X64 => Machine.Amd64,
+            System.Runtime.InteropServices.Architecture.Arm64 => Machine.Arm64,
+            _ => Machine.I386
+        };
+        module.Image = new(new PEHeaderBuilder(machine: machine, sectionAlignment: 4096, fileAlignment: 4096,
+            imageCharacteristics: Characteristics.ExecutableImage | Characteristics.Dll | Characteristics.LargeAddressAware));
+        using var output = new MemoryStream();
+        module.Save(output, null, "rewritten.dll", ModuleWriteOptions.StripSignatures);
+
+        using var pe = new PEReader(new MemoryStream(output.ToArray()));
+        var debug = pe.PEHeaders.PEHeader!.DebugTableDirectory;
+        Assert.True(debug.Size > 0 || debug.RelativeVirtualAddress == 0);
+        var assembly = System.Reflection.Assembly.Load(output.ToArray());
+        var run = assembly.GetType("TestMethods")!.GetMethod("Run")!.CreateDelegate<Func<int>>();
+        Assert.Equal(42, run());
+    }
+
+    [Fact]
     public void PeAndPortablePdbIdentifiersAreContentBased()
     {
         var module = CreateModule(symbols: true);

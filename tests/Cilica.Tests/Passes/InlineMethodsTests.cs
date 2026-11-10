@@ -2,6 +2,7 @@ namespace Cilica.Tests.Passes;
 
 using System.Reflection;
 using System.Runtime.CompilerServices;
+using System.Diagnostics.CodeAnalysis;
 using Cilica.Analysis;
 using Cilica.AsmIO;
 using Cilica.CodeGen.Cil;
@@ -14,6 +15,55 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    public static class Features
+    {
+        [FeatureSwitchDefinition("Cilica.Tests.IsEnabled")]
+        public static bool Switch => true;
+
+        [FeatureGuard(typeof(RequiresDynamicCodeAttribute))]
+        public static bool Guard => true;
+    }
+
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void FeatureGettersRemainSubstitutableAfterOptimization(bool featureGuard, bool preserveDependencies)
+    {
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32);
+        var type = body.Definition.DeclaringType;
+        var getter = type.CreateMethod("get_IsEnabled", PrimType.Bool, [],
+            MethodAttributes.Public | MethodAttributes.Static | MethodAttributes.SpecialName);
+        getter.ImplAttribs = MethodImplAttributes.AggressiveInlining;
+        getter.Body = new MethodBody(getter);
+        getter.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(1)));
+        var property = new PropertyDef(type, "IsEnabled", new MethodSig(PrimType.Bool, [], isInstance: false), getter);
+        var sourceProperty = ((TypeDef)_modResolver.Import(typeof(Features))).Properties
+            .Single(property => property.Name == (featureGuard ? nameof(Features.Guard) : nameof(Features.Switch)));
+        property.GetCustomAttribs(readOnly: false).Add(Assert.Single(sourceProperty.GetCustomAttribs()));
+        type.Properties.Add(property);
+        var entry = body.CreateBlock();
+        var enabled = body.CreateBlock();
+        var disabled = body.CreateBlock();
+        var builder = new IRBuilder(entry);
+        builder.SetBranch(builder.CreateCall(getter), enabled, disabled);
+        enabled.SetBranch(new ReturnInst(ConstInt.CreateI(42)));
+        disabled.SetBranch(new ReturnInst(ConstInt.CreateI(0)));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            VerifyEachPass = true,
+            PreserveTrimmingDependencies = preserveDependencies
+        });
+
+        var result = CompilationPipeline.CreateDefault(compilation).Run([getter, body.Definition]);
+
+        Assert.True(result.Succeeded);
+        Assert.Equal(42, Utils.Compile<Func<int>>(body.Definition.Body!)());
+        getter.Body = new MethodBody(getter);
+        getter.Body.CreateBlock().SetBranch(new ReturnInst(ConstInt.CreateI(0)));
+        Assert.Equal(0, Utils.Compile<Func<int>>(body.Definition.Body!)());
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
@@ -479,6 +529,43 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     [Theory]
     [InlineData(false)]
     [InlineData(true)]
+    public void ConstructorExpansionExposesDevirtualizationIndependentlyOfInlining(bool inline)
+    {
+        var reader = _modResolver.Import(typeof(SealedReader));
+        var baseReader = _modResolver.Import(typeof(Reader));
+        var read = baseReader.FindMethod("Read");
+        var body = Utils.CreateTestMethod(_modResolver, PrimType.Int32, reader);
+        var holder = body.Definition.Module.CreateType(null, "Holder");
+        var field = holder.CreateField("Value", PrimType.Int32);
+        var ctor = holder.CreateMethod(".ctor", PrimType.Void,
+            [new ParamDef(holder, "this"), new ParamDef(baseReader, "reader")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        ctor.Body = new MethodBody(ctor);
+        var builder = new IRBuilder(ctor.Body.CreateBlock());
+        builder.CreateCall(_modResolver.Import(typeof(object)).FindMethod(".ctor"), ctor.Body.Args[0]);
+        builder.CreateFieldStore(field, ctor.Body.Args[0], builder.CreateCallVirt(read, ctor.Body.Args[1]));
+        builder.CreateReturn();
+        builder = new IRBuilder(body.CreateBlock());
+        var allocation = builder.CreateNewObj(ctor, body.Args[0]);
+        builder.CreateReturn(builder.CreateFieldLoad(field, allocation));
+        var compilation = new Compilation(body.Definition.Module, new VoidLogger(), new() {
+            EnableInlining = inline, VerifyEachPass = true
+        });
+
+        CompilationPipeline.CreateDefault(compilation).Run([body.Definition]).ThrowIfFailed();
+
+        body = body.Definition.Body!;
+        Assert.DoesNotContain(body.Instructions(), inst => inst is NewObjInst);
+        var call = Assert.Single(body.Instructions().OfType<CallInst>().Where(call => call.Method == read));
+        Assert.False(call.IsVirtual);
+        var run = Utils.Compile<Func<SealedReader, int>>(body);
+        Assert.Equal(42, run(new SealedReader()));
+        Assert.Throws<NullReferenceException>(() => run(null!));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
     public void DevirtualizationPreservesStructReceiverStorage(bool boxed)
     {
         var type = _modResolver.Import(typeof(Counter));
@@ -580,7 +667,7 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
     [InlineData(false, true)]
     [InlineData(true, false)]
     [InlineData(true, true)]
-    public void CoreLibInliningPreservesTypeAccessBoundaries(bool corelib, bool sameType)
+    public void InliningPreservesCoreLibCallsAndOtherAssemblyAccess(bool corelib, bool sameType)
     {
         using var resolver = new ModuleResolver();
         resolver.AddTrustedSearchPaths();
@@ -601,7 +688,7 @@ public class InlineMethodsTests(ModuleResolverFixture fixture) : PassTestBase(fi
         PassRunner.Run(new InlineMethods(), new MethodTransformContext(compilation, caller.Body));
         compilation.EnsureReferencedMembersAccessible(caller.Body);
 
-        Assert.Equal(corelib && !sameType, call.Block != null);
+        Assert.Equal(corelib, call.Block != null);
         Assert.Equal(!corelib && !sameType, module.GetCustomAttribs(forAssembly: true)
             .Any(attribute => attribute.Type.Name == "IgnoresAccessChecksToAttribute"));
     }

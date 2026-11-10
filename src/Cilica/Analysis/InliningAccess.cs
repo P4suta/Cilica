@@ -72,7 +72,7 @@ internal sealed class InliningAccess(TypeDef caller, bool ignoreVisibility = fal
     private bool CanUseSignature(TypeSig signature)
         => CanUseType(signature.Type) && signature.Modifiers.All(modifier => CanUseType(modifier.Type));
 
-    private bool CanUseType(TypeDesc type)
+    public bool CanUseType(TypeDesc type)
     {
         if (type is PrimType or GenericParamType) return true;
         if (type is CompoundType compound) return CanUseType(compound.ElemType) &&

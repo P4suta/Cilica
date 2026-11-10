@@ -247,6 +247,11 @@ partial class ILGenerator
                 _asm.Emit(ILCode.Calli, call.FunctionType);
                 break;
             }
+            case ILCode.Call when inst is CilIntrinsic.InitializeArray initialization: {
+                _asm.Emit(ILCode.Ldtoken, initialization.Data);
+                _asm.Emit(ILCode.Call, initialization.Method);
+                break;
+            }
             case ILCode.Nop when inst is CilIntrinsic.NullCheck: {
                 var nonNull = _asm.DefineLabel();
                 _asm.Emit(ILCode.Brtrue, nonNull);
@@ -257,6 +262,12 @@ partial class ILGenerator
             }
             case ILCode.Newarr: {
                 _asm.Emit(ILCode.Newarr, inst.ResultType.ElemType);
+                if (inst.StaticArgs is [MethodDesc initializer, FieldDesc data]) {
+                    // NativeAOT requires the allocation and initialization to remain one IL pattern.
+                    _asm.Emit(ILCode.Dup);
+                    _asm.Emit(ILCode.Ldtoken, data);
+                    _asm.Emit(ILCode.Call, initializer);
+                }
                 break;
             }
             case ILCode.Castclass:

@@ -138,24 +138,38 @@ internal partial class ModuleWriter
 
     private void EmitExportedTypes()
     {
-        const TypeAttributes Forwarder = (TypeAttributes)0x00200000;
-        var handles = new Dictionary<TypeDef, ExportedTypeHandle>();
+        if (_mod._loader is not { } loader) return;
+        var reader = loader._reader;
+        var handles = new Dictionary<EntityHandle, EntityHandle>();
 
-        foreach (var type in _mod.ExportedTypes) {
+        foreach (var type in reader.ExportedTypes) {
             Emit(type);
         }
 
-        ExportedTypeHandle Emit(TypeDef type)
+        EntityHandle Emit(EntityHandle source)
         {
-            if (handles.TryGetValue(type, out var existing)) {
-                return existing;
+            if (handles.TryGetValue(source, out var existing)) return existing;
+
+            // Forwarders can refer to optional assemblies outside the application's dependency closure.
+            EntityHandle handle;
+            if (source.Kind == HandleKind.AssemblyReference) {
+                var assembly = reader.GetAssemblyReference((AssemblyReferenceHandle)source);
+                handle = _builder.AddAssemblyReference(AddString(reader.GetString(assembly.Name)), assembly.Version,
+                    AddString(reader.GetString(assembly.Culture)), AddBlob(reader.GetBlobBytes(assembly.PublicKeyOrToken)),
+                    assembly.Flags, AddBlob(reader.GetBlobBytes(assembly.HashValue)));
+            } else if (source.Kind == HandleKind.AssemblyFile) {
+                var file = reader.GetAssemblyFile((AssemblyFileHandle)source);
+                var key = (AddString(reader.GetString(file.Name)), AddBlob(reader.GetBlobBytes(file.HashValue)), file.ContainsMetadata);
+                if (!_fileRefHandles.TryGetValue(key, out var fileHandle)) {
+                    _fileRefHandles.Add(key, fileHandle = _builder.AddAssemblyFile(key.Item1, key.Item2, key.ContainsMetadata));
+                }
+                handle = fileHandle;
+            } else {
+                var type = reader.GetExportedType((ExportedTypeHandle)source);
+                handle = _builder.AddExportedType(type.Attributes, AddString(reader.GetString(type.Namespace)),
+                    AddString(reader.GetString(type.Name)), Emit(type.Implementation), type.GetTypeDefinitionId());
             }
-
-            var implementation = type.IsNested ? Emit(type.DeclaringType!) : GetHandle(type.Module);
-            var attributes = type.IsNested ? TypeAttributes.NestedPublic : TypeAttributes.Public | Forwarder;
-            var handle = _builder.AddExportedType(attributes, AddString(type.Namespace), AddString(type.Name), implementation, 0);
-            handles.Add(type, handle);
-
+            handles.Add(source, handle);
             return handle;
         }
     }
@@ -418,6 +432,7 @@ internal partial class ModuleWriter
         var entryPoint = _mod.EntryPoint == null ? default : (MethodDefinitionHandle)_handleMap[_mod.EntryPoint];
 
         var debugDirBuilder = new DebugDirectoryBuilder();
+        debugDirBuilder.AddReproducibleEntry();
         var debugSymbols = _mod.GetDebugSymbols(create: false);
 
         if (pdbStream != null && debugSymbols != null) {

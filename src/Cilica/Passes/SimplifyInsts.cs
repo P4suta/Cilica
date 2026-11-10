@@ -26,20 +26,21 @@ public partial class SimplifyInsts : IMethodPass
         long revision = ctx.Method.Revision;
 
         foreach (var inst in ctx.Method.Instructions()) {
+            var block = inst.Block;
             var oldInst = ctx.Logger.IsEnabled(LogLevel.Trace) ? inst.ToString() : null;
             var newValue = inst switch {
-                BinaryInst c    => SimplifyBinary(c),
-                CompareInst c   => SimplifyCompare(c),
+                BinaryInst c    => SimplifyBinary(c, ctx.Logger),
+                CompareInst c   => SimplifyCompare(c, ctx.Logger),
                 UnaryInst c     => SimplifyUnary(c),
                 ConvertInst c   => SimplifyConvert(c),
                 CallInst c      => SimplifyCall(c, ctx.Logger),
-                IntrinsicInst c => SimplifyIntrinsic(c),
+                IntrinsicInst c => SimplifyIntrinsic(c, ctx.Logger),
                 SelectInst c    => SimplifySelect(c),
                 _ => null
             };
             if (newValue != null) {
                 inst.ReplaceWith(newValue, insertIfInst: true);
-                ctx.Logger.Trace($"Simplified '{oldInst}' to '{inst}'.");
+                ctx.Logger.Trace($"Simplified '{oldInst}' in '{block}' to '{newValue}'.");
             }
         }
 
@@ -56,7 +57,7 @@ public partial class SimplifyInsts : IMethodPass
                 => DevirtualizeLambda(call, logger),
 
             "ContainsKey" when declType is TypeDefOrSpec s && s.Definition == t_DictionaryOfTT
-                => SimplifyDictLookup(call),
+                => SimplifyDictLookup(call, logger),
 
             _ => false
         };
@@ -64,9 +65,10 @@ public partial class SimplifyInsts : IMethodPass
         return changed ? null : ConstFolding.FoldCall(call.Method, call.Args);
     }
 
-    private Value? SimplifyIntrinsic(IntrinsicInst inst)
+    private Value? SimplifyIntrinsic(IntrinsicInst inst, ICompilationLogger logger)
     {
         if (inst is CilIntrinsic.NullCheck check && IsRedundantNullCheck(check)) {
+            logger.Trace($"Removed redundant '{check}' in '{check.Block}'.");
             check.Remove();
             return null;
         }
@@ -125,11 +127,12 @@ public partial class SimplifyInsts : IMethodPass
         return false;
     }
 
-    private Value? SimplifyBinary(BinaryInst inst)
+    private Value? SimplifyBinary(BinaryInst inst, ICompilationLogger logger)
     {
         // (const op x)  ->  (x op const), if op is commutative
         if (inst is { Left: Const, Right: not Const, IsCommutative: true } b) {
             (b.Left, b.Right) = (b.Right, b.Left);
+            logger.Trace($"Moved constant to the right in '{b}' in '{b.Block}'.");
         }
         // ((x op const) op const)  ->  (x op (const op const)), if op is associative
         if (inst is {
@@ -142,6 +145,7 @@ public partial class SimplifyInsts : IMethodPass
         ) {
             inst.Left = l_nc_c.Left;
             inst.Right = lr_op_r;
+            logger.Trace($"Reassociated constants into '{inst}' in '{inst.Block}'.");
         }
         if (ConstFolding.FoldBinary(inst.Op, inst.Left, inst.Right) is { } folded) {
             return folded;
@@ -155,13 +159,14 @@ public partial class SimplifyInsts : IMethodPass
         return null;
     }
 
-    private Value? SimplifyCompare(CompareInst inst)
+    private Value? SimplifyCompare(CompareInst inst, ICompilationLogger logger)
     {
         // (const op x)  ->  (x swapped_op const)
         // (x op cmp)    ->  (cmp op x)
         if (inst is { Left: Const, Right: not Const } or { Left: not CompareInst, Right: CompareInst }) {
             inst.Op = inst.Op.GetSwapped();
             (inst.Left, inst.Right) = (inst.Right, inst.Left);
+            logger.Trace($"Swapped comparison operands to '{inst}' in '{inst.Block}'.");
         }
         // ((x op y) == 0)  ->  (x !op y)
         // ((x op y) != 0)  ->  (x op y)

@@ -2,6 +2,7 @@ namespace Cilica.Tests.Passes;
 
 using System.Reflection;
 using System.Runtime.Loader;
+using Cilica.Analysis;
 using Cilica.AsmIO;
 using Cilica.CodeGen.Cil;
 using Cilica.IR;
@@ -13,6 +14,65 @@ using MethodBody = Cilica.IR.MethodBody;
 [Collection("ModuleResolver")]
 public class InitializationTests(ModuleResolverFixture fixture) : PassTestBase(fixture)
 {
+    [Theory]
+    [InlineData(false, false)]
+    [InlineData(false, true)]
+    [InlineData(true, false)]
+    [InlineData(true, true)]
+    public void SkippingModuleInitializationPreservesTypeInitializers(bool skip, bool initializeType)
+    {
+        using var resolver = new ModuleResolver { SkipModuleInitializers = skip };
+        resolver.AddTrustedSearchPaths();
+        var body = Utils.CreateTestMethod(resolver, PrimType.Int32);
+        var effect = body.Definition.DeclaringType.CreateField("Effect", PrimType.Int32, FieldAttributes.Public | FieldAttributes.Static);
+        Initialize(body.Definition.Module.FindType(null, "<Module>")!, effect, 5);
+        var library = resolver.Create("InitializationLibrary");
+        Initialize(library.FindType(null, "<Module>")!, effect, 10);
+        var type = library.CreateType(null, "Initialized");
+        if (initializeType) Initialize(type, effect, 50);
+        var callee = Constant(type);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.CreateAdd(builder.CreateCall(callee), builder.CreateFieldLoad(effect)));
+
+        Assert.Equal(!skip, library.RequiresModuleInitialization());
+        Assert.Equal(!skip, type.RequiresModuleInitialization());
+        Assert.Equal(initializeType || !skip, type.RequiresTypeInitialization(fieldAccess: true));
+        var effects = new Compilation(body.Definition.Module, new VoidLogger(), new()).GetAnalysis<GlobalFunctionEffects>();
+        Assert.Equal(skip && !initializeType, effects.GetEffects(callee).IsPure);
+
+        body = Optimize(body);
+
+        Assert.Equal(skip ? 0 : 1, EmittedCalls(body).Count(method => method.Name == "RunModuleConstructor"));
+        Assert.Equal(initializeType ? 1 : 0, EmittedCalls(body).Count(method => method.Name == "RunClassConstructor"));
+        CheckExecution(body, run => Assert.Equal(initializeType ? 107 : skip ? 47 : 57, run()), library);
+    }
+
+    [Fact]
+    public void SkippingModuleInitializationIgnoresPublishedModuleHelpers()
+    {
+        var library = _modResolver.Create("InitializationLibrary_" + Guid.NewGuid().ToString("N"));
+        var initializer = CreateInitializer(library.FindType(null, "<Module>")!);
+        initializer.Body!.CreateBlock().SetBranch(new ReturnInst());
+        initializer.ILBody = ILGenerator.GenerateCode(initializer.Body);
+        var callee = Constant(library.CreateType(null, "Initialized"));
+        Optimize(callee.Body!);
+        using var directory = new TemporaryDirectory();
+        string path = Path.Combine(directory.Path, library.ModName);
+        library.Save(path, savePdb: false);
+
+        using var resolver = new ModuleResolver { SkipModuleInitializers = true };
+        resolver.AddTrustedSearchPaths();
+        var loaded = resolver.Load(path);
+        var body = Utils.CreateTestMethod(resolver, PrimType.Int32);
+        var builder = new IRBuilder(body.CreateBlock());
+        builder.CreateReturn(builder.CreateCall(loaded.FindType(null, "Initialized")!.FindMethod("Value")));
+
+        body = Optimize(body);
+
+        Assert.Empty(EmittedCalls(body));
+        CheckExecution(body, run => Assert.Equal(42, run()), loaded);
+    }
+
     [Theory]
     [InlineData(false)]
     [InlineData(true)]

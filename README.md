@@ -11,7 +11,7 @@ Cilica is a continuation of [DistIL](https://github.com/dubiousconst282/DistIL).
 Try [Cilica Lab](https://hez2010.github.io/CilicaLab/) in your browser to explore optimization passes, control-flow graphs, and generated code.
 
 # Notable Features
-- [SSA-based Intermediate Representation](https://github.com/hez2010/Cilica/blob/main/docs/api-walkthrough.md)
+- [SSA-based Intermediate Representation](docs/api-walkthrough.md)
 - Linq Expansion
 - Loop Strength Reduction
 - Loop Vectorization
@@ -20,7 +20,7 @@ Try [Cilica Lab](https://hez2010.github.io/CilicaLab/) in your browser to explor
 - Method Inlining
 - Scalar Replacement
 
-See [Optimization Passes](https://github.com/hez2010/Cilica/blob/main/docs/opt-list.md) for a detailed list of optimizations passes available.
+See [Optimization Passes](docs/opt-list.md) for a detailed list of optimizations passes available.
 
 ```powershell
 Cilica.Cli -i input/MyLibrary.dll -o output/MyLibrary.dll
@@ -41,6 +41,17 @@ By default, only methods and classes annotated with `[Cilica.Attributes.Optimize
 
 Set `RunCilica` to enable or disable optimization explicitly, and use `CilicaExtraArgs` to pass additional CLI options.
 
-Note that this optimizer task only performs optimizations against your main assembly. To optimize the references as well, you can use Cilica.Cli manually, which is shipped together in the Cilica.OptimizerTask package.
+Use `--skip-module-initializers` to omit explicit module-initialization checks when the runtime initializes modules before use. `Cilica.OptimizerTask` enables this by default with `PublishAot=true`; set `CilicaSkipModuleInitializers=false` to override it.
+
+Use `--nativeaot-compat` when invoking the CLI before NativeAOT compilation. `Cilica.OptimizerTask` enables this automatically with `PublishAot=true`.
+
+The optimizer task processes your main assembly by default. To include managed dependencies and framework assemblies in a self-contained build or publish, enable `CilicaAllAssemblies`:
+
+```xml
+<SelfContained>true</SelfContained>
+<CilicaAllAssemblies>true</CilicaAllAssemblies>
+```
+
+Under this mode, assembly signatures and ReadyToRun code will be removed, and `CilicaAllMethods` will be set to `true`; set it to `false` to retain attribute filtering.
 
 There's also a `Cilica.Core` package that exposes the optimizer and intermediate representation APIs for direct use.

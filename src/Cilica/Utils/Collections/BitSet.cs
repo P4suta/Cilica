@@ -85,7 +85,7 @@ public class BitSet : IEquatable<BitSet>
         return _data.Length * 64;
     }
 
-    /// <summary> Removes the elements of the specified set from this set, and returns whether any change occurred. </summary>
+    /// <summary> Keeps only the elements shared with the specified set, and returns whether any change occurred. </summary>
     public bool Intersect(BitSet other)
     {
         var wa = _data;
@@ -98,6 +98,10 @@ public class BitSet : IEquatable<BitSet>
             ulong next = prev & wb[i];
             wa[i] = next;
             changed |= prev ^ next;
+        }
+        for (int i = count; i < wa.Length; i++) {
+            changed |= wa[i];
+            wa[i] = 0;
         }
         return changed != 0;
     }
@@ -136,9 +140,16 @@ public class BitSet : IEquatable<BitSet>
             Array.Resize(ref _data, wa.Length);
             dst = _data;
         }
-        for (int i = 0; i < wa.Length; i++) {
+        int count = Math.Min(wa.Length, wb.Length);
+        for (int i = 0; i < count; i++) {
             ulong prev = dst[i];
             ulong next = prev | (wa[i] & ~wb[i]);
+            dst[i] = next;
+            changed |= prev ^ next;
+        }
+        for (int i = count; i < wa.Length; i++) {
+            ulong prev = dst[i];
+            ulong next = prev | wa[i];
             dst[i] = next;
             changed |= prev ^ next;
         }

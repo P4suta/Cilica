@@ -5,6 +5,7 @@
 - [Loop Vectorization](#loop-vectorization)
 - [Pre-size Lists / Array Builder Opts](#pre-size-lists--array-builder-opts)
 - [Scalar Replacement](#scalar-replacement)
+- [Reflection Folding](#reflection-folding)
 - [Algebraic Simplification](#algebraic-simplification)
 - [Common Sub-expression Elimination](#common-sub-expression-elimination)
 - [Assertion Propagation](#assertion-propagation)
@@ -97,7 +98,7 @@ Direct `source.Sum()` calls without a preceding stage retain the runtime's speci
 
 ### Benchmarks
 
-[Source](/tests/Benchmarks/LinqExpansion.cs). These workloads include mutable-list queries, a string predicate count, and a LINQ ray tracer. Their results measure the complete default pipeline together with the runtime JIT, rather than one isolated pass.
+[Source](../tests/Benchmarks/LinqExpansion.cs). These workloads include mutable-list queries, a string predicate count, and a LINQ ray tracer. Their results measure the complete default pipeline together with the runtime JIT, rather than one isolated pass.
 
 | Method         | Toolchain          | ElemCount |       Mean |      Error |     StdDev | Ratio | RatioSD |
 | -------------- | ------------------ | --------- | ---------: | ---------: | ---------: | ----: | ------: |
@@ -366,7 +367,7 @@ An empty source does not access the destination. A short destination receives th
 
 ### Benchmarks
 
-[Source](/tests/Benchmarks/AutoVectorization.cs). `CountLetters` uses vector character comparisons and population counts; `GenerateFloats` vectorizes its pointwise arithmetic. `GenerateInts` retains scalar integer `Abs` to preserve overflow exceptions. `NormalizeFloats` retains its scalar floating-point min/max reduction and vectorizes its pointwise normalization loop.
+[Source](../tests/Benchmarks/AutoVectorization.cs). `CountLetters` uses vector character comparisons and population counts; `GenerateFloats` vectorizes its pointwise arithmetic. `GenerateInts` retains scalar integer `Abs` to preserve overflow exceptions. `NormalizeFloats` retains its scalar floating-point min/max reduction and vectorizes its pointwise normalization loop.
 
 | Method          | Toolchain          | ElemCount |        Mean |     Error |    StdDev | Ratio | Code Size |
 | --------------- | ------------------ | --------- | ----------: | --------: | --------: | ----: | --------: |
@@ -458,7 +459,7 @@ An `IReadOnlyList<T>` parameter alone does not establish the same contract: its 
 
 ### Benchmarks
 
-[Source](/tests/Benchmarks/ListArrayBuilding.cs). `DirectArray_Gen` provides a direct-allocation reference; `DynamicList_Gen` exercises a counting loop; `DynamicList_Enumer` intentionally enumerates through `IReadOnlyList<int>`.
+[Source](../tests/Benchmarks/ListArrayBuilding.cs). `DirectArray_Gen` provides a direct-allocation reference; `DynamicList_Gen` exercises a counting loop; `DynamicList_Enumer` intentionally enumerates through `IReadOnlyList<int>`.
 
 | Method             | Toolchain          | Count |         Mean |      Error |     StdDev | Ratio | RatioSD |   Gen0 |   Gen1 | Allocated | Alloc Ratio |
 | ------------------ | ------------------ | ----- | -----------: | ---------: | ---------: | ----: | ------: | -----: | -----: | --------: | ----------: |
@@ -532,7 +533,38 @@ public static int SROA_ClassEnumerator(int[] array)
 }
 ```
 
-The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding. Constructor expansion follows the [inlining size policy](#inlining-policy), so an eligible allocation can remain when expanding its constructor would exceed the caller's budget.
+The sealed enumerator has no disposal contract. An enumerator with observable `Dispose()` behavior retains that behavior and its exception scope. Pinned, exposed, and exception-sensitive locals retain storage, and representation-changing stores preserve truncation and rounding.
+
+### Scalar replacement policy
+
+`CompilationSettings.EnableScalarReplacement` controls scalar replacement and is enabled by default. Objects passed to remaining method calls or returned from the method are not eligible.
+
+Constructor expansion is subject to the caller IL size budget set by `CompilationSettings.MaxInlinedMethodILSize`, which can leave an otherwise eligible allocation intact.
+
+## Reflection Folding
+
+Folds statically known reflection into direct field accesses, method calls, delegate construction, and type references, including generic types and methods.
+
+### Example
+
+```cs
+public static class Example
+{
+    private static int AddOne(int value) => value + 1;
+
+    [Optimize]
+    public static int Run(int value)
+        => typeof(Example)
+            .GetMethod(nameof(AddOne), BindingFlags.NonPublic | BindingFlags.Static)!
+            .CreateDelegate<Func<int, int>>()(value);
+}
+```
+
+The reflection lookup, delegate allocation, and invocation can disappear:
+
+```cs
+public static int Run(int value) => value + 1;
+```
 
 ## Algebraic Simplification
 
@@ -671,7 +703,7 @@ public static int ReadFromFactory() => 42;
 
 The optimizer API exposes these controls:
 
-- `CompilationSettings.EnableInlining` controls method inlining and constructor expansion, including scalar replacement. It is enabled by default.
+- `CompilationSettings.EnableInlining` controls method inlining. It is enabled by default.
 - `CompilationSettings.AllowCrossAssemblyIPO` permits optimizations across assembly boundaries. It is enabled by default.
 - `CompilationSettings.MaxInlinedMethodILSize` limits caller IL growth during method inlining and constructor expansion, with a default of 32 KiB. Methods already above the limit can still accept inlining that does not increase their size.
 

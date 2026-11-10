@@ -102,11 +102,28 @@ public abstract class CilIntrinsic : IntrinsicInst
     protected CilIntrinsic(TypeDesc resultType, EntityDesc[] staticArgs, Value[] args) : base(resultType, staticArgs, args) { }
 
     /// <summary> T[] NewArray&lt;T&gt;(nint length) </summary>
-    public class NewArray(TypeDesc elemType, Value length) : CilIntrinsic(elemType.CreateArray(), [length])
+    public class NewArray : CilIntrinsic
     {
         public override ILCode Opcode => ILCode.Newarr;
         public override bool MayThrow => true;
         public TypeDesc ElemType => ResultType.ElemType!;
+
+        public NewArray(TypeDesc elemType, Value length) : base(elemType.CreateArray(), [length]) { }
+
+        internal NewArray(TypeDesc elemType, Value length, MethodDesc initializer, FieldDesc data)
+            : base(elemType.CreateArray(), [initializer, data], [length]) { }
+    }
+
+    public class InitializeArray(MethodDesc method, Value array, FieldDesc data)
+        : CilIntrinsic(PrimType.Void, [method, data], [array])
+    {
+        public override ILCode Opcode => ILCode.Call;
+        public override bool MayThrow => true;
+        public override bool MayReadFromMemory => true;
+        public override bool MayWriteToMemory => true;
+        public MethodDesc Method => (MethodDesc)StaticArgs[0];
+        public FieldDesc Data => (FieldDesc)StaticArgs[1];
+        public Value Array => Args[0];
     }
 
     /// <summary> nuint ArrayLen(Array arr) </summary>

@@ -271,6 +271,7 @@ public class IRCloner
             Out((_ctx._foldConstants ? ConstFolding.FoldCall(method, args) : null)
                 ?? new CallInst(method, args, inst.IsVirtual, inst.Constraint == null ? null : Remap(inst.Constraint)) {
                     InBounds = inst.InBounds,
+                    ResultIsNonNull = inst.ResultIsNonNull,
                     IsTailCall = inst.IsTailCall,
                     IsReadOnly = inst.IsReadOnly
                 });

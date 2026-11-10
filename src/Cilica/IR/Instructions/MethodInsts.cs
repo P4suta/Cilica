@@ -36,11 +36,15 @@ public class CallInst : Instruction
 
     private bool _inBounds;
 
+    /// <summary> Proves that the reference result is non-null when this call returns normally. </summary>
+    public bool ResultIsNonNull { get => _resultIsNonNull; set => SetProperty(ref _resultIsNonNull, value); }
+    private bool _resultIsNonNull;
+
     public override bool HasSideEffects => true;
     public override bool MayThrow => true;
     public override bool MayWriteToMemory => true;
     public override bool MayReadFromMemory => true;
-    public override string InstName => "call" + (IsVirtual ? "virt" : "") + (IsTailCall ? ".tail" : "");
+    public override string InstName => "call" + (IsVirtual ? "virt" : "") + (IsTailCall ? ".tail" : "") + (ResultIsNonNull ? ".nonnull" : "");
 
     public CallInst(MethodDesc method, Value[] args, bool isVirtual = false, TypeDesc? constraint = null)
         : base(args)

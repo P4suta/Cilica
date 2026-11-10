@@ -256,6 +256,7 @@ public class ConstFolding
         return cond switch {
             ConstInt c => c.Value != 0,
             ConstNull => false,
+            CallInst { ResultIsNonNull: true } => true,
             CilIntrinsic.Box { SourceType: { IsValueType: true, Name: not "Nullable`1" } } => true, // either throws or returns non-null 
             NewObjInst => true,
             _ => null,
@@ -277,6 +278,16 @@ public class ConstFolding
     {
         if (IsCoreLibMethod(method, out var methodDef)) {
             var declType = methodDef.DeclaringType;
+
+            if (method.Name is "op_Equality" or "op_Inequality" && args.Length == 2 &&
+                (args[0] is ConstNull || args[1] is ConstNull) &&
+                (declType.Namespace, declType.Name) is ("System", "Type") or
+                    ("System.Reflection", "MemberInfo" or "MethodBase" or "MethodInfo" or "FieldInfo" or "PropertyInfo") &&
+                new MethodSig(PrimType.Bool, [declType, declType], false).Matches(method)) {
+                // Metadata equality operators test null before invoking virtual Equals.
+                var other = args[0] is ConstNull ? args[1] : args[0];
+                return FoldCompare(method.Name == "op_Equality" ? CompareOp.Eq : CompareOp.Ne, other, ConstNull.Create());
+            }
 
             object? result = (declType.Namespace, declType.Name, method.Name, AllConsts(args)) switch {
                 ("System", "Math" or "MathF", _, true)
@@ -310,26 +321,13 @@ public class ConstFolding
     // bool Type.op_Equality(Type a, Type b)
     private static bool? FoldTypeEquality(Value arg1, Value arg2)
     {
-        var typeA = UnwrapType(arg1);
-        var typeB = UnwrapType(arg2);
+        var typeA = TypeUtils.GetReflectedType(arg1);
+        var typeB = TypeUtils.GetReflectedType(arg2);
 
         if (typeA == null || typeB == null) return null;
         if ((typeA.IsUnboundGeneric || typeB.IsUnboundGeneric) && typeA != typeB) return null;
 
         return TypeUtils.GetRuntimeType(typeA) == TypeUtils.GetRuntimeType(typeB);
-
-        static TypeDesc? UnwrapType(Value obj)
-        {
-            if (obj is not CallInst call) return null;
-
-            if (call.Method.Name == "GetTypeFromHandle" && call.Method.DeclaringType.IsCorelibType(typeof(Type))) {
-                return (call.Args[0] as CilIntrinsic.LoadHandle)?.StaticArgs[0] as TypeDesc;
-            }
-            if (call.Method.Name == "GetType" && call.Method.DeclaringType == PrimType.Object) {
-                return TypeUtils.HasConcreteType(call.Args[0]) ? call.Args[0].ResultType : null;
-            }
-            return null;
-        }
     }
 
     public static Value? FoldIntrinsic(IntrinsicInst intrin)
@@ -364,7 +362,7 @@ public class ConstFolding
         return null;
     }
 
-    internal static bool IsMathIntrinsic(MethodDef method)
+    private static bool IsMathIntrinsic(MethodDef method)
         => method.Name is ("Sqrt" or "Cbrt" or "Log" or "Log2" or "Log10" or "Exp" or
             "Floor" or "Ceiling" or "Truncate" or "Abs" or "Sin" or "Cos" or "Tan" or
             "Asin" or "Acos" or "Atan" or "Asinh" or "Acosh" or "Atanh" or "Atan2" or
@@ -372,7 +370,7 @@ public class ConstFolding
            method.ParamSig.All(parameter => parameter.Type.Kind is >= TypeKind.SByte and <= TypeKind.Double ||
                parameter.Type.IsCorelibType(typeof(MidpointRounding)));
 
-    internal static bool IsStringIntrinsic(MethodDef method)
+    private static bool IsStringIntrinsic(MethodDef method)
         => method.Name switch {
             "get_Length" or "get_Chars" => true,
             "Concat" => method.ParamSig.All(parameter => parameter.Type == PrimType.String || parameter.Type == PrimType.Object),

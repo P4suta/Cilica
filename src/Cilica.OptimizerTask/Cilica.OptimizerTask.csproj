@@ -25,6 +25,7 @@
     <ProjectReference Include="../Cilica.Cli/Cilica.Cli.csproj" PrivateAssets="all"/>
     
     <Content Include="$(ProjectName).targets" PackagePath="build/" />
+    <Content Include="Cilica.OptimizerTask.ILLink.xml" PackagePath="build/" />
     <Content Include="*.cs" PackagePath="contentFiles/cs/any/$(PackageId)/%(RecursiveDir)" BuildAction="Compile" />
   </ItemGroup>
 

@@ -40,7 +40,7 @@ static void RunOptimizer(OptimizerOptions options)
         (options.StripReadyToRun ? ModuleWriteOptions.StripReadyToRun : 0);
     var logger = new ConsoleLogger() { MinLevel = options.Verbosity };
 
-    using var resolver = new ModuleResolver(logger);
+    using var resolver = new ModuleResolver(logger) { SkipModuleInitializers = options.SkipModuleInitializers };
     resolver.AddSearchPaths([Path.GetDirectoryName(Path.GetFullPath(options.InputPath))!]);
     resolver.AddSearchPaths(options.ResolverPaths);
 
@@ -50,7 +50,11 @@ static void RunOptimizer(OptimizerOptions options)
 
     var module = resolver.Load(options.InputPath);
 
-    var comp = new Compilation(module, logger, new CompilationSettings() { VerifyEachPass = options.VerifyEachPass });
+    var comp = new Compilation(module, logger, new CompilationSettings() {
+        VerifyEachPass = options.VerifyEachPass,
+        PreserveTrimmingDependencies = options.PreserveTrimmingDependencies,
+        NativeAotCompatibility = options.NativeAotCompatibility
+    });
     var compilationResult = RunPasses(options, comp);
 
     if (options.Strict && !compilationResult.Succeeded) {
@@ -66,7 +70,7 @@ static void RunOptimizer(OptimizerOptions options)
 static CompilationResult RunPasses(OptimizerOptions options, Compilation comp)
 {
     var manager = CompilationPipeline.CreateDefault(comp);
-    manager.Inspectors.Add(new PassTimingInspector());
+    if (options.LogStats) manager.Inspectors.Add(new PassTimingInspector());
 
     var dumpFilter = options.DumpDir != null || options.PassDumpBundlePath != null
         ? CompileFilter(options.DumpMethodFilter) : null;

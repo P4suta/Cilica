@@ -1,5 +1,6 @@
 namespace Cilica.Passes;
 
+using Cilica.Analysis;
 using Cilica.Passes.Linq;
 
 public class ExpandLinq : IMethodPass
@@ -25,6 +26,8 @@ public class ExpandLinq : IMethodPass
 
         foreach (var inst in ctx.Method.Instructions()) {
             if (inst is CallInst call && CreatePipe(call) is { } pipe) {
+                // Expansion can introduce cleanup regions, which CIL filters cannot contain.
+                if (ctx.GetAnalysis<ProtectedRegionAnalysis>().GetBlockRegion(call.Block).IsFilter) continue;
                 queries.Add(pipe);
             }
         }
@@ -32,7 +35,7 @@ public class ExpandLinq : IMethodPass
         var validated = new HashSet<CallInst>();
         foreach (var query in queries) {
             query.Emit(validated);
-            ctx.Logger.Trace($"Expanded LINQ query ending in '{query.GetSink().SubjectCall.Method}' into a loop.");
+            ctx.Logger.Trace($"Expanded LINQ query '{query}' into a loop.");
         }
         return queries.Count > 0 ? MethodInvalidations.Loops : 0;
     }

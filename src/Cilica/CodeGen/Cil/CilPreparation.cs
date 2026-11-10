@@ -35,6 +35,10 @@ internal sealed class CilPreparation
     private static void Legalize(MethodBody method)
     {
         foreach (var inst in method.Instructions().ToArray()) {
+            if (inst is CilIntrinsic.InitializeArray arrayInitialization) {
+                PrepareArrayInitialization(arrayInitialization);
+                continue;
+            }
             if (inst is CilIntrinsic.Initialization initialization) {
                 LowerInitialization(initialization);
                 continue;
@@ -79,6 +83,20 @@ internal sealed class CilPreparation
             var orderedNotEqual = builder.CreateOr(lower, greater);
             compare.ReplaceWith(compare.Op == CompareOp.FOne ? orderedNotEqual : builder.CreateEq(orderedNotEqual, ConstInt.CreateI(0)));
         }
+    }
+
+    private static void PrepareArrayInitialization(CilIntrinsic.InitializeArray initialization)
+    {
+        if (initialization.Array is not CilIntrinsic.NewArray { StaticArgs.Length: 0 } array || array.Block != initialization.Block) return;
+
+        var position = array.Next!;
+        while (position != initialization && !position.HasSideEffects && !position.MayReadFromMemory) position = position.Next!;
+        if (position != initialization) return;
+
+        array.ReplaceWith(new CilIntrinsic.NewArray(array.ElemType, array.Args[0], initialization.Method, initialization.Data) {
+            DebugLocation = array.DebugLocation
+        }, insertIfInst: true);
+        initialization.Remove();
     }
 
     private static void LowerInitialization(CilIntrinsic.Initialization initialization)
