@@ -44,6 +44,11 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
 
     private Result? ResolveMember(CallInst lookup)
     {
+        if (lookup.Method.DeclaringType.IsCorelibType(typeof(PropertyInfo)) &&
+            lookup.Method.Name is "get_GetMethod" or "get_SetMethod" or "GetGetMethod" or "GetSetMethod") {
+            return ResolveAccessor(lookup);
+        }
+
         if (lookup.IsVirtual && lookup.Method.Name == "MakeGenericMethod" && lookup.Method.DeclaringType.IsCorelibType(typeof(MethodInfo)) &&
             lookup.Args.Length == 2 && Resolve(lookup.Args[0]) is { Member: MethodDefOrSpec { IsGeneric: true } method } original &&
             method is not MethodSpec { IsBoundGeneric: true } &&
@@ -87,6 +92,23 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
             }
         }
         return selected == null ? null : new(selected, type);
+    }
+
+    private Result? ResolveAccessor(CallInst lookup)
+    {
+        var methodInfoType = types.Resolver.Import(typeof(MethodInfo));
+        bool? nonPublic;
+        if (new MethodSig(methodInfoType, [], true).Matches(lookup.Method)) {
+            nonPublic = lookup.Method.Name is "get_GetMethod" or "get_SetMethod";
+        } else if (lookup.Method.Name is "GetGetMethod" or "GetSetMethod" &&
+            new MethodSig(methodInfoType, [PrimType.Bool], true).Matches(lookup.Method)) {
+            nonPublic = lookup.Args[1] is ConstInt flag ? flag.Value != 0 : null;
+        } else return null;
+
+        if (Resolve(lookup.Args[0]) is not { Member: PropertyDef property, ReflectedType: var owner }) return null;
+        var accessor = lookup.Method.Name is "get_GetMethod" or "GetGetMethod" ? property.Getter : property.Setter;
+        if (accessor == null || !accessor.IsPublic && nonPublic != true) return null;
+        return new(accessor.GetSpec(new GenericContext(owner)), owner);
     }
 
     private bool TryReadTypeArguments(CallInst call, GenericParamType[] parameters, out ImmutableArray<TypeDesc> arguments, out KnownArray array)

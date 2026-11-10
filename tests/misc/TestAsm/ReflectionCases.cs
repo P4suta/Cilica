@@ -441,3 +441,214 @@ public static class ReflectionCases
         public static int Echo(int value) => value;
     }
 }
+
+public static unsafe class ReflectionAccessorCases
+{
+    public static object InstanceDelegates()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty(nameof(Target.Value))!;
+        property.SetMethod!.CreateDelegate<Action<int>>(target)(42);
+        return property.GetMethod!.CreateDelegate<Func<int>>(target)();
+    }
+
+    public static object StaticDelegates()
+    {
+        var property = typeof(Target).GetProperty(nameof(Target.StaticValue))!;
+        property.SetMethod!.CreateDelegate<Action<int>>()(42);
+        return property.GetMethod!.CreateDelegate<Func<int>>()();
+    }
+
+    public static object InvokeAccessors()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty(nameof(Target.Value))!;
+        property.SetMethod!.Invoke(target, new object[] { 42 });
+        return property.GetMethod!.Invoke(target, null)!;
+    }
+
+    public static object PrivateAccessors()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty("Hidden", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        property.SetMethod!.CreateDelegate<Action<int>>(target)(42);
+        return property.GetMethod!.CreateDelegate<Func<int>>(target)();
+    }
+
+    public static object PrivateSetter()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty(nameof(Target.PrivateSet))!;
+        property.SetMethod!.CreateDelegate<Action<int>>(target)(42);
+        return property.GetMethod!.CreateDelegate<Func<int>>(target)();
+    }
+
+    public static object PrivateGetter()
+        => typeof(Target).GetProperty(nameof(Target.PrivateGet))!.GetMethod!.CreateDelegate<Func<int>>(new Target())();
+
+    public static object ParameterlessAccessorMethods()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty(nameof(Target.Value))!;
+        property.GetSetMethod()!.CreateDelegate<Action<int>>(target)(42);
+        return property.GetGetMethod()!.CreateDelegate<Func<int>>(target)();
+    }
+
+    public static object PublicAccessorMethods()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty(nameof(Target.Value))!;
+        property.GetSetMethod(false)!.CreateDelegate<Action<int>>(target)(42);
+        return property.GetGetMethod(false)!.CreateDelegate<Func<int>>(target)();
+    }
+
+    public static object NonPublicAccessorMethods()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty("Hidden", BindingFlags.Instance | BindingFlags.NonPublic)!;
+        property.GetSetMethod(true)!.CreateDelegate<Action<int>>(target)(42);
+        return property.GetGetMethod(true)!.CreateDelegate<Func<int>>(target)();
+    }
+
+    public static object StaticFactory()
+        => ((Func<int>)Delegate.CreateDelegate(typeof(Func<int>), typeof(Target).GetProperty(nameof(Target.ReadOnly))!.GetMethod!))();
+
+    public static object GetterFunctionPointer()
+    {
+        var get = (delegate* managed<int>)typeof(Target).GetProperty(nameof(Target.ReadOnly))!.GetMethod!.MethodHandle.GetFunctionPointer();
+        return get();
+    }
+
+    public static object SetterFunctionPointer()
+    {
+        var set = (delegate* managed<int, void>)typeof(Target).GetProperty(nameof(Target.StaticValue))!.SetMethod!.MethodHandle.GetFunctionPointer();
+        set(42);
+        return Target.StaticValue;
+    }
+
+    public static object GenericOwner()
+        => typeof(GenericTarget<int>).GetProperty(nameof(GenericTarget<int>.Value))!.GetMethod!
+            .CreateDelegate<Func<int>>(new GenericTarget<int>(42))();
+
+    public static T GenericBody<T>(T value)
+    {
+        var target = new GenericTarget<T>(default!);
+        var property = typeof(GenericTarget<T>).GetProperty(nameof(GenericTarget<T>.Value))!;
+        property.SetMethod!.CreateDelegate<Action<T>>(target)(value);
+        return property.GetMethod!.CreateDelegate<Func<T>>(target)();
+    }
+
+    public static object ConstructedGenericOwner()
+        => typeof(GenericTarget<>).MakeGenericType(typeof(int)).GetProperty(nameof(GenericTarget<int>.Value))!.GetMethod!
+            .CreateDelegate<Func<int>>(new GenericTarget<int>(42))();
+
+    public static object VirtualGetter()
+        => typeof(Base).GetProperty(nameof(Base.Value))!.GetMethod!.CreateDelegate<Func<int>>(new Derived())();
+
+    public static object VirtualGetterIdentity()
+    {
+        var method = typeof(Base).GetProperty(nameof(Base.Value))!.GetMethod!;
+        return method == method.CreateDelegate<Func<int>>(new Derived()).Method;
+    }
+
+    public static object InterfaceGetter()
+        => typeof(IValue).GetProperty(nameof(IValue.Value))!.GetMethod!.CreateDelegate<Func<int>>(new Derived())();
+
+    public static object BoxedAccessors()
+    {
+        object target = new Counter();
+        var property = typeof(Counter).GetProperty(nameof(Counter.Value))!;
+        property.SetMethod!.CreateDelegate<Action<int>>(target)(42);
+        return property.GetMethod!.CreateDelegate<Func<int>>(target)();
+    }
+
+    public static object IndexerAccessors()
+    {
+        var target = new Target();
+        var property = typeof(Target).GetProperty("Item")!;
+        property.SetMethod!.CreateDelegate<Action<int, int>>(target)(2, 42);
+        return property.GetMethod!.CreateDelegate<Func<int, int>>(target)(2);
+    }
+
+    public static object ThrowingGetter()
+    {
+        try { return typeof(Target).GetProperty(nameof(Target.Failure))!.GetMethod!.Invoke(null, null)!; }
+        catch (TargetInvocationException error) { return error.InnerException!.GetType().Name; }
+    }
+
+    public static object MetadataObserved()
+    {
+        var method = typeof(Target).GetProperty(nameof(Target.ReadOnly))!.GetMethod!;
+        return method.Name + ":" + method.CreateDelegate<Func<int>>()();
+    }
+
+    public static object MissingGetter()
+    {
+        try { return typeof(Target).GetProperty(nameof(Target.WriteOnly))!.GetMethod!.CreateDelegate<Func<int>>()(); }
+        catch (NullReferenceException error) { return error.GetType().Name; }
+    }
+
+    public static object MissingSetter()
+    {
+        try { typeof(Target).GetProperty(nameof(Target.ReadOnly))!.SetMethod!.CreateDelegate<Action<int>>()(42); }
+        catch (NullReferenceException error) { return error.GetType().Name; }
+        return "unexpected";
+    }
+
+    public static object PrivateGetterExcluded()
+    {
+        try { return typeof(Target).GetProperty(nameof(Target.PrivateGet))!.GetGetMethod()!.CreateDelegate<Func<int>>(new Target())(); }
+        catch (NullReferenceException error) { return error.GetType().Name; }
+    }
+
+    public static object PrivateSetterExcluded()
+    {
+        try { typeof(Target).GetProperty(nameof(Target.PrivateSet))!.GetSetMethod(false)!.CreateDelegate<Action<int>>(new Target())(42); }
+        catch (NullReferenceException error) { return error.GetType().Name; }
+        return "unexpected";
+    }
+
+    public static object PublicGetterWithRuntimeFlag(bool nonPublic)
+        => typeof(Target).GetProperty(nameof(Target.Value))!.GetGetMethod(nonPublic)!.CreateDelegate<Func<int>>(new Target())();
+
+    public static object VisibilityFlagEffects()
+    {
+        var target = new Target();
+        return typeof(Target).GetProperty(nameof(Target.Value))!.GetGetMethod(SetValue(target))!.CreateDelegate<Func<int>>(target)();
+    }
+
+    private static bool SetValue(Target target)
+    {
+        target.Value = 42;
+        return false;
+    }
+
+    public static object PrivateGetterWithRuntimeFlag(bool nonPublic)
+    {
+        try { return typeof(Target).GetProperty(nameof(Target.PrivateGet))!.GetGetMethod(nonPublic)!.CreateDelegate<Func<int>>(new Target())(); }
+        catch (NullReferenceException error) { return error.GetType().Name; }
+    }
+
+    public static object UnknownProperty(PropertyInfo property)
+        => property.GetMethod!.CreateDelegate<Func<int>>("hello")();
+
+    public sealed class Target
+    {
+        private int _value = 40;
+        public int Value { get => _value; set => _value = value; }
+        private int Hidden { get => _value; set => _value = value; }
+        public int PrivateSet { get => _value; private set => _value = value; }
+        public int PrivateGet { private get => _value; set => _value = value; }
+        public static int StaticValue { get; set; }
+        public static int ReadOnly => 42;
+        public static int WriteOnly { set => StaticValue = value; }
+        public static int Failure => throw new InvalidOperationException();
+        public int this[int index] { get => _value + index; set => _value = value - index; }
+    }
+
+    public class GenericTarget<T>(T value) { public T Value { get; set; } = value; }
+    public interface IValue { int Value { get; } }
+    public class Base : IValue { public virtual int Value => 1; }
+    public sealed class Derived : Base { public override int Value => 42; }
+    public struct Counter { public int Value { get; set; } }
+}

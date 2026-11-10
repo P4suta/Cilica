@@ -199,6 +199,126 @@ public partial class FoldReflectionTests
         Assert.Equal(expected, test.Emit().Invoke(null, null));
     }
 
+    [Theory]
+    [InlineData("InstanceDelegates", 42)]
+    [InlineData("StaticDelegates", 42)]
+    [InlineData("InvokeAccessors", 42)]
+    [InlineData("PrivateAccessors", 42)]
+    [InlineData("PrivateSetter", 42)]
+    [InlineData("PrivateGetter", 40)]
+    [InlineData("ParameterlessAccessorMethods", 42)]
+    [InlineData("PublicAccessorMethods", 42)]
+    [InlineData("NonPublicAccessorMethods", 42)]
+    [InlineData("StaticFactory", 42)]
+    [InlineData("GetterFunctionPointer", 42)]
+    [InlineData("SetterFunctionPointer", 42)]
+    [InlineData("GenericOwner", 42)]
+    [InlineData("ConstructedGenericOwner", 42)]
+    [InlineData("VirtualGetter", 42)]
+    [InlineData("InterfaceGetter", 42)]
+    [InlineData("BoxedAccessors", 42)]
+    [InlineData("IndexerAccessors", 42)]
+    [InlineData("VisibilityFlagEffects", 42)]
+    [InlineData("ThrowingGetter", "InvalidOperationException")]
+    public void PropertyAccessorChainsFoldAndExecute(string name, object expected)
+    {
+        foreach (bool defaultPipeline in new[] { false, true }) {
+            using var test = new Case(name, "ReflectionAccessorCases");
+            Assert.Equal(expected, test.Original.Invoke(null, null));
+            test.Optimize(defaultPipeline: defaultPipeline);
+            Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => IsAccessorReflection(instruction.Operand));
+            Assert.Equal(expected, test.Emit().Invoke(null, null));
+        }
+    }
+
+    [Theory]
+    [InlineData("MissingGetter")]
+    [InlineData("MissingSetter")]
+    [InlineData("PrivateGetterExcluded")]
+    [InlineData("PrivateSetterExcluded")]
+    public void MissingOrExcludedAccessorsRetainNullBehavior(string name)
+    {
+        using var test = new Case(name, "ReflectionAccessorCases");
+        test.Optimize(defaultPipeline: true);
+        Assert.Contains(test.Method.ILBody!.Instructions, instruction => IsAccessorReflection(instruction.Operand));
+        Assert.Equal("NullReferenceException", test.Emit().Invoke(null, null));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void GenericPropertyAccessorsUseTheirDeclaringTypeArguments(bool defaultPipeline)
+    {
+        using var test = new Case("GenericBody", "ReflectionAccessorCases");
+        test.Optimize(defaultPipeline: defaultPipeline);
+        Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => IsAccessorReflection(instruction.Operand));
+        var method = test.Emit();
+        foreach (var (type, value) in new (Type, object?)[] { (typeof(int), 42), (typeof(string), "hello"), (typeof(int?), null) }) {
+            Assert.Equal(value, method.MakeGenericMethod(type).Invoke(null, [value]));
+        }
+    }
+
+    [Theory]
+    [InlineData("PublicGetterWithRuntimeFlag", true)]
+    [InlineData("PrivateGetterWithRuntimeFlag", false)]
+    public void RuntimeVisibilityFlagsFoldOnlyWhenTheyCannotChangeTheAccessor(string name, bool folded)
+    {
+        using var test = new Case(name, "ReflectionAccessorCases");
+        test.Optimize();
+        Assert.Equal(!folded, test.Method.ILBody!.Instructions.Any(instruction => IsAccessorReflection(instruction.Operand)));
+        var method = test.Emit();
+        foreach (bool nonPublic in new[] { false, true }) {
+            Assert.Equal(test.Original.Invoke(null, [nonPublic]), method.Invoke(null, [nonPublic]));
+        }
+    }
+
+    [Fact]
+    public void ObservedAccessorMetadataRemainsAvailable()
+    {
+        using var test = new Case("MetadataObserved", "ReflectionAccessorCases");
+        test.Optimize();
+        Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => IsReflectionFactory(instruction.Operand));
+        Assert.Contains(test.Method.ILBody.Instructions, instruction => instruction.Operand is MethodDesc { Name: "get_GetMethod" });
+        Assert.Equal("get_ReadOnly:42", test.Emit().Invoke(null, null));
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void VirtualAccessorDelegatesPreserveMethodIdentity(bool defaultPipeline)
+    {
+        using var test = new Case("VirtualGetterIdentity", "ReflectionAccessorCases");
+        var expected = test.Original.Invoke(null, null);
+        test.Optimize(defaultPipeline: defaultPipeline);
+        Assert.Contains(test.Method.ILBody!.Instructions, instruction => IsReflectionFactory(instruction.Operand));
+        Assert.Equal(expected, test.Emit().Invoke(null, null));
+    }
+
+    [Fact]
+    public void UnknownPropertyInstancesRetainAccessorLookup()
+    {
+        using var test = new Case("UnknownProperty", "ReflectionAccessorCases");
+        test.Optimize();
+        Assert.Contains(test.Method.ILBody!.Instructions, instruction => IsAccessorReflection(instruction.Operand));
+        Assert.Equal(5, test.Emit().Invoke(null, [typeof(string).GetProperty(nameof(string.Length))]));
+    }
+
+    [Fact]
+    public void AccessorFoldingRetainsRequestedTrimmingDependencies()
+    {
+        using var test = new Case("StaticDelegates", "ReflectionAccessorCases");
+        test.Optimize(preserveTrimmingDependencies: true);
+        Assert.DoesNotContain(test.Method.ILBody!.Instructions, instruction => IsReflectionFactory(instruction.Operand));
+        Assert.Contains(test.Method.ILBody.Instructions, instruction => instruction.Operand is MethodDesc { Name: "get_GetMethod" });
+        Assert.Contains(test.Method.ILBody.Instructions, instruction => instruction.Operand is MethodDesc { Name: "get_SetMethod" });
+        Assert.Equal(42, test.Emit().Invoke(null, null));
+    }
+
+    private static bool IsAccessorReflection(object? operand)
+        => IsReflectionAccess(operand) || IsReflectionFactory(operand) || operand is MethodDesc method &&
+            method.DeclaringType.IsCorelibType(typeof(PropertyInfo)) &&
+            method.Name is "get_GetMethod" or "get_SetMethod" or "GetGetMethod" or "GetSetMethod";
+
     private static bool IsReflectionAccess(object? operand)
         => operand is MethodDesc method && method.DeclaringType.Namespace == "System.Reflection" &&
             method.Name is "GetValue" or "SetValue" or "Invoke";
