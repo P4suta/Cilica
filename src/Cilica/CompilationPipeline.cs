@@ -14,9 +14,9 @@ public static class CompilationPipeline
         manager.AddPasses(applyIndependently: true).Apply<Devirtualize>().Apply<InlineMethods>();
         manager.AddPasses().Apply<ExpandLinq>().Apply<SimplifyInsts>().Apply<FoldReflection>();
         manager.AddPasses(applyIndependently: true).Apply<Devirtualize>().Apply<InlineMethods>();
+        // Simplification, inlining, and scalar replacement expose opportunities for each other.
         var simplify = manager.AddPasses().Apply<SimplifyInsts>().Apply<FoldReflection>().Apply<SimplifyCFG>().Apply<DeadCodeElim>()
-            .RepeatUntilFixedPoint(3);
-        manager.AddPasses().Apply<ScalarReplacement>()
+            .Apply<ScalarReplacement>()
             .IfChanged(child => child.Apply<SsaPromotion>().Apply<Devirtualize>().Apply<InlineMethods>()).RepeatUntilFixedPoint(3);
         manager.AddPasses().Apply<ValueNumbering>().Apply<AssertionProp>().Apply<PresizeLists>().Apply<LoopStrengthReduction>().IfChanged(simplify);
         manager.AddPasses().Apply<LoopVectorizer>().IfChanged(simplify);
