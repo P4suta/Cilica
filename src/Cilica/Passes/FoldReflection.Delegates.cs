@@ -6,7 +6,8 @@ using Cilica.IR.Utils;
 
 partial class FoldReflection
 {
-    private static bool FoldDelegate(CallInst call, DelegateCreation creation, MethodDefOrSpec method, InliningAccess access, ReflectionTypeFacts types)
+    private static bool FoldDelegate(CallInst call, DelegateCreation creation, MethodDefOrSpec method, InliningAccess access,
+        ReflectionTypeFacts types, ReflectionLookup lookups)
     {
         var delegateType = creation.Type;
         if (!CanTakeMethodAddress(method, access, types, allowAbstract: true) ||
@@ -54,7 +55,7 @@ partial class FoldReflection
             // A constructor using ldvirtftn can expose the selected override instead.
             if (receiverType is not TypeDefOrSpec exactType ||
                 method.DeclaringType.IsInterface && TypeUtils.CanHaveDynamicInterfaces(exactType) ||
-                !VirtualDispatch.SameMethod(VirtualDispatch.Resolve(method, exactType), method)) return false;
+                !VirtualDispatch.SameMethod(lookups.ResolveVirtualMethod(method, exactType), method)) return false;
         }
 
         var builder = new IRBuilder(call, InsertionDir.Before).SetNextDebugLocation(call.DebugLocation);

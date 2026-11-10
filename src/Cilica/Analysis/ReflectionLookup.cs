@@ -14,6 +14,10 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
     readonly Dictionary<CallInst, TypeDesc?> _types = new();
     readonly Dictionary<CallInst, KnownArray> _typeArguments = new();
     readonly List<CallInst> _resolved = new();
+    VirtualDispatch.Cache? _dispatch;
+
+    public MethodDesc? ResolveVirtualMethod(MethodDefOrSpec method, TypeDefOrSpec actualType)
+        => (_dispatch ??= new()).Resolve(method, actualType);
 
     public Result? Resolve(Value value)
     {
@@ -86,7 +90,7 @@ internal sealed class ReflectionLookup(ReflectionTypeFacts types)
                     // inherited/hiding cases require separate lookup selection rules.
                     if (selected is MethodDefOrSpec derived && inherited is MethodDefOrSpec baseMethod &&
                         baseMethod.Attribs.HasFlag(MethodAttributes.Virtual) &&
-                        VirtualDispatch.SameMethod(VirtualDispatch.Resolve(baseMethod, type), derived)) continue;
+                        VirtualDispatch.SameMethod(ResolveVirtualMethod(baseMethod, type), derived)) continue;
                     return null;
                 }
             }

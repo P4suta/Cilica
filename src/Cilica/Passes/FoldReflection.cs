@@ -45,7 +45,7 @@ public sealed partial class FoldReflection : IMethodPass
             var originalCall = ctx.Logger.IsEnabled(LogLevel.Trace) ? call.ToString() : null;
             var block = call.Block;
             bool changed = resolved.Member switch {
-                MethodDefOrSpec method when creation != null => FoldDelegate(call, creation, method, access, types),
+                MethodDefOrSpec method when creation != null => FoldDelegate(call, creation, method, access, types, lookups),
                 MethodDefOrSpec method when IsFunctionPointerCall(call) => FoldFunctionPointer(call, method, access, types),
                 MethodDefOrSpec method when IsMethodHandleCall(call) => FoldMethodHandle(ctx, call, method, access, types),
                 FieldDesc field => FoldField(call, field, access, types),

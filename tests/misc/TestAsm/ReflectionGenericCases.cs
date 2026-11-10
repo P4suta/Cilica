@@ -64,6 +64,19 @@ public static unsafe class ReflectionGenericCases
     public static object DerivedOverride()
         => typeof(Derived).GetMethod(nameof(Derived.Read))!.Invoke(new Derived(), null)!;
 
+    public static object MixedGenericVirtualDelegates()
+    {
+        var first = typeof(GenericDerived<string>).GetMethod(nameof(GenericDerived<string>.Describe))!.MakeGenericMethod(typeof(int))
+            .CreateDelegate<Func<int, string>>(new GenericDerived<string>());
+        var second = typeof(GenericDerived<string>).GetMethod(nameof(GenericDerived<string>.Describe))!.MakeGenericMethod(typeof(string))
+            .CreateDelegate<Func<string, string>>(new GenericDerived<string>());
+        var third = typeof(GenericDerived<int>).GetMethod(nameof(GenericDerived<int>.Describe))!.MakeGenericMethod(typeof(int))
+            .CreateDelegate<Func<int, string>>(new GenericDerived<int>());
+        return first.Method.GetGenericArguments()[0].Name + ":" + first(42) + "|" +
+            second.Method.GetGenericArguments()[0].Name + ":" + second("hello") + "|" +
+            third.Method.GetGenericArguments()[0].Name + ":" + third(7);
+    }
+
     public static object InterfaceInvoke()
         => typeof(IValue).GetMethod(nameof(IValue.Read))!.Invoke(new Derived(), null)!;
 

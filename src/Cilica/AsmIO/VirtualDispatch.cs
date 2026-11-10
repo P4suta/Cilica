@@ -1,6 +1,7 @@
 namespace Cilica.AsmIO;
 
 using System.Reflection;
+using System.Runtime.CompilerServices;
 
 /// <summary> Resolves class slots and exact interface implementations without runtime lookups. </summary>
 internal static class VirtualDispatch
@@ -18,6 +19,44 @@ internal static class VirtualDispatch
         if (requested == null || !actualType.Inherits(method.DeclaringType) || !method.IsStatic && actualType.IsInterface) return null;
         var resolver = new Resolver(requested.GenericParams, actualType);
         return resolver.Resolve(requested);
+    }
+
+    /// <summary> Reuses dispatch maps within a pass that does not mutate type metadata. </summary>
+    public sealed class Cache
+    {
+        readonly Dictionary<TypeDefOrSpec, Dictionary<ArgumentsKey, Resolver>> _resolvers = new(ReferenceEqualityComparer.Instance);
+
+        public MethodDesc? Resolve(MethodDefOrSpec requested, TypeDefOrSpec actualType)
+        {
+            if (!actualType.Inherits(requested.DeclaringType) || !requested.IsStatic && actualType.IsInterface) return null;
+            var contexts = _resolvers.GetOrAddRef(actualType) ??= new();
+            var key = new ArgumentsKey(requested.GenericParams);
+            var resolver = contexts.GetOrAddRef(key) ??= new Resolver(requested.GenericParams, actualType);
+            return resolver.ResolveCached(requested);
+        }
+
+        readonly struct ArgumentsKey(IReadOnlyList<TypeDesc> arguments) : IEquatable<ArgumentsKey>
+        {
+            readonly IReadOnlyList<TypeDesc> _arguments = arguments;
+
+            public bool Equals(ArgumentsKey other)
+            {
+                if (_arguments.Count != other._arguments.Count) return false;
+                for (int i = 0; i < _arguments.Count; i++) {
+                    if (!ReferenceEquals(_arguments[i], other._arguments[i])) return false;
+                }
+                return true;
+            }
+
+            public override bool Equals(object? other) => other is ArgumentsKey key && Equals(key);
+
+            public override int GetHashCode()
+            {
+                var hash = new HashCode();
+                foreach (var argument in _arguments) hash.Add(RuntimeHelpers.GetHashCode(argument));
+                return hash.ToHashCode();
+            }
+        }
     }
 
     // A class MethodImpl can redirect a nonvirtual call as well. Resolve only
@@ -45,13 +84,15 @@ internal static class VirtualDispatch
         readonly List<Slot> _slots = new();
         readonly Dictionary<MethodKey, int> _methodSlots = new();
         readonly HashSet<MethodKey> _methodImplBodies = new();
+        Dictionary<MethodDefOrSpec, MethodDesc?>? _results;
+        bool? _classSlotsValid;
 
         MethodDefOrSpec Bind(MethodDef method, TypeDefOrSpec owner)
             => method.GetSpec(new GenericContext(owner.GenericParams, methodArguments));
 
         public MethodDesc? Resolve(MethodDefOrSpec requested)
         {
-            if (!requested.IsStatic && !BuildClassSlots()) return null;
+            if (!requested.IsStatic && !(_classSlotsValid ??= BuildClassSlots())) return null;
             MethodDesc? result;
             if (requested.DeclaringType.IsInterface) {
                 result = ResolveInterface(requested);
@@ -59,6 +100,16 @@ internal static class VirtualDispatch
                 result = _methodSlots.TryGetValue(Key(requested), out int slot) ? _slots[slot].Implementation : null;
             }
             return result?.Attribs.HasFlag(MethodAttributes.Abstract) == false ? result : null;
+        }
+
+        public MethodDesc? ResolveCached(MethodDefOrSpec requested)
+        {
+            _results ??= new(ReferenceEqualityComparer.Instance);
+            if (!_results.TryGetValue(requested, out var result)) {
+                result = Resolve(requested);
+                _results.Add(requested, result);
+            }
+            return result;
         }
 
         bool BuildClassSlots()

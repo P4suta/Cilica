@@ -15,6 +15,7 @@ partial class FoldReflectionTests
     [InlineData("ClosedStaticGenericReturnBuffer", "String:Object:hello:world")]
     [InlineData("OpenGenericStructDelegate", "String:Object:hello:41")]
     [InlineData("DerivedOverride", 42)]
+    [InlineData("MixedGenericVirtualDelegates", "Int32:String:Int32:42|String:String:String:hello|Int32:Int32:Int32:7")]
     [InlineData("InterfaceInvoke", 42)]
     [InlineData("ClosedInterfaceDelegate", 42)]
     [InlineData("AbstractInvoke", 42)]

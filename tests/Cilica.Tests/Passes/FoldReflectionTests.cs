@@ -2,7 +2,10 @@ namespace Cilica.Tests.Passes;
 
 using System.Reflection;
 using Cilica.AsmIO;
+using Cilica.IR;
+using Cilica.IR.Utils;
 using Cilica.Passes;
+using MethodBody = Cilica.IR.MethodBody;
 
 public partial class FoldReflectionTests
 {
@@ -312,6 +315,62 @@ public partial class FoldReflectionTests
         Assert.Contains(test.Method.ILBody.Instructions, instruction => instruction.Operand is MethodDesc { Name: "get_GetMethod" });
         Assert.Contains(test.Method.ILBody.Instructions, instruction => instruction.Operand is MethodDesc { Name: "get_SetMethod" });
         Assert.Equal(42, test.Emit().Invoke(null, null));
+    }
+
+    [Theory]
+    [InlineData(64)]
+    [InlineData(512)]
+    public void ManyVirtualLookupsSelectTheirMatchingOverrides(int count)
+    {
+        using var resolver = new ModuleResolver();
+        resolver.AddTrustedSearchPaths();
+        var body = Utils.CreateTestMethod(resolver, PrimType.Int32);
+        var module = body.Definition.Module;
+        var parent = module.CreateType(null, "Parent");
+        var derived = module.CreateType(null, "Derived", baseType: parent);
+        for (int i = 0; i < count; i++) {
+            var declaration = parent.CreateMethod("Read" + i, PrimType.Int32, [new ParamDef(parent, "this")],
+                MethodAttributes.Public | MethodAttributes.Virtual | MethodAttributes.NewSlot);
+            declaration.Body = new MethodBody(declaration);
+            new IRBuilder(declaration.Body.CreateBlock()).CreateReturn(ConstInt.CreateI(-1));
+            var implementation = derived.CreateMethod("Read" + i, PrimType.Int32, [new ParamDef(derived, "this")],
+                MethodAttributes.Public | MethodAttributes.Virtual);
+            implementation.Body = new MethodBody(implementation);
+            new IRBuilder(implementation.Body.CreateBlock()).CreateReturn(ConstInt.CreateI(i + 1));
+        }
+        var constructor = derived.CreateMethod(".ctor", PrimType.Void, [new ParamDef(derived, "this")],
+            MethodAttributes.Public | MethodAttributes.SpecialName | MethodAttributes.RTSpecialName);
+        constructor.Body = new MethodBody(constructor);
+        var initializer = new IRBuilder(constructor.Body.CreateBlock());
+        initializer.CreateCall(resolver.Import(typeof(object)).FindMethod(".ctor"), constructor.Body.Args[0]);
+        initializer.CreateReturn();
+
+        var typeType = resolver.Import(typeof(Type));
+        var methodInfo = resolver.Import(typeof(MethodInfo));
+        var delegateType = resolver.Import(typeof(Func<int>));
+        var typeFromHandle = typeType.FindMethod("GetTypeFromHandle",
+            new MethodSig(typeType, [resolver.Import(typeof(RuntimeTypeHandle))], false));
+        var getMethod = typeType.FindMethod("GetMethod", new MethodSig(methodInfo, [PrimType.String], true));
+        var createDelegate = methodInfo.FindMethod("CreateDelegate",
+            new MethodSig(resolver.Import(typeof(Delegate)), [typeType, PrimType.Object], true));
+        var invoke = delegateType.FindMethod("Invoke");
+        var builder = new IRBuilder(body.CreateBlock());
+        var receiver = builder.CreateNewObj(constructor);
+        var reflectedType = builder.CreateCall(typeFromHandle, builder.Emit(new CilIntrinsic.LoadHandle(resolver, derived)));
+        var reflectedDelegate = builder.CreateCall(typeFromHandle, builder.Emit(new CilIntrinsic.LoadHandle(resolver, delegateType)));
+        Value sum = ConstInt.CreateI(0);
+        for (int i = 0; i < count; i++) {
+            var lookup = builder.Emit(new CallInst(getMethod, [reflectedType, ConstString.Create("Read" + i)], isVirtual: true));
+            var factory = builder.Emit(new CallInst(createDelegate, [lookup, reflectedDelegate, receiver], isVirtual: true));
+            var callback = builder.CreateCastClass(delegateType, factory);
+            sum = builder.CreateAdd(sum, builder.Emit(new CallInst(invoke, [callback], isVirtual: true)));
+        }
+        builder.CreateReturn(sum);
+        var compilation = new Compilation(module, new VoidLogger(), new() { VerifyEachPass = true });
+        PassRunner.Run(new FoldReflection(), new MethodTransformContext(compilation, body));
+
+        Assert.DoesNotContain(body.Instructions().OfType<CallInst>(), call => call.Method.Name is "GetMethod" or "CreateDelegate");
+        Assert.Equal(count * (count + 1) / 2, Utils.Compile<Func<int>>(body)());
     }
 
     private static bool IsAccessorReflection(object? operand)
